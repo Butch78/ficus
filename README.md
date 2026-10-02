@@ -95,6 +95,14 @@ just fl               # fmt + clippy (native and wasm32)
   target: libc + an in-memory filesystem, so `std::fs` and C-backed crates work.
   Standalone crate (own lockfile) built with `worker-build --emscripten`.
 
+## Web UI
+
+`infra/src/web` is a [vinext](https://github.com/cloudflare/vinext) app (Cloudflare's Vite
+reimplementation of the Next.js API) on Workers, deployed as its own alchemy stack (`web.run.ts`)
+next to the Api it talks to over a service binding. Sign in, browse your organizations and trees
+(buds → leaves → fruit, each leaf's state and scoring report), and read any leaf's or node's repo
+(history, directories, files) through Artifacts. Every pull request's preview comment links it.
+
 ## Infra and lint
 
 - `infra/` deploys with [alchemy](https://alchemy.run) (`just deploy`) and is Effect throughout.
@@ -111,11 +119,17 @@ Credentials go in `~/.config/ficus/.env` (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_A
 - Every pull request and push: `ci.yml` (Rust fmt, clippy on native/wasm32/emscripten, tests; infra
   typecheck, lint, tests; actionlint and zizmor on the workflows).
 - Deploys follow [alchemy's CI guide](https://alchemy.run/guides/ci/): each pull request gets its own
-  `pr-<n>` stage (with a comment linking it, and the end-to-end smoke test), destroyed when it closes;
+  `pr-<n>` stage (Api and web UI, with a comment linking both, and end-to-end smoke tests of each),
+  destroyed when it closes;
   `main` deploys `prod`.
 - Credentials are code: `cd infra && bun run deploy:bootstrap` (once, with a Cloudflare credential that
   can create API tokens and a GitHub token with admin on the repo) mints a scoped CI token and writes
   the repository secrets. Until it has run, deploys skip.
+
+## Self-hosting
+
+[docs/self-hosting.md](docs/self-hosting.md): what it takes for Ficus to host Ficus instead of GitHub,
+and the order to get there.
 
 ## License
 
