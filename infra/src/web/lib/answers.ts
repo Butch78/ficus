@@ -185,7 +185,14 @@ export const BudRace = Schema.Struct({
   bud: Bud,
   head: Id,
   leaves: Schema.Array(
-    Schema.Struct({ leaf: Leaf, standing: Standing, report: Schema.NullOr(Report), scoring: Schema.optional(Schema.NullOr(Ledger)) }),
+    Schema.Struct({
+      leaf: Leaf,
+      standing: Standing,
+      report: Schema.NullOr(Report),
+      scoring: Schema.optional(Schema.NullOr(Ledger)),
+      /** The model of the agent growing it; null for a leaf a person grows. */
+      agent: Schema.optional(Schema.NullOr(Schema.String)),
+    }),
   ),
   compost: Schema.Array(Compost),
 });
@@ -249,3 +256,24 @@ export const Growing = Schema.Struct({
 });
 
 export type Growing = typeof Growing.Type;
+
+/** `GET .../leaves/<leaf>/agent`: the agent growing it (src/agents/actor.ts `#status`). */
+export const AgentStatus = Schema.Struct({
+  state: Schema.Literals(["working", "submitted", "stopped", "failed"]),
+  reason: Schema.optional(Schema.String),
+  model: Schema.String,
+  calls: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      tool: Schema.String,
+      summary: Schema.String,
+      state: Schema.Literals(["running", "ok", "error"]),
+    }),
+  ),
+  lastWords: Schema.optional(Schema.String),
+});
+
+export type AgentStatus = typeof AgentStatus.Type;
+
+/** `POST .../buds/<bud>/grow`. */
+export const Grown = Schema.Struct({ leaves: Schema.Array(Id) });

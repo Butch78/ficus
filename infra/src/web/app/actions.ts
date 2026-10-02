@@ -100,3 +100,17 @@ export async function submitLeaf(form: FormData) {
 
   redirect(landed(`${treePage(org, tree)}/leaves/${leaf}`, "submit", operation, outcome));
 }
+
+/** The model agents run unless the person picks another (src/agents/actor.ts `DEFAULT_MODEL`). */
+const DEFAULT_MODEL = "@cf/moonshotai/kimi-k2.7-code";
+
+export async function growWithAgents(form: FormData) {
+  const [org, tree, bud] = [field(form, "org"), field(form, "tree"), id(form, "bud")];
+  const operation = crypto.randomUUID();
+
+  const outcome = await attempt(
+    Api.growWithAgents(org, tree, bud, id(form, "agents") || 3, field(form, "model") || DEFAULT_MODEL, operation),
+  );
+
+  redirect(landed(`${treePage(org, tree)}/buds/${bud}`, "grow", operation, outcome));
+}

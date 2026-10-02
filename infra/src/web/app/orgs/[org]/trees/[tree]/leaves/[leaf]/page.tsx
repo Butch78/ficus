@@ -1,6 +1,7 @@
 import { Banner, Input, LayerCard, Text } from "@cloudflare/kumo";
 import * as Result from "effect/Result";
 import { notFound } from "next/navigation";
+import { AgentWork } from "../../../../../../../components/agent-work.tsx";
 import { AutoRefresh } from "../../../../../../../components/auto-refresh.tsx";
 import { DiffView } from "../../../../../../../components/diff-view.tsx";
 import { ChainOfThought, ChainOfThoughtStep } from "../../../../../../../components/elements/chain-of-thought.tsx";
@@ -50,9 +51,10 @@ export default async function LeafPage({ params, searchParams }: Props) {
 
   const detail = await load(Api.showLeaf(org, tree, leaf));
 
-  const [race, change] = await Promise.all([
+  const [race, change, agent] = await Promise.all([
     load(Api.showBud(org, tree, detail.leaf.bud)),
     attempt(Api.diff(org, tree, { kind: "leaves", id: leaf })),
+    attempt(Api.agentStatus(org, tree, leaf)),
   ]);
 
   const standing = race.leaves.find((entry) => entry.leaf.id === leaf)?.standing ?? "Growing";
@@ -110,6 +112,15 @@ export default async function LeafPage({ params, searchParams }: Props) {
             </SubmitButton>
           </form>
         </span>
+      ) : null}
+
+      {Result.isSuccess(agent) ? (
+        <LayerCard>
+          <LayerCardSecondary>The agent at work</LayerCardSecondary>
+          <LayerCardPrimary>
+            <AgentWork status={agent.success} />
+          </LayerCardPrimary>
+        </LayerCard>
       ) : null}
 
       <section id="change" className="flex flex-col gap-3">

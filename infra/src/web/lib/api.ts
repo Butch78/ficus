@@ -196,3 +196,9 @@ export const wither = (org: string, name: string, leaf: number, note: string, op
 
 export const submit = (org: string, name: string, leaf: number, operation: string) =>
   marked("submit", org, operation, send("POST", `${tree(org, name)}/leaves/${leaf}/ripe`, "{}"));
+
+export const growWithAgents = (org: string, name: string, bud: number, agents: number, model: string, operation: string) =>
+  marked("grow", org, operation, post(Answers.Grown, `${tree(org, name)}/buds/${bud}/grow`, JSON.stringify({ agents, model })));
+
+export const agentStatus = (org: string, name: string, leaf: number) =>
+  get(Answers.AgentStatus, `${tree(org, name)}/leaves/${leaf}/agent`);

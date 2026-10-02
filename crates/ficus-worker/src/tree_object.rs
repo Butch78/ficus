@@ -23,6 +23,8 @@ use worker::{
     durable_object,
 };
 
+mod agents;
+
 use crate::artifacts::{ArtifactsError, CommitMetadata, Namespace, Repo, Scope};
 use crate::progress::Progress;
 
@@ -85,8 +87,8 @@ struct ReleaseBody {
     node: Option<NodeId>,
 }
 
-/// Everything an agent needs to start working a attempt.
-#[derive(Serialize)]
+/// Everything an agent needs to start working an attempt.
+#[derive(Serialize, Deserialize)]
 struct Started {
     attempt: AttemptId,
     task: TaskId,
@@ -111,6 +113,10 @@ impl DurableObject for TreeObject {
     /// Rebases first: they turn behind attempts into checking ones, which
     /// the scoring that follows picks up in the same alarm.
     async fn alarm(&self) -> Result<Response> {
+        // Agents first: a submission they report is checked in this alarm.
+        // Then rebases: they turn behind attempts into checking ones, which
+        // the scoring that follows picks up in the same alarm.
+        self.tend_agents().await?;
         self.rebase_behind().await?;
         self.score_checking().await
     }
@@ -145,6 +151,10 @@ impl DurableObject for TreeObject {
                 Ok(task) => self.show_task(task).await,
                 Err(_) => Response::error("task id must be a number", 400),
             },
+            (Method::Get, ["attempts", attempt, "agent"]) => match attempt.parse() {
+                Ok(attempt) => self.agent_status(attempt).await,
+                Err(_) => Response::error("attempt id must be a number", 400),
+            },
             (Method::Get, ["attempts", attempt, read]) => match attempt.parse() {
                 Ok(attempt) => self.read(Subject::Attempt(attempt), read, &req).await,
                 Err(_) => Response::error("attempt id must be a number", 400),
@@ -169,6 +179,10 @@ impl DurableObject for TreeObject {
             (Method::Post, ["accept"]) => self.accept(None).await,
             (Method::Post, ["tasks", task, "accept"]) => match task.parse() {
                 Ok(task) => self.accept(Some(task)).await,
+                Err(_) => Response::error("task id must be a number", 400),
+            },
+            (Method::Post, ["tasks", task, "agents"]) => match task.parse() {
+                Ok(task) => self.start_agents(name, task, req.json().await?).await,
                 Err(_) => Response::error("task id must be a number", 400),
             },
             (Method::Post, ["attempts", attempt, action]) => match attempt.parse() {
@@ -588,6 +602,7 @@ impl TreeObject {
                 "standing": standing,
                 "report": self.report(id).await?,
                 "scoring": self.scoring(id).await?,
+                "agent": self.agent_model(id).await?,
             }));
         }
         Response::from_json(&serde_json::json!({
@@ -963,6 +978,19 @@ impl TreeObject {
     /// Fork the base node's repo into `attempt`'s repo and hand out its token.
     /// A failed fork abandons the attempt so it does not sit working forever.
     async fn provision(&self, tree: &Tree, attempt: AttemptId) -> Result<Response> {
+        match self.fork_attempt(tree, attempt).await? {
+            Ok(started) => Response::from_json(&started),
+            Err(refused) => Ok(refused),
+        }
+    }
+
+    /// Fork the base node's repo for a new attempt: what its agent starts
+    /// from, or the answer refusing it (the attempt is abandoned).
+    async fn fork_attempt(
+        &self,
+        tree: &Tree,
+        attempt: AttemptId,
+    ) -> Result<std::result::Result<Started, Response>> {
         let entry = tree
             .attempt(attempt)
             .expect("the caller just created this attempt");
@@ -979,7 +1007,7 @@ impl TreeObject {
             Err(error) => Err(error),
         };
         match forked {
-            Ok(created) => Response::from_json(&Started {
+            Ok(created) => Ok(Ok(Started {
                 attempt,
                 task: entry.task,
                 intent,
@@ -990,7 +1018,7 @@ impl TreeObject {
                 token: created.token,
                 base_commit: base.commit.as_str().to_owned(),
                 history: tree.history_of(entry.task).cloned().collect(),
-            }),
+            })),
             Err(error) => {
                 if let Some(mut tree) = self.load().await?
                     && tree
@@ -999,7 +1027,7 @@ impl TreeObject {
                 {
                     self.save(&tree).await?;
                 }
-                artifacts_error(&error)
+                artifacts_error(&error).map(Err)
             }
         }
     }
@@ -1130,7 +1158,19 @@ impl TreeObject {
                 502,
             );
         }
-        self.provision(&tree, fresh).await
+        let started = match self.fork_attempt(&tree, fresh).await? {
+            Ok(started) => started,
+            Err(refused) => return Ok(refused),
+        };
+        // An agent's attempt retries with an agent: the same model, a fresh run.
+        if let Some(model) = self.agent_model(behind).await? {
+            let answer = serde_json::json!({ "attempt": fresh, "task": started.task, "agent": started.agent, "remote": started.remote, "base_commit": started.base_commit });
+            self.tend(tree.name().as_str(), Some(model), started)
+                .await?;
+            self.state.storage().set_alarm(Duration::ZERO).await?;
+            return Response::from_json(&answer);
+        }
+        Response::from_json(&started)
     }
 
     /// Revoke the tokens of each attempt's repo. Failures are returned, not

@@ -1,5 +1,7 @@
-import { Banner, Code, Empty, LayerCard, Link, Text } from "@cloudflare/kumo";
+import { Badge, Banner, Code, Empty, Input, LayerCard, Link, Text } from "@cloudflare/kumo";
+import * as Result from "effect/Result";
 import { notFound } from "next/navigation";
+import { AgentWork } from "../../../../../../../components/agent-work.tsx";
 import { AutoRefresh } from "../../../../../../../components/auto-refresh.tsx";
 import { GrowYourself } from "../../../../../../../components/grow-yourself.tsx";
 import {
@@ -14,12 +16,12 @@ import { PageHeader } from "../../../../../../../components/page-header.tsx";
 import { ScoringSteps } from "../../../../../../../components/scoring-steps.tsx";
 import { StandingBadge } from "../../../../../../../components/standing-badge.tsx";
 import { SubmitButton } from "../../../../../../../components/submit-button.tsx";
-import type { BudRace } from "../../../../../../../lib/answers.ts";
+import type { AgentStatus, BudRace } from "../../../../../../../lib/answers.ts";
 import * as Api from "../../../../../../../lib/api.ts";
-import { load } from "../../../../../../../lib/run.ts";
+import { attempt, load } from "../../../../../../../lib/run.ts";
 import { harvestCase, say } from "../../../../../../../lib/standing.ts";
 import { pruneReason } from "../../../../../../../lib/view.ts";
-import { harvestBud, regrowLeaf } from "../../../../../../actions.ts";
+import { growWithAgents, harvestBud, regrowLeaf } from "../../../../../../actions.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -30,7 +32,15 @@ interface Props {
 
 type Entry = BudRace["leaves"][number];
 
-function LeafCard({ entry, org, tree }: { readonly entry: Entry; readonly org: string; readonly tree: string }) {
+interface CardProps {
+  readonly entry: Entry;
+  readonly org: string;
+  readonly tree: string;
+  /** For a leaf an agent grows while it grows: what the agent is doing. */
+  readonly agent: AgentStatus | undefined;
+}
+
+function LeafCard({ entry, org, tree, agent }: CardProps) {
   const { leaf, standing, report, scoring } = entry;
   const href = `/orgs/${org}/trees/${tree}/leaves/${leaf.id}`;
   const failing = report?.checks.filter((check) => !check.passed) ?? [];
@@ -43,11 +53,13 @@ function LeafCard({ entry, org, tree }: { readonly entry: Entry; readonly org: s
           <Text variant="secondary" as="span" size="sm">
             {leaf.agent}
           </Text>
+          {entry.agent === undefined || entry.agent === null ? null : <Badge variant="purple">agent</Badge>}
         </span>
         <StandingBadge standing={standing} />
       </LayerCardSecondary>
       <LayerCardPrimary className="flex flex-col gap-2">
         <Text size="sm">{say(standing).sentence}</Text>
+        {agent === undefined ? null : <AgentWork status={agent} compact />}
         {standing === "Ripening" && scoring !== undefined && scoring !== null ? <ScoringSteps ledger={scoring} compact /> : null}
         {report === null ? null : (
           <Text variant="secondary" size="xs">
@@ -96,6 +108,19 @@ export default async function BudPage({ params, searchParams }: Props) {
   const harvest = harvestCase(race);
   const open = race.bud.state === "Open";
   const inFlight = race.leaves.some(({ standing }) => standing === "Growing" || standing === "Ripening");
+
+  // What each agent still growing its leaf is doing now.
+  const agents = new Map(
+    await Promise.all(
+      race.leaves
+        .filter((entry) => entry.standing === "Growing" && entry.agent !== undefined && entry.agent !== null)
+        .map(async (entry) => {
+          const status = await attempt(Api.agentStatus(org, tree, entry.leaf.id));
+
+          return [entry.leaf.id, Result.isSuccess(status) ? status.success : undefined] as const;
+        }),
+    ),
+  );
 
   return (
     <>
@@ -153,9 +178,28 @@ export default async function BudPage({ params, searchParams }: Props) {
       ) : null}
       <div className="grid gap-3 md:grid-cols-2">
         {race.leaves.map((entry) => (
-          <LeafCard key={entry.leaf.id} entry={entry} org={org} tree={tree} />
+          <LeafCard key={entry.leaf.id} entry={entry} org={org} tree={tree} agent={agents.get(entry.leaf.id)} />
         ))}
       </div>
+      {open ? (
+        <LayerCard>
+          <LayerCardSecondary>Grow with agents</LayerCardSecondary>
+          <LayerCardPrimary className="flex flex-col gap-2">
+            <Text variant="secondary" size="sm">
+              Each agent gets its own copy of the repo and a sandbox to work in, runs the checks itself, and submits
+              when they pass. The smallest change that passes every check wins.
+            </Text>
+            <form action={growWithAgents} className="flex flex-wrap items-end gap-2">
+              <input type="hidden" name="org" value={org} />
+              <input type="hidden" name="tree" value={tree} />
+              <input type="hidden" name="bud" value={bud} />
+              <Input name="agents" type="number" label="Agents" defaultValue="3" min={1} max={5} className="w-24" />
+              <Input name="model" label="Model (Workers AI)" defaultValue="@cf/moonshotai/kimi-k2.7-code" className="min-w-80" />
+              <SubmitButton pending="Starting agents…">Grow</SubmitButton>
+            </form>
+          </LayerCardPrimary>
+        </LayerCard>
+      ) : null}
       {open ? (
         <LayerCard>
           <LayerCardSecondary>Grow one yourself</LayerCardSecondary>

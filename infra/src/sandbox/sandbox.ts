@@ -28,6 +28,16 @@
  *   instead (crates/ficus-core/src/progress.rs): each step as it happens, the
  *   sandbox's own and `ficus-scorer`'s, then the outcome: what the plain
  *   answer would have been.
+ *
+ *   An agent's workspace (from AgentActor, src/agents):
+ *   POST /workspace {remote, token}   start the container; for the agent's
+ *                                     whole run it may reach its attempt's repo
+ *                                     (token added by Egress) and the
+ *                                     nix/devenv caches, nothing else
+ *   POST /fs/<op>, POST /exec         pi's file and shell operations, run as
+ *                                     `ficus-scorer fs <op>` / `exec` with the
+ *                                     request on stdin; the answer is pi's
+ *                                     Result, as JSON
  */
 import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
@@ -130,6 +140,14 @@ const Prepared = Schema.Struct({ workdir: Schema.String });
 /** crates/ficus-core `RebaseReport`. */
 const RebaseReport = Schema.Struct({ commit: Oid, replayed: Schema.Number });
 
+/** What an agent's workspace starts from: its attempt's remote and write token. */
+const Workspace = Schema.Struct({ remote: Schema.String, token: Schema.String });
+
+type Workspace = typeof Workspace.Type;
+
+/** Where a workspace keeps what it was opened with, to open it again. */
+const WORKSPACE_KEY = "workspace";
+
 export class SandboxFailure extends Schema.TaggedError<SandboxFailure>()("Sandbox.Failure", {
   status: Schema.Number,
   message: Schema.String,
@@ -177,8 +195,23 @@ const respond = <A>(run: Effect.Effect<A, SandboxFailure>): Promise<Response> =>
   );
 
 export class Sandbox extends DurableObject<Bindings> {
+  /** Whether this instance has routed the workspace's egress (see `#open`). */
+  #opened = false;
+
   override async fetch(request: Request): Promise<Response> {
     const { pathname } = new URL(request.url);
+
+    if (request.method === "POST" && pathname === "/workspace") {
+      return respond(this.#workspace(request).pipe(Effect.as({ ready: true })));
+    }
+
+    const workspaceOp = /^\/(?:fs\/([a-z]+)|exec)$/.exec(pathname);
+
+    if (request.method === "POST" && workspaceOp !== null) {
+      const argv = workspaceOp[1] === undefined ? [SCORER, "exec"] : [SCORER, "fs", workspaceOp[1]];
+
+      return this.#respond(this.#workspaceOp(argv, request));
+    }
 
     if (request.method !== "POST") {
       return new Response("not found", { status: 404 });
@@ -210,6 +243,105 @@ export class Sandbox extends DurableObject<Bindings> {
       Effect.provide(Clef.layerBinding(this.env.AI)),
     );
   }
+
+  #respond(answer: Effect.Effect<Response, SandboxFailure>): Promise<Response> {
+    return Effect.runPromise(
+      answer.pipe(
+        Effect.catchTag("Sandbox.Failure", (error) => Effect.succeed(new Response(error.message, { status: error.status }))),
+      ),
+    );
+  }
+
+  /** Start an agent's container, its egress open to its attempt and the nix caches. */
+  readonly #workspace = Effect.fn("Sandbox.workspace")(function* (this: Sandbox, request: Request) {
+    const body = yield* Effect.tryPromise({
+      try: () => request.json(),
+      catch: () => failure(400, "the workspace request is not JSON"),
+    });
+
+    const workspace = yield* Schema.decodeUnknownEffect(Workspace)(body).pipe(
+      Effect.mapError((error) => failure(400, `not a workspace request: ${String(error)}`)),
+    );
+
+    yield* Effect.promise(() => this.ctx.storage.put(WORKSPACE_KEY, workspace));
+    yield* this.#open(workspace);
+  });
+
+  /**
+   * Start the container if it is not running, route its egress, trust the
+   * egress CA. The routes belong to this instance of the Durable Object, not
+   * to the container: an agent's run outlives instances, so every new
+   * instance opens the workspace again before its first operation.
+   */
+  readonly #open = Effect.fn("Sandbox.open")(function* (this: Sandbox, { remote, token }: Workspace) {
+    const repo = repoOf(remote);
+
+    yield* this.#ready();
+    yield* this.#route(repo.host, { mode: "artifacts", repos: [{ repoPath: repo.repoPath, token }] });
+
+    for (const host of NIX_HOSTS) {
+      yield* this.#route(host, { mode: "pass" });
+    }
+
+    const trusted = yield* this.#exec(["/usr/local/bin/ficus-trust-egress"]);
+
+    if (trusted.exitCode !== 0) {
+      return yield* failure(503, `trusting the egress CA: ${trusted.stderr.trim()}`);
+    }
+
+    this.#opened = true;
+  });
+
+  /** One of pi's operations in an agent's container, its answer passed through. */
+  readonly #workspaceOp = Effect.fn("Sandbox.workspaceOp")(function* (this: Sandbox, argv: ReadonlyArray<string>, request: Request) {
+    if (!this.#opened) {
+      const stored = yield* Effect.promise(() => this.ctx.storage.get(WORKSPACE_KEY));
+
+      const workspace = yield* Schema.decodeUnknownEffect(Workspace)(stored).pipe(
+        Effect.mapError(() => failure(409, "no workspace here: POST /workspace first")),
+      );
+
+      yield* this.#open(workspace);
+    }
+
+    const container = this.#container();
+
+    const input = yield* Effect.tryPromise({
+      try: () => request.text(),
+      catch: () => failure(400, "the request body could not be read"),
+    });
+
+    const answer = yield* Effect.tryPromise({
+      try: async () => {
+        const running = await container.exec([...argv], {
+          env: { ...EXEC_ENV },
+          stdin: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(input));
+              controller.close();
+            },
+          }),
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+
+        const [stdout, stderr] = await Promise.all([new Response(running.stdout).text(), new Response(running.stderr).text()]);
+
+        return { exitCode: await running.exitCode, stdout, stderr } satisfies Ran;
+      },
+      catch: (cause) => failure(503, `${argv.slice(1).join(" ")}: ${String(cause)}`),
+    });
+
+    if (answer.exitCode !== 0) {
+      const why = `${argv.slice(1).join(" ")} exited ${answer.exitCode}: ${answer.stderr.trim() || answer.stdout.trim()}`;
+
+      console.error(`workspace: ${why}`);
+
+      return yield* failure(500, why);
+    }
+
+    return new Response(answer.stdout, { headers: { "content-type": "application/json" } });
+  });
 
   /** Score, answering at once with the steps as they happen, the outcome last. */
   #streamed(request: Request): Response {

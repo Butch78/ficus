@@ -92,9 +92,19 @@ const request = Effect.fn("Sandbox.request")(function* <A>(
     catch: (cause) => new SandboxError({ operation: path, cause }),
   });
 
-  const json = yield* Effect.tryPromise({
-    try: () => response.json(),
+  const text = yield* Effect.tryPromise({
+    try: () => response.text(),
     catch: (cause) => new SandboxError({ operation: `${path} (status ${response.status})`, cause }),
+  });
+
+  // The sandbox answers pi's Result as JSON; anything else is its own failure, in words.
+  if (!response.ok) {
+    return yield* new SandboxError({ operation: `${path} (status ${response.status})`, cause: text });
+  }
+
+  const json = yield* Effect.try({
+    try: () => JSON.parse(text),
+    catch: (cause) => new SandboxError({ operation: `${path}: not JSON`, cause }),
   });
 
   const envelope = yield* Schema.decodeUnknownEffect(Envelope)(json).pipe(

@@ -12,6 +12,10 @@
 //                                  which hosts they reach (and adds the
 //                                  credentials they never see); asks Clef
 //                                  the root's judges once a container is gone
+//   Agents   src/agents/worker.ts  one AgentActor per attempt an agent works:
+//                                  pi on Workers AI, working in a sandbox,
+//                                  Clef at its handovers; the tree
+//                                  dispatches and polls them
 //
 //   The web UI is a stack of its own (web.run.ts), deployed after this one
 //   to the same stage; it binds `Api` by reference.
@@ -102,6 +106,25 @@ export default Alchemy.Stack(
       env: { SANDBOX: sandboxContainer, AI: Cloudflare.Workers.AI() },
     });
 
+    // Agents: one AgentActor per attempt an agent works, a pi agent on Workers
+    // AI (Clef judges its plan and diff) working in its own sandbox. Internal:
+    // only the tree reaches it.
+    const agents = yield* Cloudflare.Worker("Agents", {
+      name: `ficus-agents-${stage}`,
+      main: "./src/agents/worker.ts",
+      compatibility: COMPATIBILITY,
+      observability: OBSERVABILITY,
+      workersDev: false,
+      env: {
+        AI: Cloudflare.Workers.AI(),
+        // `AgentActor` is the Durable Object class src/agents/worker.ts exports.
+        AGENTS: Cloudflare.DurableObject("AGENTS", { className: "AgentActor" }),
+        // An agent's workspace is a sandbox: the scorer's image, its egress.
+        SANDBOX: Cloudflare.DurableObject("SANDBOX", { className: "Sandbox", scriptName: `ficus-sandbox-${stage}` }),
+        FICUS_SANDBOX_SCRIPT: sandbox.workerName,
+      },
+    });
+
     // One namespace per stage; Artifacts creates it with the first repo.
     const artifacts = yield* Cloudflare.Artifacts.Namespace("Artifacts", { namespace: `ficus-${stage}` });
 
@@ -126,6 +149,10 @@ export default Alchemy.Stack(
         // deploys the sandbox Worker (and its class) before this one.
         SANDBOX: Cloudflare.DurableObject("SANDBOX", { className: "Sandbox", scriptName: `ficus-sandbox-${stage}` }),
         FICUS_SANDBOX_SCRIPT: sandbox.workerName,
+        // The agents that work attempts: `AgentActor` in the agents Worker, by
+        // literal name like SANDBOX, with the same deploy-order edge.
+        AGENTS: Cloudflare.DurableObject("AGENTS", { className: "AgentActor", scriptName: `ficus-agents-${stage}` }),
+        FICUS_AGENTS_SCRIPT: agents.workerName,
       },
     });
 

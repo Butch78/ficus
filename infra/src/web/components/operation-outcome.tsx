@@ -14,6 +14,8 @@ const titleOf = (op: string | undefined) => {
       return "Wither";
     case "submit":
       return "Submit for scoring";
+    case "grow":
+      return "Grow with agents";
     default:
       return "Change";
   }
