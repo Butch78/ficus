@@ -49,9 +49,12 @@ call POST "/leaves/$L2/ripe" '{"checks_passed":3,"checks_total":3,"cost":20}' | 
 call POST "/leaves/$L3/ripe" '{"checks_passed":3,"checks_total":3,"cost":10}' | jq -c .
 
 step "a ripe leaf's token is revoked: alpha can no longer push"
-( cd "$W/$L1" && echo more >> CONTRIBUTING.md && git commit -qam more -c user.name=a -c user.email=a@a 2>/dev/null; \
-  git -c user.name=a -c user.email=a@a commit -qam more 2>/dev/null; \
-  git -c http.extraHeader="Authorization: Bearer $(cat "$W/token-$L1")" push -q origin HEAD 2>&1 | head -2 ) || true
+if ( cd "$W/$L1" && echo more >> CONTRIBUTING.md \
+  && git -c user.name=alpha -c user.email=alpha@ficus.dev commit -qam "alpha: more" \
+  && git -c http.extraHeader="Authorization: Bearer $(cat "$W/token-$L1")" push -q origin HEAD 2>/dev/null ); then
+  echo "FAIL: alpha pushed after ripening" >&2; exit 1
+fi
+echo "refused, as expected"
 
 step "harvest A"
 H=$(call POST "/buds/$A/harvest"); jq -c . <<<"$H"
