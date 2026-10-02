@@ -33,7 +33,9 @@ export default async function TreePage({ params, searchParams }: Props) {
       {planted === undefined ? null : (
         <Banner title={`Planted ${name}`} description={`Its root is the default branch of ${planted}, at node 0.`} />
       )}
-      {trace === undefined ? null : <ActivityPanel org={org} operation={trace} />}
+      {trace === undefined ? null : (
+        <ActivityPanel org={org} operation={trace} title={`Plant ${name}`} refused={false} />
+      )}
       <LayerCard>
         <LayerCardSecondary>Trunk: the root, then one node per harvested bud</LayerCardSecondary>
         <LayerCardPrimary className="p-0">

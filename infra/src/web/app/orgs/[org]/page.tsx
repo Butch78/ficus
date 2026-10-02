@@ -24,7 +24,7 @@ export default async function Organization({ params, searchParams }: Props) {
     <>
       <PageHeader trail={[["Organizations", "/"]]} title={org} />
       <FailureBanner error={error} />
-      {trace === undefined ? null : <ActivityPanel org={org} operation={trace} />}
+      {trace === undefined ? null : <ActivityPanel org={org} operation={trace} title="Plant" refused />}
       {trees.length === 0 ? (
         <Empty title="No trees yet" description="Plant one from a public git remote below." />
       ) : (

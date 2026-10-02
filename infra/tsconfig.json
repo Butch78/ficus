@@ -19,5 +19,5 @@
   },
   "include": ["alchemy.run.ts", "bootstrap.run.ts", "web.run.ts", "src", "scripts"],
   // Each has its own tsconfig.json with its runtime's types.
-  "exclude": ["src/agents", "src/api", "src/sandbox", "src/web"]
+  "exclude": ["src/agents", "src/api", "src/observability", "src/sandbox", "src/web"]
 }

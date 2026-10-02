@@ -1,27 +1,15 @@
 /**
- * The UI's side of Cloudflare tracing: mark an operation's span so its trace
- * can be found again, and read that trace back from Workers Observability.
+ * Reading an operation's Cloudflare trace back from Workers Observability.
  *
- * A Worker cannot read its own trace id, so the operation is found by an
- * attribute the UI sets on its span (a fresh id, plus the organization),
- * and then the whole trace by the id that span carries.
+ * The spans themselves are Effect's (observability/tracer.ts records them in
+ * Cloudflare). A Worker cannot read its own trace id, so an operation is
+ * found by the attributes its span is annotated with (a fresh id, plus the
+ * organization), and then the whole trace by the id that span carries.
  */
-import { env, tracing } from "cloudflare:workers";
+import { env } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { OPERATION_ATTRIBUTE, ORG_ATTRIBUTE, TraceEvent } from "./activity.ts";
-
-/** Run `work` inside a span marked with the operation and its organization. */
-export const traced = <A>(name: string, org: string, operation: string, work: () => Promise<A>) =>
-  tracing.startActiveSpan(name, async (span) => {
-    span.setAttributes({ [OPERATION_ATTRIBUTE]: operation, [ORG_ATTRIBUTE]: org });
-
-    try {
-      return await work();
-    } finally {
-      span.end();
-    }
-  });
 
 export class TraceUnavailable extends Schema.TaggedError<TraceUnavailable>()("Web.TraceUnavailable", {
   message: Schema.String,

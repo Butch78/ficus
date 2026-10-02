@@ -10,6 +10,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { OPERATION_ATTRIBUTE, ORG_ATTRIBUTE } from "./activity.ts";
 import * as Answers from "./answers.ts";
 
 export class ApiError extends Schema.TaggedError<ApiError>()("Web.ApiError", {
@@ -97,8 +98,16 @@ export const createOrganization = (name: string, slug: string) =>
 
 export const trees = (org: string) => get(Answers.PlantedTrees, `/v1/orgs/${encodeURIComponent(org)}/trees`);
 
-export const plant = (org: string, name: string, source: string) =>
-  send("POST", `${tree(org, name)}/plant`, JSON.stringify({ source }));
+/**
+ * Plant, as the `ficus.plant` span: marked with `operation` and the
+ * organization, which is how its Cloudflare trace is found again
+ * (lib/trace.ts) to show what happened.
+ */
+export const plant = Effect.fn("ficus.plant")(function* (org: string, name: string, source: string, operation: string) {
+  yield* Effect.annotateCurrentSpan({ [OPERATION_ATTRIBUTE]: operation, [ORG_ATTRIBUTE]: org, "ficus.tree": name });
+
+  return yield* send("POST", `${tree(org, name)}/plant`, JSON.stringify({ source }));
+});
 
 export const showTree = (org: string, name: string) => get(Answers.Tree, tree(org, name));
 

@@ -9,7 +9,6 @@ import * as Result from "effect/Result";
 import { redirect } from "next/navigation";
 import * as Api from "../lib/api.ts";
 import { attempt } from "../lib/run.ts";
-import { traced } from "../lib/trace.ts";
 
 /** A text field; an uploaded file in its place reads as empty. */
 const field = (form: FormData, name: string) => {
@@ -42,7 +41,7 @@ export async function plantTree(form: FormData) {
   const source = field(form, "source");
   // Marks this plant's trace, so either page it lands on can show what happened.
   const operation = crypto.randomUUID();
-  const outcome = await traced("ficus.plant", org, operation, () => attempt(Api.plant(org, tree, source)));
+  const outcome = await attempt(Api.plant(org, tree, source, operation));
   const page = `/orgs/${encodeURIComponent(org)}`;
 
   // The tree page confirms the plant; a refusal names the tree it was for.

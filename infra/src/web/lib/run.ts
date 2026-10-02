@@ -8,6 +8,7 @@ import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import { headers } from "next/headers";
 import { notFound, redirect } from "next/navigation";
+import * as CloudflareTracer from "../../observability/tracer.ts";
 import { type ApiError, Upstream } from "./api.ts";
 
 const LOCAL_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
@@ -26,7 +27,15 @@ const upstream = async () => {
 
 /** The program's outcome, failures included: for pages that show them in place. */
 export const attempt = async <A>(program: Effect.Effect<A, ApiError, Upstream>) =>
-  Effect.runPromise(program.pipe(Effect.result, Effect.provideService(Upstream, await upstream())));
+  Effect.runPromise(
+    program.pipe(
+      Effect.result,
+      Effect.provideService(Upstream, await upstream()),
+      // The program's Effect spans join the request's Cloudflare trace.
+      // oxlint-disable-next-line effecttsgo/strict-effect-provide -- runs the request's Effect: an entry point
+      Effect.provide(CloudflareTracer.layer),
+    ),
+  );
 
 /** The program's value; a signed-out caller is sent to sign in, a missing thing is a 404. */
 export const load = async <A>(program: Effect.Effect<A, ApiError, Upstream>) => {

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import * as Schema from "effect/Schema";
-import { label, steps, TraceEvent, where } from "./activity.ts";
+import { label, narrate, steps, TraceEvent, where } from "./activity.ts";
 import fixture from "./plant-trace.fixture.json";
 
 // A real plant on pr-1, as Workers Observability returned it (names changed):
@@ -106,5 +106,25 @@ describe("names", () => {
   test("an RPC call outside the tree Worker keeps the platform's name", () => {
     expect(label("ficus-api-pr-1", "RPC call: get")).toBe("RPC call: get");
     expect(label("ficus-pr-1", "durable_object_storage_put")).toBe("Durable Object storage: put");
+  });
+});
+
+describe("narrate", () => {
+  test("tells a plant as the few things that happened to the person's tree", () => {
+    expect(narrate(steps(plant)).map((told) => told.text)).toEqual([
+      "Handed the request to the tree's Durable Object",
+      "Imported the repository into Artifacts",
+      "Read the repository's head commit",
+      "Locked the root: revoked its write tokens",
+      "Saved the tree",
+      "Listed the tree in your organization",
+    ]);
+  });
+
+  test("merged sentences cover their steps' extent, not the sum of them", () => {
+    const told = narrate(steps(plant)).find((sentence) => sentence.text === "Read the repository's head commit");
+
+    // get (63 ms), then log (41) inside it, then get (33): 4531..4668.
+    expect(told?.duration).toBe(137);
   });
 });

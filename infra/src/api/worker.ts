@@ -13,7 +13,9 @@
  * tenant key. Nothing reaches the tree Worker any other way.
  */
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as CloudflareTracer from "../observability/tracer.ts";
 import { API_KEY_HEADER, AUTH_BASE_PATH, Auth, layer as authLayer } from "./auth.ts";
 import * as Directory from "./directory.ts";
 import { TENANT_HEADER, tenantKey } from "./tenant.ts";
@@ -61,6 +63,8 @@ export const treesRoute = (pathname: string) => /^\/v1\/orgs\/([^/]+)\/trees\/?$
 
 /** The organization `slug` names, if the caller is signed in and a member. */
 const membership = Effect.fn("Api.membership")(function* (request: Request, slug: string) {
+  yield* Effect.annotateCurrentSpan("ficus.org", slug);
+
   const auth = yield* Auth;
 
   const session = yield* Effect.tryPromise({
@@ -176,9 +180,12 @@ export default {
         Effect.catchTag("Api.Failure", (error) =>
           Effect.succeed(Response.json({ error: error.message }, { status: error.status })),
         ),
-        // Better Auth builds its URLs from the origin it is served on.
+        // Better Auth builds its URLs from the origin it is served on; the
+        // tracer records this request's Effect spans in its Cloudflare trace.
         // oxlint-disable-next-line effecttsgo/strict-effect-provide -- the Worker's entry point
-        Effect.provide(authLayer(env.AUTH_DB, env.BETTER_AUTH_SECRET, new URL(request.url).origin)),
+        Effect.provide(
+          Layer.merge(authLayer(env.AUTH_DB, env.BETTER_AUTH_SECRET, new URL(request.url).origin), CloudflareTracer.layer),
+        ),
       ),
     ),
 } satisfies ExportedHandler<Bindings>;

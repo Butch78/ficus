@@ -243,3 +243,72 @@ export const steps = (events: ReadonlyArray<TraceEvent>): ReadonlyArray<Step> =>
 
   return folded;
 };
+
+/** A step said as a sentence, for the expanded summary. */
+export interface Sentence {
+  readonly text: string;
+  readonly offset: number;
+  /** From the first of its steps starting to the last one ending. */
+  readonly duration: number;
+  readonly failed: boolean;
+}
+
+/**
+ * What a step means to the person who asked for it; undefined for the
+ * plumbing between (requests passing through, framework rendering), which
+ * stays in the raw spans.
+ */
+export const sentence = (label: string) => {
+  switch (label) {
+    case "Api.membership":
+      return "Checked you belong to the organization";
+    case "Hand to the tree's Durable Object":
+      return "Handed the request to the tree's Durable Object";
+    case "Artifacts: create":
+      return "Created an empty root repository in Artifacts";
+    case "Artifacts: import":
+      return "Imported the repository into Artifacts";
+    case "Artifacts: fork":
+      return "Forked a repository for the leaf";
+    case "Artifacts: createToken":
+      return "Minted a token for the repository";
+    case "Artifacts: get":
+    case "Artifacts: log":
+      return "Read the repository's head commit";
+    case "Artifacts: listTokens":
+    case "Artifacts: revokeToken":
+      return "Locked the root: revoked its write tokens";
+    case "Durable Object storage: put":
+      return "Saved the tree";
+    case "Directory.record":
+    case "D1: record the tree in the directory":
+      return "Listed the tree in your organization";
+    default:
+      return undefined;
+  }
+};
+
+/** The steps a person cares about, in order, neighbours saying the same thing merged. */
+export const narrate = (all: ReadonlyArray<Step>): ReadonlyArray<Sentence> => {
+  const told: Array<Sentence> = [];
+
+  for (const step of all) {
+    const text = sentence(step.label);
+
+    if (text === undefined) {
+      continue;
+    }
+
+    const previous = told.at(-1);
+
+    if (previous?.text === text) {
+      const end = Math.max(previous.offset + previous.duration, step.offset + step.duration);
+
+      told[told.length - 1] = { ...previous, duration: end - previous.offset, failed: previous.failed || step.failed };
+    } else {
+      told.push({ text, offset: step.offset, duration: step.duration, failed: step.failed });
+    }
+  }
+
+  return told;
+};

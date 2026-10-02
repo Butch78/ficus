@@ -1,15 +1,17 @@
 "use client";
 
 /**
- * "What happened", from Cloudflare's traces: polls /api/activity for an
- * operation's steps and draws them as a waterfall. Traces arrive about
- * 15-20 seconds after the work, so it waits, then fills in, then stops once
- * the trace has stopped growing.
+ * What an operation did, from its Cloudflare trace, shown like an agent's
+ * tool call: one line, which opens to the steps in words, which open to the
+ * raw spans. Traces arrive about 15-20 seconds after the work, so it waits,
+ * then fills in, then stops once the trace has stopped growing.
  */
-import { Badge, LayerCard, Loader, Text } from "@cloudflare/kumo";
+import { Badge, Collapsible, LayerCard, Loader, Text } from "@cloudflare/kumo";
+import { CheckCircleIcon, CheckIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { useEffect, useState } from "react";
+import { narrate } from "../lib/activity.ts";
 
 const Step = Schema.Struct({
   id: Schema.String,
@@ -52,7 +54,127 @@ type View =
   | { readonly kind: "steps"; readonly steps: ReadonlyArray<Step>; readonly settled: boolean }
   | { readonly kind: "unavailable"; readonly reason: string };
 
-export function ActivityPanel({ org, operation }: { readonly org: string; readonly operation: string }) {
+interface Props {
+  readonly org: string;
+  readonly operation: string;
+  /** What the operation was, as its one line: "Plant site". */
+  readonly title: string;
+  /** Whether the Api accepted it; a refusal still has a trace worth reading. */
+  readonly refused: boolean;
+}
+
+const seconds = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
+
+/** The one line's tail: how long it took, or why that is not known yet. */
+const status = (view: View, total: number | undefined) => {
+  if (view.kind === "waiting") {
+    return "reading its trace from Cloudflare (about 20 s)";
+  }
+
+  return view.kind === "unavailable" ? "no trace" : seconds(total ?? 0);
+};
+
+/**
+ * One line, like an agent's tool call: what was done, whether it worked,
+ * how long it took. Open it for what happened in words; open "spans" for
+ * the trace itself.
+ */
+export function ActivityPanel({ org, operation, title, refused }: Props) {
+  const view = useTrace(org, operation);
+  const found = view.kind === "steps" ? view.steps : [];
+  const total = found[0]?.duration;
+
+  return (
+    <LayerCard>
+      <LayerCard.Primary className="py-2">
+        <Collapsible.Root>
+          <Collapsible.DefaultTrigger>
+            <span className="inline-flex items-center gap-2">
+              {view.kind === "waiting" ? (
+                <Loader size={14} />
+              ) : refused ? (
+                <WarningCircleIcon size={16} className="text-kumo-danger" />
+              ) : (
+                <CheckCircleIcon size={16} className="text-kumo-success" />
+              )}
+              <Text as="span" size="sm" bold>
+                {title}
+              </Text>
+              <Text variant="secondary" as="span" size="sm">
+                · {status(view, total)}
+              </Text>
+            </span>
+          </Collapsible.DefaultTrigger>
+          <Collapsible.DefaultPanel>
+            <div className="flex flex-col gap-3 pt-2">
+              {view.kind === "waiting" ? (
+                <Text variant="secondary" size="sm">
+                  Cloudflare makes a trace readable about 15-20 seconds after the work; this fills in when it does.
+                </Text>
+              ) : null}
+              {view.kind === "unavailable" ? (
+                <Text variant="secondary" size="sm">
+                  No trace to show: {view.reason}.
+                </Text>
+              ) : null}
+              {view.kind === "steps" ? <Story steps={view.steps} settled={view.settled} /> : null}
+              {view.kind === "steps" ? (
+                <Collapsible.Root>
+                  <Collapsible.DefaultTrigger>
+                    <Text variant="secondary" as="span" size="xs">
+                      Spans ({view.steps.length}), as Cloudflare traced them
+                    </Text>
+                  </Collapsible.DefaultTrigger>
+                  <Collapsible.DefaultPanel>
+                    <Waterfall steps={view.steps} />
+                  </Collapsible.DefaultPanel>
+                </Collapsible.Root>
+              ) : null}
+            </div>
+          </Collapsible.DefaultPanel>
+        </Collapsible.Root>
+      </LayerCard.Primary>
+    </LayerCard>
+  );
+}
+
+/** The trace in words: one line per thing that happened to the person's tree. */
+function Story({ steps, settled }: { readonly steps: ReadonlyArray<Step>; readonly settled: boolean }) {
+  const told = narrate(steps);
+
+  return (
+    <ol className="flex flex-col gap-1">
+      {told.map((sentence) => (
+        <li key={`${sentence.offset}-${sentence.text}`} className="flex items-center justify-between gap-3">
+          <span className="inline-flex items-center gap-2">
+            {sentence.failed ? (
+              <WarningCircleIcon size={14} className="text-kumo-danger" />
+            ) : (
+              <CheckIcon size={14} className="text-kumo-success" />
+            )}
+            <Text as="span" size="sm">
+              {sentence.text}
+            </Text>
+          </span>
+          <Text variant="secondary" as="span" size="xs">
+            {seconds(sentence.duration)}
+          </Text>
+        </li>
+      ))}
+      {settled ? null : (
+        <li className="inline-flex items-center gap-2">
+          <Loader size={12} />
+          <Text variant="secondary" as="span" size="xs">
+            more of the trace may still arrive
+          </Text>
+        </li>
+      )}
+    </ol>
+  );
+}
+
+/** Polls /api/activity until the operation's trace has stopped growing. */
+function useTrace(org: string, operation: string) {
   const [view, setView] = useState<View>({ kind: "waiting" });
 
   useEffect(() => {
@@ -88,13 +210,13 @@ export function ActivityPanel({ org, operation }: { readonly org: string; readon
 
       const settled = unchanged >= SETTLED;
 
-      setView(found.length === 0 ? { kind: "waiting" } : { kind: "steps", steps: found, settled });
-
       if (found.length === 0 && Date.now() - started > PATIENCE_MS) {
         setView({ kind: "unavailable", reason: "no trace arrived; it may have been sampled out" });
 
         return;
       }
+
+      setView(found.length === 0 ? { kind: "waiting" } : { kind: "steps", steps: found, settled });
 
       if (!settled) {
         setTimeout(poll, POLL_MS);
@@ -108,30 +230,7 @@ export function ActivityPanel({ org, operation }: { readonly org: string; readon
     };
   }, [org, operation]);
 
-  return (
-    <LayerCard>
-      <LayerCard.Secondary className="flex items-center justify-between gap-2">
-        <span>What happened, from Cloudflare's traces</span>
-        {view.kind === "steps" && !view.settled ? <Loader size={14} /> : null}
-      </LayerCard.Secondary>
-      <LayerCard.Primary className="flex flex-col gap-1">
-        {view.kind === "waiting" ? (
-          <span className="flex items-center gap-2">
-            <Loader size={14} />
-            <Text variant="secondary" as="span" size="sm">
-              Waiting for the trace: Cloudflare makes it queryable about 15-20 seconds after the work.
-            </Text>
-          </span>
-        ) : null}
-        {view.kind === "unavailable" ? (
-          <Text variant="secondary" size="sm">
-            No trace to show: {view.reason}.
-          </Text>
-        ) : null}
-        {view.kind === "steps" ? <Waterfall steps={view.steps} /> : null}
-      </LayerCard.Primary>
-    </LayerCard>
-  );
+  return view;
 }
 
 function Waterfall({ steps }: { readonly steps: ReadonlyArray<Step> }) {
@@ -139,10 +238,6 @@ function Waterfall({ steps }: { readonly steps: ReadonlyArray<Step> }) {
 
   return (
     <div className="flex flex-col gap-1">
-      <Text variant="secondary" size="xs">
-        {(total / 1000).toFixed(1)}s from the UI through the Api to the tree's Durable Object, one trace across
-        Workers.
-      </Text>
       {steps.map((step) => (
         <div key={step.id} className="grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)_4rem] items-center gap-3">
           <span className="flex min-w-0 items-center gap-2" style={{ paddingLeft: `${Math.min(step.depth, 8) * 0.75}rem` }}>
