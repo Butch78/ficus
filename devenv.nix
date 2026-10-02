@@ -39,6 +39,10 @@ in
     # infra/: alchemy stacks, Effect, oxlint.
     ficus.bun
 
+    # .github/: actionlint for syntax and shell, zizmor for the security audit.
+    actionlint
+    zizmor
+
     git
     jq
     curl

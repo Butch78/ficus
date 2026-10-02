@@ -48,3 +48,9 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   containers via local Docker. Deploy only to verify what local can't (Artifacts, egress interception).
 - Debug from telemetry, not re-runs: `scripts/telemetry [minutes] [worker] [limit]` (Workers
   Observability; every Worker has logs + traces on). Egress logs one line per decision.
+- CI/CD (alchemy's guide): `.github/workflows/ci.yml` (Rust fmt/clippy/test, infra typecheck/lint/test,
+  actionlint + zizmor) and `deploy.yml` (`pr-<n>` stage per same-repo PR with a GitHub.Comment and the
+  e2e smoke, destroyed on close; `prod` from main). GitHub-HOSTED runners on purpose: public repo,
+  so no self-hosted runners. Credentials as code: `infra/bootstrap.run.ts` (stage `bootstrap`, run
+  once from a shell with an API-Tokens-Write credential + GITHUB_TOKEN) mints `ficus-ci` and writes
+  the repo secrets + FICUS_DEPLOYS_ENABLED. Pin actions by SHA.

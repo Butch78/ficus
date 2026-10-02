@@ -37,6 +37,17 @@ just fl               # fmt + clippy (native and wasm32)
 
 Credentials go in `~/.config/ficus/.env` (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`).
 
+## CI/CD
+
+- Every pull request and push: `ci.yml` (Rust fmt, clippy on native/wasm32/emscripten, tests; infra
+  typecheck, lint, tests; actionlint and zizmor on the workflows).
+- Deploys follow [alchemy's CI guide](https://alchemy.run/guides/ci/): each pull request gets its own
+  `pr-<n>` stage (with a comment linking it, and the end-to-end smoke test), destroyed when it closes;
+  `main` deploys `prod`.
+- Credentials are code: `cd infra && bun run deploy:bootstrap` (once, with a Cloudflare credential that
+  can create API tokens and a GitHub token with admin on the repo) mints a scoped CI token and writes
+  the repository secrets. Until it has run, deploys skip.
+
 ## License
 
 MIT

@@ -15,7 +15,10 @@
     "clef-review": "bun --bun ./src/clef/review.ts",
     "prepare": "effect-tsgo patch --typescript --oxlint",
     "auth:schema": "bun ./scripts/auth-schema.ts",
-    "dev": "bun --bun alchemy dev alchemy.run.ts --stage ${STAGE:-local}"
+    "dev": "bun --bun alchemy dev alchemy.run.ts --stage ${STAGE:-local}",
+    "plan:bootstrap": "bun --bun alchemy plan bootstrap.run.ts --stage bootstrap",
+    "deploy:bootstrap": "bun --bun alchemy deploy bootstrap.run.ts --stage bootstrap",
+    "destroy:ci": "bun --bun alchemy destroy alchemy.run.ts --stage ${STAGE:?a pr-<n> stage} --yes"
   },
   "dependencies": {
     "@alchemy.run/better-auth": "2.0.0-beta.80",

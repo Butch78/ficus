@@ -1,0 +1,19 @@
+# nix + devenv on a GitHub-hosted runner: every job runs its commands with
+# `devenv shell -- ...`, so CI uses exactly the toolchain a checkout does.
+#
+# Hosted, not self-hosted: the repository is public, and a self-hosted runner
+# would run any fork's pull request on our machine.
+name: devenv
+description: Install nix and devenv, with the nix store cached between runs
+runs:
+  using: composite
+  steps:
+    - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      with:
+        extra_nix_config: |
+          extra-substituters = https://devenv.cachix.org
+          extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw=
+    - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+    - name: Install devenv
+      shell: bash
+      run: nix profile add nixpkgs#devenv && devenv version
