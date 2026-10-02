@@ -5,6 +5,26 @@ A Rust git platform for agents, built on Cloudflare Workers and Artifacts.
 Entry for Cloudflare's [next git platform](https://blog.cloudflare.com/next-git-platform-on-cloudflare)
 challenge (submissions close 2026-10-14).
 
+## The tree
+
+Work grows outward from an accepted commit and never merges back.
+
+- A **bud** is a task: an intent, plus the bud's own **checks** that say when it is done.
+  They never live in the repository, so no attempt can change them.
+- Agents (or people) grow competing **leaves** for a bud, each in its own repository
+  forked from the head. A submitted leaf is frozen and scored in a sandbox: the root's
+  checks (what must not break), then the bud's (what must be done), then the diff's size.
+- **Harvest** turns the cheapest passing leaf into **fruit**, the new head. The oldest
+  ready bud harvests first, so no bud starves.
+- Every other submitted leaf is now **stale**: checked against a head that no longer
+  exists. The tree **transplants** it: replays its commits onto the new head in a fresh
+  leaf and scores it there, with no agent involved. Only a conflict sends the leaf back to
+  its agent to **regrow** from the head, with the **compost** (every earlier attempt, why
+  it lost, how it scored) in hand. A bud regrows a bounded number of times; after that its
+  planter splits it or withers it.
+- A **release** is a pointer at a node. History is linear and every node passed the same
+  checks, so a rollback is the pointer moving back.
+
 ## Develop
 
 Needs [nix](https://nixos.org) + [devenv](https://devenv.sh).

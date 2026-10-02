@@ -37,14 +37,39 @@ pub const DEFAULT_PASS_AT: f64 = 0.5;
 /// included; a diff past this is cut at a line end and marked.
 pub const JUDGE_DIFF_CHARS: usize = 120_000;
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CheckSpec {
     pub name: String,
     /// A bash command, run from the repo root (inside `devenv shell` when the
     /// root has a `devenv.nix`).
     pub run: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+}
+
+/// Whose check it is: the root's `ficus.toml`, or the bud's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckOrigin {
+    #[default]
+    Root,
+    Bud,
+}
+
+/// Checks must be nameable and runnable: unique names, non-empty commands.
+/// An empty list is fine here; the root's parser refuses it separately.
+pub fn validate_checks(checks: &[CheckSpec]) -> Result<(), ChecksError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for check in checks {
+        if !seen.insert(check.name.as_str()) {
+            return Err(ChecksError::DuplicateName(check.name.clone()));
+        }
+        if check.run.trim().is_empty() {
+            return Err(ChecksError::EmptyRun(check.name.clone()));
+        }
+    }
+    Ok(())
 }
 
 impl CheckSpec {
@@ -171,8 +196,9 @@ pub fn clip_diff(diff: &str) -> String {
 }
 
 /// What the tree asks the sandbox: score `head` against `base`, reading the
-/// leaf at `remote` with `token`. Worker-side only: the sandbox keeps the
-/// token in its egress handler and hands the container a [`LeafRef`].
+/// leaf at `remote` with `token`, with the bud's `checks` after the root's.
+/// Worker-side only: the sandbox keeps the token in its egress handler and
+/// hands the container a [`LeafRef`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScoreRequest {
     pub remote: String,
@@ -181,6 +207,8 @@ pub struct ScoreRequest {
     pub head: Oid,
     /// The bud's intent: the `task` the root's judges see.
     pub intent: String,
+    #[serde(default)]
+    pub checks: Vec<CheckSpec>,
 }
 
 impl ScoreRequest {
@@ -189,23 +217,75 @@ impl ScoreRequest {
             remote: self.remote.clone(),
             base: self.base.clone(),
             head: self.head.clone(),
+            checks: self.checks.clone(),
         }
     }
 }
 
-/// What the container is told: a leaf to clone and the two commits to
-/// compare. No credentials: the sandbox's egress handler adds them on the
-/// way out, for this repo only.
+/// What the container is told: a leaf to clone, the two commits to compare
+/// and the bud's checks to run after the root's. No credentials: the
+/// sandbox's egress handler adds them on the way out, for this repo only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeafRef {
     pub remote: String,
     pub base: Oid,
     pub head: Oid,
+    #[serde(default)]
+    pub checks: Vec<CheckSpec>,
+}
+
+/// What the tree asks the sandbox when the head moved past a submitted
+/// leaf: replay `from`'s commits after `from_base` onto `onto_head`, in the
+/// fresh leaf at `onto`, and push them to its `onto_branch`. Worker-side
+/// only, like [`ScoreRequest`]; the container gets a [`TransplantRef`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransplantRequest {
+    pub from: String,
+    pub from_token: String,
+    pub from_base: Oid,
+    pub from_head: Oid,
+    pub onto: String,
+    pub onto_token: String,
+    pub onto_head: Oid,
+    pub onto_branch: String,
+}
+
+impl TransplantRequest {
+    pub fn transplant(&self) -> TransplantRef {
+        TransplantRef {
+            from: self.from.clone(),
+            from_base: self.from_base.clone(),
+            from_head: self.from_head.clone(),
+            onto: self.onto.clone(),
+            onto_head: self.onto_head.clone(),
+            onto_branch: self.onto_branch.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransplantRef {
+    pub from: String,
+    pub from_base: Oid,
+    pub from_head: Oid,
+    pub onto: String,
+    pub onto_head: Oid,
+    pub onto_branch: String,
+}
+
+/// Where the replayed commits landed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransplantReport {
+    pub commit: Oid,
+    /// Commits replayed.
+    pub replayed: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckOutcome {
     pub name: String,
+    #[serde(default)]
+    pub origin: CheckOrigin,
     pub passed: bool,
     pub millis: u64,
     /// The end of the check's combined output, for the agent that regrows;
@@ -222,6 +302,9 @@ pub struct ScoreReport {
     /// Lines added plus lines deleted between base and head, outside
     /// `LOCKED_PATHS`; a binary file counts as one line.
     pub cost: u64,
+    /// Paths changed between base and head, outside `LOCKED_PATHS`.
+    #[serde(default)]
+    pub touched: Vec<String>,
 }
 
 impl ScoreReport {
@@ -316,10 +399,12 @@ mod tests {
             millis: 1,
             tail: String::new(),
             confidence: None,
+            origin: CheckOrigin::Root,
         };
         let report = ScoreReport {
             checks: vec![outcome("a", true), outcome("b", false), outcome("c", true)],
             cost: 12,
+            touched: vec![],
         };
         let score = report.score().unwrap();
         assert_eq!(
@@ -334,7 +419,8 @@ mod tests {
         assert_eq!(
             ScoreReport {
                 checks: vec![],
-                cost: 0
+                cost: 0,
+                touched: vec![]
             }
             .score(),
             Err(TreeError::ImpossibleScore {
@@ -411,6 +497,7 @@ mod tests {
     fn a_report_with_judges_scores_their_mean_confidence() {
         let judged = |name: &str, confidence| CheckOutcome {
             name: name.into(),
+            origin: CheckOrigin::Root,
             passed: true,
             millis: 1,
             tail: String::new(),
@@ -420,6 +507,7 @@ mod tests {
             checks: vec![
                 CheckOutcome {
                     name: "test".into(),
+                    origin: CheckOrigin::Root,
                     passed: true,
                     millis: 1,
                     tail: String::new(),
@@ -429,6 +517,7 @@ mod tests {
                 judged("b", 700),
             ],
             cost: 4,
+            touched: vec![],
         };
         let score = report.score().unwrap();
         assert_eq!((score.checks_total(), score.confidence()), (3, Some(800)));

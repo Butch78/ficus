@@ -8,8 +8,10 @@
 
 use std::time::Duration;
 
-use ficus_core::scoring::{ScoreReport, ScoreRequest};
-use ficus_core::tree::{BudId, Compost, LeafId, Oid, RepoName, Tree, TreeError};
+use ficus_core::scoring::{
+    CheckSpec, ScoreReport, ScoreRequest, TransplantReport, TransplantRequest,
+};
+use ficus_core::tree::{BudId, Compost, LeafId, NodeId, Oid, RepoName, Tree, TreeError};
 use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use worker::{
@@ -28,7 +30,8 @@ const HISTORY_DEPTH: u32 = 1000;
 /// The scorer's read token outlives any scoring run, including a cold devenv.
 const SCORER_TOKEN_TTL_SECS: u32 = 3600;
 /// A leaf whose scoring fails this many times for the scorer's own reasons
-/// is withered rather than retried forever.
+/// is withered rather than retried forever. The same goes for a stale leaf
+/// whose transplant keeps failing for the sandbox's reasons.
 const SCORING_ATTEMPTS: u32 = 5;
 const SCORING_RETRY: Duration = Duration::from_secs(60);
 
@@ -47,9 +50,13 @@ struct PlantBody {
     branch: Option<String>,
 }
 
+/// `intent` says what the bud is for; `checks` say when it is done, on top
+/// of the root's. They run in the scorer, never from the repo.
 #[derive(Deserialize)]
 struct BudBody {
     intent: String,
+    #[serde(default)]
+    checks: Vec<CheckSpec>,
 }
 
 #[derive(Deserialize)]
@@ -62,12 +69,19 @@ struct WitherBody {
     note: String,
 }
 
+/// `node` defaults to the head.
+#[derive(Deserialize)]
+struct ReleaseBody {
+    node: Option<NodeId>,
+}
+
 /// Everything an agent needs to start growing a leaf.
 #[derive(Serialize)]
 struct Growing {
     leaf: LeafId,
     bud: BudId,
     intent: String,
+    checks: Vec<CheckSpec>,
     agent: String,
     repo: String,
     remote: String,
@@ -81,7 +95,10 @@ impl DurableObject for TreeObject {
         Self { state, env }
     }
 
+    /// Transplants first: they turn stale leaves into ripening ones, which
+    /// the scoring that follows picks up in the same alarm.
     async fn alarm(&self) -> Result<Response> {
+        self.transplant_stale().await?;
         self.score_ripening().await
     }
 
@@ -104,6 +121,9 @@ impl DurableObject for TreeObject {
         };
         match (req.method(), route) {
             (Method::Get, []) => self.show().await,
+            (Method::Get, ["stale"]) => self.show_stale().await,
+            (Method::Get, ["release"]) => self.show_release().await,
+            (Method::Post, ["release"]) => self.release(req.json().await?).await,
             (Method::Get, ["leaves", leaf]) => match leaf.parse() {
                 Ok(leaf) => self.show_leaf(leaf).await,
                 Err(_) => Response::error("leaf id must be a number", 400),
@@ -114,8 +134,9 @@ impl DurableObject for TreeObject {
                 Ok(bud) => self.sprout(bud, req.json().await?).await,
                 Err(_) => Response::error("bud id must be a number", 400),
             },
+            (Method::Post, ["harvest"]) => self.harvest(None).await,
             (Method::Post, ["buds", bud, "harvest"]) => match bud.parse() {
-                Ok(bud) => self.harvest(bud).await,
+                Ok(bud) => self.harvest(Some(bud)).await,
                 Err(_) => Response::error("bud id must be a number", 400),
             },
             (Method::Post, ["leaves", leaf, action]) => match leaf.parse() {
@@ -155,6 +176,11 @@ impl TreeObject {
                     .commit
                     .clone(),
                 head: head.clone(),
+                checks: tree
+                    .bud(leaf.bud)
+                    .expect("a leaf's bud is in its tree")
+                    .checks
+                    .clone(),
             })
             .collect();
         if pending.is_empty() {
@@ -179,7 +205,10 @@ impl TreeObject {
                         )
                         .await?;
                     match report.score() {
-                        Ok(score) => settle(job.leaf, tree.ripen(job.leaf, score)),
+                        Ok(score) => settle(
+                            job.leaf,
+                            tree.ripen(job.leaf, score, report.touched.clone()),
+                        ),
                         Err(error) => settle(
                             job.leaf,
                             tree.wither(job.leaf, format!("unscorable report: {error}")),
@@ -243,8 +272,9 @@ impl TreeObject {
             base: job.base.clone(),
             head: job.head.clone(),
             intent: job.intent.clone(),
+            checks: job.checks.clone(),
         };
-        let scored = self.ask_scorer(&job.repo, &request).await;
+        let scored = self.ask_sandbox(&job.repo, "score", &request).await;
         if let Err(error) = repo.revoke_token(&token.id).await {
             worker::console_error!(
                 "revoking the scorer's token on {}: {error}",
@@ -254,7 +284,164 @@ impl TreeObject {
         scored
     }
 
-    async fn ask_scorer(&self, repo: &RepoName, request: &ScoreRequest) -> Scored {
+    /// Replay every stale submitted leaf onto the head, in parallel, one
+    /// sandbox per leaf. A leaf that applies cleanly ripens on the head
+    /// without its agent; one that conflicts is left for its agent to
+    /// regrow, with the conflict in the compost.
+    async fn transplant_stale(&self) -> Result<()> {
+        let Some(mut tree) = self.load().await? else {
+            return Ok(());
+        };
+        let stale: Vec<LeafId> = tree.transplantable().map(|leaf| leaf.id).collect();
+        if stale.is_empty() {
+            return Ok(());
+        }
+        let mut jobs = Vec::with_capacity(stale.len());
+        for leaf in stale {
+            match tree.transplant_start(leaf) {
+                Ok((fresh, commit)) => {
+                    let old = tree.leaf(leaf).expect("transplant_start found it");
+                    jobs.push(Transplant {
+                        stale: leaf,
+                        fresh,
+                        from_repo: old.repo.clone(),
+                        from_base: tree
+                            .node(old.base)
+                            .expect("a leaf's base is a node of its tree")
+                            .commit
+                            .clone(),
+                        from_head: commit,
+                        onto_head: tree.head().commit.clone(),
+                    });
+                }
+                Err(error) => worker::console_error!("starting transplant of leaf {leaf}: {error}"),
+            }
+        }
+        self.save(&tree).await?;
+
+        let outcomes = join_all(jobs.iter().map(|job| self.transplant_one(&tree, job))).await;
+
+        // Transplants awaited; other requests may have changed the tree since.
+        let Some(mut tree) = self.load().await? else {
+            return Ok(());
+        };
+        let mut retry = false;
+        for (job, outcome) in jobs.iter().zip(outcomes) {
+            let attempts_key = format!("transplant-attempts:{}", job.stale);
+            match outcome {
+                Transplanted::Report(report) => {
+                    settle(job.fresh, tree.transplant_done(job.fresh, report.commit));
+                    self.state.storage().delete(&attempts_key).await?;
+                }
+                Transplanted::Conflict(reason) => {
+                    // The agent's turn: the stale leaf stays, pointing at
+                    // the withered transplant, and the alarm leaves it be.
+                    settle(
+                        job.fresh,
+                        tree.transplant_failed(job.fresh, format!("transplant: {reason}")),
+                    );
+                    self.state.storage().delete(&attempts_key).await?;
+                }
+                Transplanted::Failed(reason) => {
+                    let attempts = self
+                        .state
+                        .storage()
+                        .get::<u32>(&attempts_key)
+                        .await?
+                        .unwrap_or(0)
+                        + 1;
+                    let note = format!("transplant attempt {attempts} failed: {reason}");
+                    if attempts >= SCORING_ATTEMPTS {
+                        settle(job.fresh, tree.transplant_failed(job.fresh, note));
+                        self.state.storage().delete(&attempts_key).await?;
+                    } else {
+                        settle(job.fresh, tree.transplant_retry(job.fresh, note));
+                        self.state.storage().put(&attempts_key, attempts).await?;
+                        retry = true;
+                    }
+                }
+            }
+        }
+        self.save(&tree).await?;
+        if retry {
+            self.state.storage().set_alarm(SCORING_RETRY).await?;
+        }
+        Ok(())
+    }
+
+    /// Fork the head's repo for the fresh leaf, lend the sandbox a read
+    /// token on the stale one, replay, then revoke both.
+    async fn transplant_one(&self, tree: &Tree, job: &Transplant) -> Transplanted {
+        let fresh = tree.leaf(job.fresh).expect("transplant_start created it");
+        let artifacts = match self.artifacts() {
+            Ok(artifacts) => artifacts,
+            Err(error) => return Transplanted::Failed(error.to_string()),
+        };
+        let forked = match artifacts.repo(&tree.head().repo).await {
+            Ok(head_repo) => head_repo.fork(&fresh.repo, "ficus transplant").await,
+            Err(error) => Err(error),
+        };
+        let onto = match forked {
+            Ok(created) => created,
+            Err(error) => return Transplanted::Failed(format!("fork: {error}")),
+        };
+        let from_repo = match artifacts.repo(&job.from_repo).await {
+            Ok(repo) => repo,
+            Err(error) => return Transplanted::Failed(error.to_string()),
+        };
+        let (from_info, from_token) = match (
+            from_repo.info().await,
+            from_repo
+                .create_token(Scope::Read, SCORER_TOKEN_TTL_SECS)
+                .await,
+        ) {
+            (Ok(info), Ok(token)) => (info, token),
+            (Err(error), _) | (_, Err(error)) => return Transplanted::Failed(error.to_string()),
+        };
+        let request = TransplantRequest {
+            from: from_info.remote,
+            from_token: from_token.plaintext,
+            from_base: job.from_base.clone(),
+            from_head: job.from_head.clone(),
+            onto: onto.remote,
+            onto_token: onto.token,
+            onto_head: job.onto_head.clone(),
+            onto_branch: onto.default_branch,
+        };
+        let outcome = match self.ask_sandbox(&fresh.repo, "transplant", &request).await {
+            Scored::Report(report) => Transplanted::Report(report),
+            Scored::Unscorable(reason) => Transplanted::Conflict(reason),
+            Scored::Failed(reason) => Transplanted::Failed(reason),
+        };
+        if let Err(error) = from_repo.revoke_token(&from_token.id).await {
+            worker::console_error!(
+                "revoking the transplant's token on {}: {error}",
+                job.from_repo.as_str()
+            );
+        }
+        // The fresh leaf is frozen from the start: nobody pushes to it.
+        match artifacts.repo(&fresh.repo).await {
+            Ok(repo) => {
+                if let Err(error) = repo.revoke_active_tokens().await {
+                    worker::console_error!(
+                        "revoking the fresh leaf's tokens on {}: {error}",
+                        fresh.repo.as_str()
+                    );
+                }
+            }
+            Err(error) => worker::console_error!("reaching {}: {error}", fresh.repo.as_str()),
+        }
+        outcome
+    }
+
+    /// Ask the sandbox named after `repo` for `action`; 422 means the input
+    /// is at fault and retrying will not help.
+    async fn ask_sandbox<Req: Serialize, Rep: for<'de> Deserialize<'de>>(
+        &self,
+        repo: &RepoName,
+        action: &str,
+        request: &Req,
+    ) -> Scored<Rep> {
         let attempt = async {
             let stub = self
                 .env
@@ -268,21 +455,61 @@ impl TreeObject {
                 .with_headers(headers)
                 .with_body(Some(serde_json::to_string(request)?.into()));
             let mut response = stub
-                .fetch_with_request(Request::new_with_init("http://scorer/score", &init)?)
+                .fetch_with_request(Request::new_with_init(
+                    &format!("http://sandbox/{action}"),
+                    &init,
+                )?)
                 .await?;
             Ok::<_, worker::Error>((response.status_code(), response.text().await?))
         };
         match attempt.await {
-            Ok((200, body)) => match serde_json::from_str::<ScoreReport>(&body) {
+            Ok((200, body)) => match serde_json::from_str::<Rep>(&body) {
                 Ok(report) => Scored::Report(report),
                 Err(error) => Scored::Failed(format!(
-                    "scorer answered with an unreadable report: {error}"
+                    "sandbox answered {action} with an unreadable report: {error}"
                 )),
             },
             Ok((422, reason)) => Scored::Unscorable(reason),
-            Ok((status, body)) => Scored::Failed(format!("scorer answered {status}: {body}")),
+            Ok((status, body)) => Scored::Failed(format!("sandbox answered {status}: {body}")),
             Err(error) => Scored::Failed(error.to_string()),
         }
+    }
+
+    async fn show_stale(&self) -> Result<Response> {
+        let Some(tree) = self.load().await? else {
+            return Response::error("no such tree", 404);
+        };
+        Response::from_json(&tree.stale().collect::<Vec<_>>())
+    }
+
+    async fn show_release(&self) -> Result<Response> {
+        let Some(tree) = self.load().await? else {
+            return Response::error("no such tree", 404);
+        };
+        Response::from_json(&serde_json::json!({
+            "released": tree.released(),
+            "head": tree.head(),
+        }))
+    }
+
+    /// Point the release at a node (the head by default). A deployment
+    /// follows the pointer; moving it back is a rollback.
+    async fn release(&self, body: ReleaseBody) -> Result<Response> {
+        let Some(mut tree) = self.load().await? else {
+            return Response::error("no such tree", 404);
+        };
+        let node = body.node.unwrap_or(tree.head().id);
+        let release = match tree.release(node) {
+            Ok(release) => release,
+            Err(error) => return tree_error(&error),
+        };
+        self.save(&tree).await?;
+        let released = tree.released().expect("just released");
+        Response::from_json(&serde_json::json!({
+            "release": release,
+            "commit": released.commit.as_str(),
+            "repo": released.repo.as_str(),
+        }))
     }
 
     async fn show_leaf(&self, leaf: LeafId) -> Result<Response> {
@@ -414,7 +641,7 @@ impl TreeObject {
         let Some(mut tree) = self.load().await? else {
             return Response::error("no such tree", 404);
         };
-        match tree.bud_new(body.intent) {
+        match tree.bud_new(body.intent, body.checks) {
             Ok(bud) => {
                 self.save(&tree).await?;
                 Response::from_json(&serde_json::json!({ "bud": bud }))
@@ -443,11 +670,8 @@ impl TreeObject {
         let base = tree
             .node(entry.base)
             .expect("a leaf's base is a node of its tree");
-        let intent = tree
-            .bud(entry.bud)
-            .expect("a leaf's bud is in its tree")
-            .intent
-            .clone();
+        let bud = tree.bud(entry.bud).expect("a leaf's bud is in its tree");
+        let (intent, checks) = (bud.intent.clone(), bud.checks.clone());
         let artifacts = self.artifacts()?;
         let forked = match artifacts.repo(&base.repo).await {
             Ok(base_repo) => base_repo.fork(&entry.repo, &intent).await,
@@ -458,6 +682,7 @@ impl TreeObject {
                 leaf,
                 bud: entry.bud,
                 intent,
+                checks,
                 agent: entry.agent.clone(),
                 repo: created.name,
                 remote: created.remote,
@@ -535,24 +760,38 @@ impl TreeObject {
         Ok(response)
     }
 
-    async fn harvest(&self, bud: BudId) -> Result<Response> {
+    /// Harvest `bud`, or with `None` the oldest bud that is ready. The head
+    /// moves, so every other submitted leaf is stale: the alarm set here
+    /// transplants them onto the new head.
+    async fn harvest(&self, bud: Option<BudId>) -> Result<Response> {
         let Some(mut tree) = self.load().await? else {
             return Response::error("no such tree", 404);
         };
-        let harvest = match tree.harvest(bud) {
+        let harvested = match bud {
+            Some(bud) => tree.harvest(bud),
+            None => tree.harvest_next(),
+        };
+        let harvest = match harvested {
             Ok(harvest) => harvest,
             Err(error) => return tree_error(&error),
         };
         self.save(&tree).await?;
+        if !harvest.stale.is_empty() {
+            self.state.storage().set_alarm(Duration::ZERO).await?;
+        }
         let revoke_failures = self.revoke_all(&tree, &harvest.pruned).await?;
         let head = tree.head();
+        let fruit = tree
+            .leaf(harvest.fruit)
+            .expect("the fruit is a leaf of this tree");
         Response::from_json(&serde_json::json!({
+            "bud": fruit.bud,
             "node": harvest.node,
             "fruit": harvest.fruit,
             "commit": head.commit.as_str(),
             "repo": head.repo.as_str(),
             "pruned": harvest.pruned,
-            "stale": harvest.stale,
+            "stale": tree.stale().collect::<Vec<_>>(),
             "revoke_failures": revoke_failures,
         }))
     }
@@ -632,14 +871,32 @@ struct Pending {
     intent: String,
     base: Oid,
     head: Oid,
+    checks: Vec<CheckSpec>,
 }
 
-enum Scored {
-    Report(ScoreReport),
-    /// The scorer says the leaf or root cannot be scored (no ficus.toml,
-    /// head not descending from base): retrying will not help.
+/// A stale leaf being replayed onto the head in a fresh one.
+struct Transplant {
+    stale: LeafId,
+    fresh: LeafId,
+    from_repo: RepoName,
+    from_base: Oid,
+    from_head: Oid,
+    onto_head: Oid,
+}
+
+enum Scored<Report = ScoreReport> {
+    Report(Report),
+    /// The sandbox says the input cannot be handled (no ficus.toml, head
+    /// not descending from base, a conflict): retrying will not help.
     Unscorable(String),
-    /// The scorer or the path to it failed: worth another attempt.
+    /// The sandbox or the path to it failed: worth another attempt.
+    Failed(String),
+}
+
+enum Transplanted {
+    Report(TransplantReport),
+    /// The commits do not apply on the head: the agent's turn.
+    Conflict(String),
     Failed(String),
 }
 
@@ -671,14 +928,20 @@ fn tree_error(error: &TreeError) -> Result<Response> {
         TreeError::MalformedOid(_)
         | TreeError::MalformedRepoName(_)
         | TreeError::ImpossibleScore { .. }
-        | TreeError::EmptyIntent => 400,
-        TreeError::UnknownBud(_) | TreeError::UnknownLeaf(_) => 404,
+        | TreeError::EmptyIntent
+        | TreeError::BudChecks(_) => 400,
+        TreeError::UnknownBud(_) | TreeError::UnknownLeaf(_) | TreeError::UnknownNode(_) => 404,
         TreeError::BudFruited(_)
         | TreeError::NotGrowing(_)
         | TreeError::NotRipening(_)
         | TreeError::NotLive(_)
         | TreeError::NotStale(_)
-        | TreeError::NothingToHarvest(_) => 409,
+        | TreeError::NothingToTransplant(_)
+        | TreeError::Transplanting(_, _)
+        | TreeError::NotTransplant(_)
+        | TreeError::NothingToHarvest(_)
+        | TreeError::NothingRipe
+        | TreeError::BudExhausted(_, _) => 409,
         TreeError::Full => 507,
     };
     Response::error(error.to_string(), status)
