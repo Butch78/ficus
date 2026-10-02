@@ -1,22 +1,22 @@
-//! How a leaf is scored: the root's `ficus.toml`, the request the Worker
+//! How a attempt is scored: the root's `ficus.toml`, the request the Worker
 //! sends the scorer, and the report that comes back.
 //!
-//! The checks always come from the leaf's **base** commit, never from the
-//! leaf: an agent that edits `ficus.toml` or the devenv files has edited
+//! The checks always come from the attempt's **base** commit, never from the
+//! attempt: an agent that edits `ficus.toml` or the devenv files has edited
 //! files the scorer puts back before it runs anything (`LOCKED_PATHS`).
 //!
 //! A root has two kinds of check. A `[[check]]` is a command, run by the
 //! scorer in the container. A `[[judge]]` is a yes/no question about the
 //! diff, asked of Clef (Cloudflare's decision model) by the sandbox once the
 //! container is gone: "yes" passes when Clef gives it at least `pass_at`.
-//! Both count the same towards a leaf's score.
+//! Both count the same towards a attempt's score.
 
 use serde::{Deserialize, Serialize};
 
 use crate::tree::{Oid, Score, TreeError};
 
 /// Files the root owns. The scorer restores each from the base commit (or
-/// deletes it if the base has none) before running a check, and leaves them
+/// deletes it if the base has none) before running a check, and attempts them
 /// out of the cost.
 pub const LOCKED_PATHS: &[&str] = &[
     "ficus.toml",
@@ -48,13 +48,14 @@ pub struct CheckSpec {
     pub timeout_secs: Option<u64>,
 }
 
-/// Whose check it is: the root's `ficus.toml`, or the bud's own.
+/// Whose check it is: the root's `ficus.toml`, or the task's own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CheckOrigin {
     #[default]
     Root,
-    Bud,
+    #[serde(alias = "bud")]
+    Task,
 }
 
 /// Checks must be nameable and runnable: unique names, non-empty commands.
@@ -78,8 +79,8 @@ impl CheckSpec {
     }
 }
 
-/// A yes/no question Clef answers about a leaf, seeing `{ task, diff }`:
-/// the bud's intent and the leaf's diff from its base.
+/// A yes/no question Clef answers about a attempt, seeing `{ task, diff }`:
+/// the task's intent and the attempt's diff from its base.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JudgeSpec {
@@ -196,24 +197,24 @@ pub fn clip_diff(diff: &str) -> String {
 }
 
 /// What the tree asks the sandbox: score `head` against `base`, reading the
-/// leaf at `remote` with `token`, with the bud's `checks` after the root's.
+/// attempt at `remote` with `token`, with the task's `checks` after the root's.
 /// Worker-side only: the sandbox keeps the token in its egress handler and
-/// hands the container a [`LeafRef`].
+/// hands the container a [`AttemptRef`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScoreRequest {
     pub remote: String,
     pub token: String,
     pub base: Oid,
     pub head: Oid,
-    /// The bud's intent: the `task` the root's judges see.
+    /// The task's intent: the `task` the root's judges see.
     pub intent: String,
     #[serde(default)]
     pub checks: Vec<CheckSpec>,
 }
 
 impl ScoreRequest {
-    pub fn leaf(&self) -> LeafRef {
-        LeafRef {
+    pub fn attempt(&self) -> AttemptRef {
+        AttemptRef {
             remote: self.remote.clone(),
             base: self.base.clone(),
             head: self.head.clone(),
@@ -222,11 +223,11 @@ impl ScoreRequest {
     }
 }
 
-/// What the container is told: a leaf to clone, the two commits to compare
-/// and the bud's checks to run after the root's. No credentials: the
+/// What the container is told: a attempt to clone, the two commits to compare
+/// and the task's checks to run after the root's. No credentials: the
 /// sandbox's egress handler adds them on the way out, for this repo only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LeafRef {
+pub struct AttemptRef {
     pub remote: String,
     pub base: Oid,
     pub head: Oid,
@@ -235,11 +236,11 @@ pub struct LeafRef {
 }
 
 /// What the tree asks the sandbox when the head moved past a submitted
-/// leaf: replay `from`'s commits after `from_base` onto `onto_head`, in the
-/// fresh leaf at `onto`, and push them to its `onto_branch`. Worker-side
-/// only, like [`ScoreRequest`]; the container gets a [`TransplantRef`].
+/// attempt: replay `from`'s commits after `from_base` onto `onto_head`, in the
+/// fresh attempt at `onto`, and push them to its `onto_branch`. Worker-side
+/// only, like [`ScoreRequest`]; the container gets a [`RebaseRef`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TransplantRequest {
+pub struct RebaseRequest {
     pub from: String,
     pub from_token: String,
     pub from_base: Oid,
@@ -250,9 +251,9 @@ pub struct TransplantRequest {
     pub onto_branch: String,
 }
 
-impl TransplantRequest {
-    pub fn transplant(&self) -> TransplantRef {
-        TransplantRef {
+impl RebaseRequest {
+    pub fn rebase(&self) -> RebaseRef {
+        RebaseRef {
             from: self.from.clone(),
             from_base: self.from_base.clone(),
             from_head: self.from_head.clone(),
@@ -264,7 +265,7 @@ impl TransplantRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TransplantRef {
+pub struct RebaseRef {
     pub from: String,
     pub from_base: Oid,
     pub from_head: Oid,
@@ -275,7 +276,7 @@ pub struct TransplantRef {
 
 /// Where the replayed commits landed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TransplantReport {
+pub struct RebaseReport {
     pub commit: Oid,
     /// Commits replayed.
     pub replayed: u32,
@@ -288,7 +289,7 @@ pub struct CheckOutcome {
     pub origin: CheckOrigin,
     pub passed: bool,
     pub millis: u64,
-    /// The end of the check's combined output, for the agent that regrows;
+    /// The end of the check's combined output, for the agent that retrys;
     /// for a judge, Clef's answer.
     pub tail: String,
     /// A judge's probability of yes, in thousandths. `None` for a command.
@@ -333,7 +334,7 @@ impl ScoreReport {
 pub struct CheckRun {
     pub report: ScoreReport,
     pub judges: Vec<JudgeSpec>,
-    /// The leaf's diff from its base outside `LOCKED_PATHS`, clipped to
+    /// The attempt's diff from its base outside `LOCKED_PATHS`, clipped to
     /// [`JUDGE_DIFF_CHARS`]; empty when the root has no judges.
     pub diff: String,
 }

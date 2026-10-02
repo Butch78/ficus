@@ -1,9 +1,9 @@
 /**
- * `AgentActor`: one Durable Object per leaf, running one pi agent that grows
- * that leaf. The tree is the only thing that talks to it.
+ * `AgentActor`: one Durable Object per attempt, running one pi agent that grows
+ * that attempt. The tree is the only thing that talks to it.
  *
  * - `POST /grow` (from `TreeObject`): the assignment. The actor clones the
- *   leaf into its container, then hands pi the bud's intent and the compost of
+ *   attempt into its container, then hands pi the task's intent and the history of
  *   earlier attempts. pi's run is durable from there: every model turn and
  *   tool call is checkpointed in this object's SQLite, so an eviction resumes
  *   the run rather than losing it.
@@ -12,7 +12,7 @@
  *
  * The agent works in a container (`ScorerContainer`, the same image the
  * scorer uses: nix, devenv, git), through pi's read/write/edit/bash tools, so
- * it can run the root's own checks before it submits. A leaf grows in two
+ * it can run the root's own checks before it submits. A attempt grows in two
  * phases, one pi conversation throughout, each phase with its own model, tools
  * and rules (pi's per-conversation agent state):
  *
@@ -20,7 +20,7 @@
  *   tools, and hands over a plan with `plan_change`.
  * - `change`: a second model takes over the same conversation, so it sees
  *   everything the scout read, makes the change, and submits it with
- *   `submit_leaf`, which freezes the leaf and queues it for scoring.
+ *   `submit`, which freezes the attempt and queues it for scoring.
  *
  * Clef judges both handovers (`gates.ts`): it can turn back a vague or
  * off-task plan, and a diff that misses the task or weakens a test. With the
@@ -53,8 +53,8 @@ import { Clef } from "../clef/clef.ts";
 import { clip, describe, DIFF, effort, MAX_REJECTIONS, objections, type Objection, PLAN } from "./gates.ts";
 import { ContainerEnv, type SandboxStub } from "./sandbox-env.ts";
 
-/** Where the leaf is checked out inside the agent's container. */
-const LEAF_DIR = "/work/leaf";
+/** Where the attempt is checked out inside the agent's container. */
+const ATTEMPT_DIR = "/work/attempt";
 
 /** The model that makes the change when the assignment names none. */
 export const DEFAULT_MODEL = "@cf/moonshotai/kimi-k2.7-code";
@@ -63,26 +63,26 @@ export const DEFAULT_MODEL = "@cf/moonshotai/kimi-k2.7-code";
 export const DEFAULT_SCOUT_MODEL = "@cf/zai-org/glm-5.3-flash";
 
 const CompostEntry = Schema.Struct({
-  leaf: Schema.Number,
+  attempt: Schema.Number,
   agent: Schema.String,
   reason: Schema.Json,
   score: Schema.NullOr(Schema.Json),
 });
 
-/** A bud's own check: what done means, on top of the root's `ficus.toml`. */
-const BudCheck = Schema.Struct({
+/** A task's own check: what done means, on top of the root's `ficus.toml`. */
+const TaskCheck = Schema.Struct({
   name: Schema.String,
   run: Schema.String,
   timeout_secs: Schema.optional(Schema.Number),
 });
 
-/** What `TreeObject` sends when it starts this leaf. */
+/** What `TreeObject` sends when it starts this attempt. */
 export const Assignment = Schema.Struct({
   tree: Schema.String,
-  leaf: Schema.Number,
-  bud: Schema.Number,
+  attempt: Schema.Number,
+  task: Schema.Number,
   intent: Schema.String,
-  checks: Schema.optional(Schema.Array(BudCheck)),
+  checks: Schema.optional(Schema.Array(TaskCheck)),
   agent: Schema.String,
   /** Makes the change. */
   model: Schema.optional(Schema.String),
@@ -91,7 +91,7 @@ export const Assignment = Schema.Struct({
   remote: Schema.String,
   token: Schema.String,
   base_commit: Schema.String,
-  compost: Schema.Array(CompostEntry),
+  history: Schema.Array(CompostEntry),
 });
 
 export interface Assignment extends Schema.Schema.Type<typeof Assignment> {}
@@ -117,7 +117,7 @@ export class GrowRejected extends Schema.TaggedError<GrowRejected>()("Agent.Grow
   message: Schema.String,
 }) {}
 
-/** A tool ran in an actor that was never assigned a leaf. */
+/** A tool ran in an actor that was never assigned a attempt. */
 export class NoAssignment extends Schema.TaggedError<NoAssignment>()("Agent.NoAssignment", {
   message: Schema.String,
 }) {}
@@ -148,7 +148,7 @@ const attempt = <A, E>(run: () => Promise<A>, onFail: (cause: unknown) => E): Ef
 
 /**
  * A gate's answers, or `undefined` when Clef cannot give them. The gates are
- * advice ahead of the root's checks, which still run on every leaf, so a
+ * advice ahead of the root's checks, which still run on every attempt, so a
  * Clef outage lets the agent through rather than stalling it.
  */
 const advice = <Input extends Schema.Constraint, Decisions extends Record<string, Decision.Any>>(
@@ -170,21 +170,21 @@ const remaining = (doubts: ReadonlyArray<Objection>): string =>
 
 /** The task an agent starts from, the same in both phases. Each phase's rules are its pi instructions. */
 export const prompt = (assignment: Assignment): string => {
-  const compost =
-    assignment.compost.length === 0
-      ? "No earlier attempts at this bud."
-      : assignment.compost
-          .map((entry) => `- leaf ${entry.leaf} by ${entry.agent}: ${JSON.stringify(entry.reason)}; score ${JSON.stringify(entry.score)}`)
+  const history =
+    assignment.history.length === 0
+      ? "No earlier attempts at this task."
+      : assignment.history
+          .map((entry) => `- attempt ${entry.attempt} by ${entry.agent}: ${JSON.stringify(entry.reason)}; score ${JSON.stringify(entry.score)}`)
           .join("\n");
 
-  const budChecks = assignment.checks ?? [];
+  const taskChecks = assignment.checks ?? [];
 
   const done =
-    budChecks.length === 0
+    taskChecks.length === 0
       ? "The task has no checks of its own: the root's checks decide."
       : [
           "The task is done when each of these passes, run from the repository root (they are not in the repository and you cannot change them):",
-          ...budChecks.map((check) => `- ${check.name}: \`${check.run}\``),
+          ...taskChecks.map((check) => `- ${check.name}: \`${check.run}\``),
         ].join("\n");
 
   return [
@@ -194,12 +194,12 @@ export const prompt = (assignment: Assignment): string => {
     "",
     done,
     "",
-    `Your checkout is ${LEAF_DIR} (git, on main, already configured to push). It starts at commit ${assignment.base_commit}.`,
+    `Your checkout is ${ATTEMPT_DIR} (git, on main, already configured to push). It starts at commit ${assignment.base_commit}.`,
     "",
     "The repository's `ficus.toml` lists the checks the change must not break; the task's own checks above say when it is done. If the repository has a `devenv.nix`, run checks as `devenv shell -- <command>` (the first run builds the environment and can take a few minutes). The checks cannot be changed: `ficus.toml` and the devenv files are restored from the base before scoring.",
     "",
-    "Earlier attempts at this task (the compost):",
-    compost,
+    "Earlier attempts at this task (the history):",
+    history,
   ].join("\n");
 };
 
@@ -208,7 +208,7 @@ type Phase = "scout" | "change";
 /** The tools each phase is offered, by name; pi drops the rest. */
 const PHASE_TOOLS: Readonly<Record<Phase, ReadonlySet<string>>> = {
   scout: new Set(["read", "bash", "plan_change"]),
-  change: new Set(["read", "write", "edit", "bash", "submit_leaf"]),
+  change: new Set(["read", "write", "edit", "bash", "submit"]),
 };
 
 const SCOUT_RULES = [
@@ -225,7 +225,7 @@ const changeRules = (plan: string): string =>
     "The scout has read the code; its plan is below. Follow it unless the code says otherwise.",
     "- Keep the change as small as the task allows. Do not reformat or touch unrelated code.",
     "- Run every check in `ficus.toml` yourself.",
-    "- When the checks pass, commit, `git push origin HEAD:main`, then call the `submit_leaf` tool. Submitting freezes your leaf; you cannot push after it.",
+    "- When the checks pass, commit, `git push origin HEAD:main`, then call the `submit` tool. Submitting freezes your attempt; you cannot push after it.",
     "- If you cannot complete the task, say why instead of submitting.",
     "",
     "The scout's plan:",
@@ -235,10 +235,10 @@ const changeRules = (plan: string): string =>
 export class AgentActor extends DurableObject<Bindings> {
   readonly #ai = createAI({ binding: this.env.AI });
 
-  /** The leaf's container: one `ScorerContainer` instance per agent. */
+  /** The attempt's container: one `ScorerContainer` instance per agent. */
   readonly #sandbox: SandboxStub = this.env.SCORER.get(this.env.SCORER.idFromName(`agent:${this.ctx.id.name ?? this.ctx.id.toString()}`));
 
-  readonly #workspace = new ContainerEnv(this.#sandbox, `agent:${this.ctx.id.toString()}`, LEAF_DIR);
+  readonly #workspace = new ContainerEnv(this.#sandbox, `agent:${this.ctx.id.toString()}`, ATTEMPT_DIR);
 
   readonly #ficus = defineExtension({ name: "ficus", tools: [this.#planTool(), this.#submitTool()] });
 
@@ -281,7 +281,7 @@ export class AgentActor extends DurableObject<Bindings> {
     if (request.method === "POST" && url.pathname === "/grow") {
       return Effect.runPromise(
         this.#grow(request).pipe(
-          Effect.map(() => Response.json({ state: "growing" }, { status: 202 })),
+          Effect.map(() => Response.json({ state: "working" }, { status: 202 })),
           Effect.catchTag("Agent.GrowRejected", (error) => Effect.succeed(Response.json({ error: error.message }, { status: error.status }))),
         ),
       );
@@ -338,19 +338,19 @@ export class AgentActor extends DurableObject<Bindings> {
     const session = this.harness.session();
 
     yield* attempt(
-      () => session.submit([{ type: "text", text: prompt(assignment) }], { operationId: `grow-${assignment.leaf}` }),
+      () => session.submit([{ type: "text", text: prompt(assignment) }], { operationId: `grow-${assignment.attempt}` }),
       failed("starting the run"),
     );
   });
 
-  /** Clone the leaf into the container and set the identity it commits as. */
+  /** Clone the attempt into the container and set the identity it commits as. */
   readonly #prepare = Effect.fn("Agent.prepare")(function* (this: AgentActor, assignment: Assignment) {
     const auth = `Authorization: Bearer ${assignment.token}`;
 
     const script = [
-      `rm -rf ${LEAF_DIR} && mkdir -p /work`,
-      `git -c http.extraHeader='${auth}' clone --quiet '${assignment.remote}' ${LEAF_DIR}`,
-      `cd ${LEAF_DIR}`,
+      `rm -rf ${ATTEMPT_DIR} && mkdir -p /work`,
+      `git -c http.extraHeader='${auth}' clone --quiet '${assignment.remote}' ${ATTEMPT_DIR}`,
+      `cd ${ATTEMPT_DIR}`,
       `git config http.extraHeader '${auth}'`,
       `git config user.name '${assignment.agent}'`,
       `git config user.email '${assignment.agent}@agents.ficus.dev'`,
@@ -358,15 +358,15 @@ export class AgentActor extends DurableObject<Bindings> {
 
     const ran = yield* attempt(
       () => this.#workspace.exec(script, { cwd: "/", timeout: 300_000 }, BACKGROUND),
-      (cause) => new GrowRejected({ status: 502, message: `preparing the leaf: ${String(cause)}` }),
+      (cause) => new GrowRejected({ status: 502, message: `preparing the attempt: ${String(cause)}` }),
     );
 
     if (!ran.ok) {
-      return yield* new GrowRejected({ status: 502, message: `preparing the leaf: ${ran.error.message}` });
+      return yield* new GrowRejected({ status: 502, message: `preparing the attempt: ${ran.error.message}` });
     }
 
     if (ran.value.exitCode !== 0) {
-      return yield* new GrowRejected({ status: 502, message: `preparing the leaf: exit ${ran.value.exitCode}` });
+      return yield* new GrowRejected({ status: 502, message: `preparing the attempt: exit ${ran.value.exitCode}` });
     }
   });
 
@@ -450,7 +450,7 @@ export class AgentActor extends DurableObject<Bindings> {
     return true;
   });
 
-  /** The leaf's committed change, base to HEAD, without the root's locked files. */
+  /** The attempt's committed change, base to HEAD, without the root's locked files. */
   readonly #diff = Effect.fn("Agent.diff")(function* (this: AgentActor, assignment: Assignment) {
     const excludes = LOCKED_PATHS.map((path) => `':(exclude)${path}'`).join(" ");
     let output = "";
@@ -459,20 +459,20 @@ export class AgentActor extends DurableObject<Bindings> {
       () =>
         this.#workspace.exec(
           `git diff --no-color ${assignment.base_commit} HEAD -- . ${excludes}`,
-          { cwd: LEAF_DIR, timeout: 60_000, onOutput: (text) => (output += text) },
+          { cwd: ATTEMPT_DIR, timeout: 60_000, onOutput: (text) => (output += text) },
           BACKGROUND,
         ),
-      (cause) => new GateFailed({ message: `diffing the leaf: ${String(cause)}` }),
+      (cause) => new GateFailed({ message: `diffing the attempt: ${String(cause)}` }),
     );
 
     if (!ran.ok || ran.value.exitCode !== 0) {
-      return yield* new GateFailed({ message: `diffing the leaf: ${ran.ok ? `exit ${ran.value.exitCode}` : ran.error.message}` });
+      return yield* new GateFailed({ message: `diffing the attempt: ${ran.ok ? `exit ${ran.value.exitCode}` : ran.error.message}` });
     }
 
     return output;
   });
 
-  /** Freeze this leaf and queue it for the root's checks, via its tree, once Clef has seen the diff. */
+  /** Freeze this attempt and queue it for the root's checks, via its tree, once Clef has seen the diff. */
   readonly #submit = Effect.fn("Agent.submitLeaf")(function* (this: AgentActor) {
     const assignment = yield* this.#assignment();
 
@@ -487,12 +487,12 @@ export class AgentActor extends DurableObject<Bindings> {
 
     if (doubts.length > 0 && (yield* this.#turnBack("submit"))) {
       return yield* new Rejected({
-        message: `Clef doubts this diff. Fix it, commit, push, and call submit_leaf again:\n${describe(doubts)}`,
+        message: `Clef doubts this diff. Fix it, commit, push, and call submit again:\n${describe(doubts)}`,
       });
     }
 
     const tree = this.env.TREES.get(this.env.TREES.idFromName(assignment.tree));
-    const url = `http://tree/trees/${assignment.tree}/leaves/${assignment.leaf}/ripe`;
+    const url = `http://tree/trees/${assignment.tree}/attempts/${assignment.attempt}/submit`;
 
     const response = yield* attempt(
       () => tree.fetch(url, { method: "POST" }),
@@ -542,12 +542,12 @@ export class AgentActor extends DurableObject<Bindings> {
     });
   }
 
-  /** `submit_leaf`, as a pi tool: the Effect above, rendered as a tool result. */
+  /** `submit`, as a pi tool: the Effect above, rendered as a tool result. */
   #submitTool() {
     return defineTool({
-      name: "submit_leaf",
+      name: "submit",
       description:
-        "Submit your leaf for scoring once your change is committed and pushed and the checks pass. This freezes the leaf: you cannot push after it. Takes no arguments.",
+        "Submit your attempt for scoring once your change is committed and pushed and the checks pass. This freezes the attempt: you cannot push after it. Takes no arguments.",
       parameters: Type.Object({}, { additionalProperties: false }),
       replay: "unsafe" as const,
       execute: () =>

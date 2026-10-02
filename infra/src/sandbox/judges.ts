@@ -8,7 +8,7 @@ import * as Schema from "effect/Schema";
 
 const CheckOutcome = Schema.Struct({
   name: Schema.String,
-  origin: Schema.Literals(["root", "bud"]),
+  origin: Schema.Literals(["root", "task"]),
   passed: Schema.Boolean,
   millis: Schema.Number,
   tail: Schema.String,
@@ -55,7 +55,7 @@ export const judging = (judges: ReadonlyArray<Judge>) =>
     decisions: Object.fromEntries(judges.map((judge) => [judge.name, decision(judge)])),
   });
 
-/** What a judge's answer did to the leaf, as a check outcome. */
+/** What a judge's answer did to the attempt, as a check outcome. */
 export const judged = (judge: Judge, probability: number, millis: number): CheckOutcome => {
   const passAt = judge.pass_at ?? DEFAULT_PASS_AT;
 

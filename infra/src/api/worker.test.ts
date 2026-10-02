@@ -4,10 +4,10 @@ import { treeRoute } from "./worker.ts";
 describe("treeRoute", () => {
   test("splits organization, tree and the rest of the path", () => {
     expect(treeRoute("/v1/orgs/acme/trees/site")).toEqual({ org: "acme", tree: "site", rest: "" });
-    expect(treeRoute("/v1/orgs/acme/trees/site/buds/1/leaves")).toEqual({
+    expect(treeRoute("/v1/orgs/acme/trees/site/tasks/1/attempts")).toEqual({
       org: "acme",
       tree: "site",
-      rest: "/buds/1/leaves",
+      rest: "/tasks/1/attempts",
     });
   });
 

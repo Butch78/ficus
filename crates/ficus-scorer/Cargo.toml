@@ -1,6 +1,6 @@
 [package]
 name = "ficus-scorer"
-description = "Runs a root's checks against a leaf, inside a Cloudflare Container"
+description = "Runs a root's checks against a attempt, inside a Cloudflare Container"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -11,8 +11,8 @@
  * - `artifacts`: forward only requests for the listed repos, adding each
  *                repo's own token. The container never holds a token, so it
  *                cannot reach any other repo or keep access after the
- *                sandbox revokes it. Scoring lists one repo; a transplant
- *                lists two: the stale leaf to read and the fresh one to push.
+ *                sandbox revokes it. Scoring lists one repo; a rebase
+ *                lists two: the behind attempt to read and the fresh one to push.
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
 import * as Schema from "effect/Schema";

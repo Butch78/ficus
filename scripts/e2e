@@ -2,14 +2,14 @@
 # End-to-end against a deployed Ficus Worker, scored by the root's own checks
 # in scorer containers:
 #
-#   plant an empty root -> push examples/demo-root -> plant
-#   bud A (with its own check): three agents (two honest fixes of different
-#     size, one cheater); bud B (with its own check): one agent;
-#     bud C: one agent whose change collides with A's
-#   submit all -> containers score them -> harvest A (smallest passing diff)
-#   B's and C's leaves are stale -> the tree transplants them onto A's fruit:
-#     B's applies and is scored there, C's conflicts and its agent regrows
-#   harvest (oldest ready bud: B) -> release the head
+#   init an empty root -> push examples/demo-root -> init
+#   task A (with its own check): three agents (two honest fixes of different
+#     size, one cheater); task B (with its own check): one agent;
+#     task C: one agent whose change collides with A's
+#   submit all -> containers score them -> accept A (smallest passing diff)
+#   B's and C's attempts are behind -> the tree rebases them onto A's new head:
+#     B's applies and is scored there, C's conflicts and its agent retries
+#   accept (oldest ready task: B) -> release the head
 #
 # Needs FICUS_API, the Api Worker's URL. Signs up a fresh user, creates an
 # organization and an API key, and drives everything through the public API.
@@ -51,50 +51,50 @@ push() { # dir token
   git -C "$1" -c http.extraHeader="Authorization: Bearer $2" push -q origin HEAD
 }
 
-sprout() { # bud agent -> leaf id; clones into $W/<leaf>
-  local out leaf
-  out=$(call POST "/buds/$1/leaves" "{\"agent\":\"$2\"}")
-  leaf=$(jq -r .leaf <<<"$out")
-  [ "$leaf" != null ] || { echo "sprout failed: $out" >&2; return 1; }
-  jq -r .token <<<"$out" > "$W/token-$leaf"
-  clone "$(jq -r .remote <<<"$out")" "$(cat "$W/token-$leaf")" "$W/$leaf"
-  echo "$leaf"
+start() { # task agent -> attempt id; clones into $W/<attempt>
+  local out attempt
+  out=$(call POST "/tasks/$1/attempts" "{\"agent\":\"$2\"}")
+  attempt=$(jq -r .attempt <<<"$out")
+  [ "$attempt" != null ] || { echo "start failed: $out" >&2; return 1; }
+  jq -r .token <<<"$out" > "$W/token-$attempt"
+  clone "$(jq -r .remote <<<"$out")" "$(cat "$W/token-$attempt")" "$W/$attempt"
+  echo "$attempt"
 }
 
-wait_scored() { # leaf -> prints its state once it is no longer ripening
+wait_scored() { # attempt -> prints its state once it is no longer checking
   local state
   for _ in $(seq 1 120); do
-    state=$(call GET "/leaves/$1" | jq -c '.leaf.state')
-    case "$state" in *Ripening*) sleep 5 ;; *) echo "$state"; return 0 ;; esac
+    state=$(call GET "/attempts/$1" | jq -c '.attempt.state')
+    case "$state" in *Checking*) sleep 5 ;; *) echo "$state"; return 0 ;; esac
   done
-  echo "leaf $1 still ripening after 10 minutes" >&2; return 1
+  echo "attempt $1 still checking after 10 minutes" >&2; return 1
 }
 
-report() { # leaf
-  call GET "/leaves/$1" | jq -c '{cost: .report.cost, checks: [.report.checks[]? | {name, passed, confidence}]}'
+report() { # attempt
+  call GET "/attempts/$1" | jq -c '{cost: .report.cost, checks: [.report.checks[]? | {name, passed, confidence}]}'
 }
 
 step "no key is refused; another organization's trees are invisible"
 curl -s -o /dev/null -w "%{http_code}\n" "$API/v1/orgs/$ORG/trees/$T"
 curl -s -o /dev/null -w "%{http_code}\n" -H "x-api-key: $KEY" "$API/v1/orgs/somebody-else/trees/$T"
 
-step "plant an empty root, push the demo root into it, plant again"
-out=$(call POST /plant '{}'); jq -c '{state}' <<<"$out"
+step "init an empty root, push the demo root into it, init again"
+out=$(call POST /init '{}'); jq -c '{state}' <<<"$out"
 mkdir "$W/root" && cp -r "$ROOT_DIR"/. "$W/root/" && rm -rf "$W/root/.devenv" "$W/root/__pycache__"
 git -C "$W/root" init -q -b main && git -C "$W/root" add -A && gitc root -C "$W/root" commit -qm "demo root"
 git -C "$W/root" remote add origin "$(jq -r .remote <<<"$out")"
 push "$W/root" "$(jq -r .token <<<"$out")"
-call POST /plant '{}' | jq -c '{name, head}'
+call POST /init '{}' | jq -c '{name, head}'
 
-step "three buds; A and B say what done means with checks of their own"
-A=$(call POST /buds '{"intent":"slugify should drop punctuation: \"Hello, World!\" -> \"hello-world\"","checks":[{"name":"drops-punctuation","run":"python -c \"from slug import slugify; assert slugify(\\\"Hello, World!\\\") == \\\"hello-world\\\"\""}]}' | jq -r .bud)
-B=$(call POST /buds '{"intent":"add a test that slugify keeps digits","checks":[{"name":"digits-test","run":"grep -q \"Route 66\" tests/test_slug.py"}]}' | jq -r .bud)
-C=$(call POST /buds '{"intent":"make slugify collapse whitespace with split()"}' | jq -r .bud)
+step "three tasks; A and B say what done means with checks of their own"
+A=$(call POST /tasks '{"intent":"slugify should drop punctuation: \"Hello, World!\" -> \"hello-world\"","checks":[{"name":"drops-punctuation","run":"python -c \"from slug import slugify; assert slugify(\\\"Hello, World!\\\") == \\\"hello-world\\\"\""}]}' | jq -r .task)
+B=$(call POST /tasks '{"intent":"add a test that slugify keeps digits","checks":[{"name":"digits-test","run":"grep -q \"Route 66\" tests/test_slug.py"}]}' | jq -r .task)
+C=$(call POST /tasks '{"intent":"make slugify collapse whitespace with split()"}' | jq -r .task)
 echo "A=$A B=$B C=$C"
-[ "$A" != null ] && [ "$B" != null ] && [ "$C" != null ] || { echo "FAIL: a bud was refused" >&2; exit 1; }
+[ "$A" != null ] && [ "$B" != null ] && [ "$C" != null ] || { echo "FAIL: a task was refused" >&2; exit 1; }
 
-step "bud A: alpha (regex rewrite + test), beta (smaller fix), cheater (rewrites ficus.toml)"
-alpha=$(sprout "$A" alpha)
+step "task A: alpha (regex rewrite + test), beta (smaller fix), cheater (rewrites ficus.toml)"
+alpha=$(start "$A" alpha)
 cat > "$W/$alpha/slug.py" <<'PY'
 """Turn a title into a URL slug."""
 
@@ -110,88 +110,88 @@ PY
 printf '\n\ndef test_drops_punctuation():\n    assert slugify("Hello, World!") == "hello-world"\n' >> "$W/$alpha/tests/test_slug.py"
 gitc alpha -C "$W/$alpha" commit -qam "alpha: regex slugify"; push "$W/$alpha" "$(cat "$W/token-$alpha")"
 
-beta=$(sprout "$A" beta)
+beta=$(start "$A" beta)
 sed -i 's/    words = title.lower().split()/    words = "".join(c if c.isalnum() else " " for c in title.lower()).split()/' "$W/$beta/slug.py"
 gitc beta -C "$W/$beta" commit -qam "beta: treat punctuation as spaces"; push "$W/$beta" "$(cat "$W/token-$beta")"
 
-cheater=$(sprout "$A" cheater)
+cheater=$(start "$A" cheater)
 printf 'def slugify(title):\n    return title\n' > "$W/$cheater/slug.py"
 printf '[[check]]\nname = "tests"\nrun = "true"\n' > "$W/$cheater/ficus.toml"
 gitc cheater -C "$W/$cheater" commit -qam "cheater: make the checks pass"; push "$W/$cheater" "$(cat "$W/token-$cheater")"
 
-step "bud B: gamma adds a test"
-gamma=$(sprout "$B" gamma)
+step "task B: gamma adds a test"
+gamma=$(start "$B" gamma)
 printf '\n\ndef test_keeps_digits():\n    assert slugify("Route 66") == "route-66"\n' >> "$W/$gamma/tests/test_slug.py"
 gitc gamma -C "$W/$gamma" commit -qam "gamma: digits test"; push "$W/$gamma" "$(cat "$W/token-$gamma")"
 
-step "bud C: delta rewrites the same line of slug.py that beta changes"
-delta=$(sprout "$C" delta)
+step "task C: delta rewrites the same line of slug.py that beta changes"
+delta=$(start "$C" delta)
 sed -i 's/    words = title.lower().split()/    words = title.lower().strip().split()/' "$W/$delta/slug.py"
 gitc delta -C "$W/$delta" commit -qam "delta: strip before split"; push "$W/$delta" "$(cat "$W/token-$delta")"
 
-step "submit all five; scorer containers run the root's checks, then each bud's"
-for leaf in "$alpha" "$beta" "$cheater" "$gamma" "$delta"; do call POST "/leaves/$leaf/ripe" | jq -c .; done
+step "submit all five; scorer containers run the root's checks, then each task's"
+for attempt in "$alpha" "$beta" "$cheater" "$gamma" "$delta"; do call POST "/attempts/$attempt/submit" | jq -c .; done
 
-step "a submitted leaf's token is revoked: alpha can no longer push"
+step "a submitted attempt's token is revoked: alpha can no longer push"
 echo "# more" >> "$W/$alpha/slug.py"
 gitc alpha -C "$W/$alpha" commit -qam "alpha: more"
 if push "$W/$alpha" "$(cat "$W/token-$alpha")" 2>/dev/null; then echo "FAIL: alpha pushed after submitting" >&2; exit 1; fi
 echo "refused, as expected"
 
 step "scores (the cheater passes the restored root checks, not A's own)"
-for leaf in "$alpha" "$beta" "$cheater" "$gamma" "$delta"; do
-  echo "leaf $leaf: $(wait_scored "$leaf")"
-  echo "  $(report "$leaf")"
+for attempt in "$alpha" "$beta" "$cheater" "$gamma" "$delta"; do
+  echo "attempt $attempt: $(wait_scored "$attempt")"
+  echo "  $(report "$attempt")"
 done
 
-step "harvest A: the smallest diff that passes every check"
-H=$(call POST "/buds/$A/harvest"); echo "$H"
-[ "$(jq -r .fruit 2>/dev/null <<<"$H")" = "$beta" ] || { echo "FAIL: expected beta ($beta) to be fruit" >&2; exit 1; }
+step "accept A: the smallest diff that passes every check"
+H=$(call POST "/tasks/$A/accept"); echo "$H"
+[ "$(jq -r .accepted 2>/dev/null <<<"$H")" = "$beta" ] || { echo "FAIL: expected beta ($beta) to be accepted" >&2; exit 1; }
 
-step "B and C cannot harvest yet: gamma and delta grew from the old head"
-call POST "/buds/$B/harvest"; echo
-echo "stale, as the head sees them (overlap: paths both sides changed):"
-jq -c '.stale' <<<"$H"
+step "B and C cannot accept yet: gamma and delta grew from the old head"
+call POST "/tasks/$B/accept"; echo
+echo "behind, as the head sees them (overlap: paths both sides changed):"
+jq -c '.behind' <<<"$H"
 
-step "the tree transplants both onto A's fruit: gamma's test applies, delta's line conflicts"
-wait_transplanted() { # leaf -> prints the stale leaf's final state
+step "the tree rebases both onto A's new head: gamma's test applies, delta's line conflicts"
+wait_rebased() { # attempt -> prints the behind attempt's final state
   local state
   for _ in $(seq 1 120); do
-    state=$(call GET "/leaves/$1" | jq -c '.leaf.state')
+    state=$(call GET "/attempts/$1" | jq -c '.attempt.state')
     case "$state" in
-      *Transplanted*|*Withered*) echo "$state"; return 0 ;;
-      *) # still live: in flight, or conflicted (then its transplant has withered)
-        if [ "$(call GET "/leaves/$1" | jq -r '.leaf.transplant')" != null ]; then
-          local into; into=$(call GET "/leaves/$1" | jq -r '.leaf.transplant')
-          case "$(call GET "/leaves/$into" | jq -c '.leaf.state')" in *Withered*) echo "$state (transplant $into withered)"; return 0 ;; esac
+      *Rebased*|*Abandoned*) echo "$state"; return 0 ;;
+      *) # still live: in flight, or conflicted (then its rebase has abandoned)
+        if [ "$(call GET "/attempts/$1" | jq -r '.attempt.rebase')" != null ]; then
+          local into; into=$(call GET "/attempts/$1" | jq -r '.attempt.rebase')
+          case "$(call GET "/attempts/$into" | jq -c '.attempt.state')" in *Abandoned*) echo "$state (rebase $into abandoned)"; return 0 ;; esac
         fi
         sleep 5 ;;
     esac
   done
-  echo "leaf $1 still waiting on its transplant after 10 minutes" >&2; return 1
+  echo "attempt $1 still waiting on its rebase after 10 minutes" >&2; return 1
 }
-echo "gamma: $(wait_transplanted "$gamma")"
-gamma2=$(call GET "/leaves/$gamma" | jq -r '.leaf.state.Pruned.reason.Transplanted.into')
-[ "$gamma2" != null ] || { echo "FAIL: gamma was not transplanted" >&2; exit 1; }
-echo "gamma's transplant is leaf $gamma2: $(wait_scored "$gamma2")"
+echo "gamma: $(wait_rebased "$gamma")"
+gamma2=$(call GET "/attempts/$gamma" | jq -r '.attempt.state.Closed.reason.Rebased.into')
+[ "$gamma2" != null ] || { echo "FAIL: gamma was not rebased" >&2; exit 1; }
+echo "gamma's rebase is attempt $gamma2: $(wait_scored "$gamma2")"
 echo "  $(report "$gamma2")"
-echo "delta: $(wait_transplanted "$delta")"
-delta_t=$(call GET "/leaves/$delta" | jq -r '.leaf.transplant')
-call GET "" | jq -c --argjson l "$delta_t" '[.compost[] | select(.leaf == $l) | {leaf, reason}]'
+echo "delta: $(wait_rebased "$delta")"
+delta_t=$(call GET "/attempts/$delta" | jq -r '.attempt.rebase')
+call GET "" | jq -c --argjson l "$delta_t" '[.history[] | select(.attempt == $l) | {attempt, reason}]'
 
-step "delta's agent regrows from A's fruit, by hand this time"
-R=$(call POST "/leaves/$delta/regrow"); jq -c '{leaf, base_commit, compost: [.compost[] | {leaf, agent, reason}]}' <<<"$R"
-delta2=$(jq -r .leaf <<<"$R")
-[ "$delta2" != null ] || { echo "FAIL: regrow refused: $R" >&2; exit 1; }
+step "delta's agent retries from A's new head, by hand this time"
+R=$(call POST "/attempts/$delta/retry"); jq -c '{attempt, base_commit, history: [.history[] | {attempt, agent, reason}]}' <<<"$R"
+delta2=$(jq -r .attempt <<<"$R")
+[ "$delta2" != null ] || { echo "FAIL: retry refused: $R" >&2; exit 1; }
 
-step "harvest the oldest bud that is ready: B, on top of A"
-H2=$(call POST "/harvest"); jq -c . <<<"$H2"
-[ "$(jq -r .bud <<<"$H2")" = "$B" ] && [ "$(jq -r .fruit <<<"$H2")" = "$gamma2" ] || { echo "FAIL: expected B's transplanted leaf to be fruit" >&2; exit 1; }
+step "accept the oldest task that is ready: B, on top of A"
+H2=$(call POST "/accept"); jq -c . <<<"$H2"
+[ "$(jq -r .task <<<"$H2")" = "$B" ] && [ "$(jq -r .accepted <<<"$H2")" = "$gamma2" ] || { echo "FAIL: expected B's rebased attempt to be accepted" >&2; exit 1; }
 
 step "release the head; a deployment follows the pointer"
 call POST /release '{}' | jq -c .
 call GET /release | jq -c '{released: .released.id, commit: .released.commit[0:8], head: .head.id}'
 
 step "final tree"
-call GET "" | jq -c '{name, head, released, nodes: [.nodes[] | {id, parent, commit: .commit[0:8], fruit_of, touched}], compost: [.compost[] | {leaf, agent, reason}]}'
+call GET "" | jq -c '{name, head, released, nodes: [.nodes[] | {id, parent, commit: .commit[0:8], accepted_from, touched}], history: [.history[] | {attempt, agent, reason}]}'
 echo "tree=$T"

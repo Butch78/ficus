@@ -4,7 +4,7 @@
  * - the plan gate, before `plan_change` hands the conversation over: is the
  *   plan concrete and on task? Asked together with the route question,
  *   which picks the model that makes the change.
- * - the diff gate, before `submit_leaf` freezes the leaf: does the diff do
+ * - the diff gate, before `submit` freezes the attempt: does the diff do
  *   the task, and only the task, without weakening a test?
  *
  * Every gate question is phrased so that "yes" is the problem, as in
@@ -60,7 +60,7 @@ const ROUTE = {
     instructions: "How much reasoning does carrying out `plan` take?",
     criteria: {
       mechanical: "Small, fully specified edits: following the plan needs no design decisions and no debugging.",
-      reasoning: "Design decisions, debugging, or edits the plan leaves open.",
+      reasoning: "Design decisions, debugging, or edits the plan attempts open.",
     },
   }),
 };

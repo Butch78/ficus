@@ -152,7 +152,7 @@ const fromBase64 = (encoded: string): Uint8Array => Uint8Array.from(atob(encoded
 
 /**
  * The agent's container as pi's execution environment. `id` names the
- * container's file namespace; `cwd` is the leaf's checkout inside it.
+ * container's file namespace; `cwd` is the attempt's checkout inside it.
  */
 export class ContainerEnv implements ExecutionEnv {
   constructor(

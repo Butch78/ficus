@@ -1,5 +1,5 @@
 /**
- * `Sandbox`: one Durable Object per piece of untrusted work (a leaf being
+ * `Sandbox`: one Durable Object per piece of untrusted work (a attempt being
  * scored, later an agent's workspace), driving its container with the
  * platform's native API (`ctx.container`: start, exec, outbound interception).
  *
@@ -7,22 +7,22 @@
  * decided here, per phase, by routing hosts through `Egress`:
  *
  *   POST /score  (a ScoreRequest, from the tree)
- *     1. prepare: the leaf's repo (token added by Egress) and the nix/devenv
+ *     1. prepare: the attempt's repo (token added by Egress) and the nix/devenv
  *        caches; `ficus-scorer prepare` clones, restores the root's locked
  *        files and builds the root's devenv shell
  *     2. check:   nothing; `ficus-scorer check` runs the root's checks, then
- *        the bud's
+ *        the task's
  *   then the container is destroyed, and the root's judges (`[[judge]]` in
  *   its ficus.toml) are put to Clef here, through the Workers AI binding,
- *   with the bud's intent and the leaf's diff. The answer is the ScoreReport,
- *   judges included as checks, or 422 when the leaf or root cannot be scored
+ *   with the task's intent and the attempt's diff. The answer is the ScoreReport,
+ *   judges included as checks, or 422 when the attempt or root cannot be scored
  *   (retrying will not help).
  *
- *   POST /transplant  (a TransplantRequest, from the tree)
- *     the stale leaf's repo (read) and the fresh leaf's repo (write), both
- *     with their tokens added by Egress; `ficus-scorer transplant` replays
- *     the stale commits onto the head and pushes. Nothing from either repo
- *     is run. The answer is the TransplantReport, or 422 on a conflict.
+ *   POST /rebase  (a RebaseRequest, from the tree)
+ *     the behind attempt's repo (read) and the fresh attempt's repo (write), both
+ *     with their tokens added by Egress; `ficus-scorer rebase` replays
+ *     the behind commits onto the head and pushes. Nothing from either repo
+ *     is run. The answer is the RebaseReport, or 422 on a conflict.
  */
 import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
@@ -73,7 +73,7 @@ const SCORER = "/usr/local/bin/ficus-scorer";
 
 const Oid = Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}([0-9a-f]{24})?$/));
 
-/** crates/ficus-core `CheckSpec`: a bud's check, run after the root's. */
+/** crates/ficus-core `CheckSpec`: a task's check, run after the root's. */
 const CheckSpec = Schema.Struct({
   name: Schema.String,
   run: Schema.String,
@@ -93,8 +93,8 @@ export const ScoreRequest = Schema.Struct({
 
 export interface ScoreRequest extends Schema.Schema.Type<typeof ScoreRequest> {}
 
-/** crates/ficus-core `TransplantRequest`. */
-export const TransplantRequest = Schema.Struct({
+/** crates/ficus-core `RebaseRequest`. */
+export const RebaseRequest = Schema.Struct({
   from: Schema.String,
   from_token: Schema.String,
   from_base: Oid,
@@ -105,12 +105,12 @@ export const TransplantRequest = Schema.Struct({
   onto_branch: Schema.String,
 });
 
-export interface TransplantRequest extends Schema.Schema.Type<typeof TransplantRequest> {}
+export interface RebaseRequest extends Schema.Schema.Type<typeof RebaseRequest> {}
 
 const Prepared = Schema.Struct({ workdir: Schema.String });
 
-/** crates/ficus-core `TransplantReport`. */
-const TransplantReport = Schema.Struct({ commit: Oid, replayed: Schema.Number });
+/** crates/ficus-core `RebaseReport`. */
+const RebaseReport = Schema.Struct({ commit: Oid, replayed: Schema.Number });
 
 export class SandboxFailure extends Schema.TaggedError<SandboxFailure>()("Sandbox.Failure", {
   status: Schema.Number,
@@ -156,8 +156,8 @@ export class Sandbox extends DurableObject<Bindings> {
         );
       }
 
-      case "/transplant": {
-        return respond(this.#transplant(request));
+      case "/rebase": {
+        return respond(this.#rebase(request));
       }
 
       default: {
@@ -178,8 +178,8 @@ export class Sandbox extends DurableObject<Bindings> {
     );
   });
 
-  readonly #transplant = Effect.fn("Sandbox.transplant")(function* (this: Sandbox, request: Request) {
-    const job = yield* this.#body(request, TransplantRequest, "transplant");
+  readonly #rebase = Effect.fn("Sandbox.rebase")(function* (this: Sandbox, request: Request) {
+    const job = yield* this.#body(request, RebaseRequest, "rebase");
     const from = repoOf(job.from);
     const onto = repoOf(job.onto);
 
@@ -212,8 +212,8 @@ export class Sandbox extends DurableObject<Bindings> {
       return yield* failure(503, `trusting the egress CA: ${trusted.stderr.trim()}`);
     }
 
-    const replayed = yield* this.#exec([SCORER, "transplant", ref]);
-    const report = yield* this.#json(replayed, TransplantReport, "transplant");
+    const replayed = yield* this.#exec([SCORER, "rebase", ref]);
+    const report = yield* this.#json(replayed, RebaseReport, "rebase");
 
     yield* Effect.promise(() => this.#container().destroy());
 
@@ -223,7 +223,7 @@ export class Sandbox extends DurableObject<Bindings> {
   readonly #score = Effect.fn("Sandbox.score")(function* (this: Sandbox, request: Request) {
     const score = yield* this.#body(request, ScoreRequest, "score");
     const repo = repoOf(score.remote);
-    const leaf = JSON.stringify({ remote: score.remote, base: score.base, head: score.head, checks: score.checks ?? [] });
+    const attempt = JSON.stringify({ remote: score.remote, base: score.base, head: score.head, checks: score.checks ?? [] });
 
     yield* this.#ready();
     yield* this.#route(repo.host, { mode: "artifacts", repos: [{ repoPath: repo.repoPath, token: score.token }] });
@@ -239,7 +239,7 @@ export class Sandbox extends DurableObject<Bindings> {
       return yield* failure(503, `trusting the egress CA: ${trusted.stderr.trim()}`);
     }
 
-    const prepared = yield* this.#exec([SCORER, "prepare", leaf]);
+    const prepared = yield* this.#exec([SCORER, "prepare", attempt]);
 
     // Close everything before any of the root's checks run.
     yield* this.#route(repo.host, { mode: "deny" });
@@ -266,7 +266,7 @@ export class Sandbox extends DurableObject<Bindings> {
     const started = Date.now();
 
     const { answers } = yield* DecisionModel.decide(judging(run.judges), { input: { task, diff: run.diff } }).pipe(
-      Effect.mapError((error) => failure(503, `judging the leaf: ${error.message}`)),
+      Effect.mapError((error) => failure(503, `judging the attempt: ${error.message}`)),
     );
 
     const millis = Date.now() - started;
@@ -337,7 +337,7 @@ export class Sandbox extends DurableObject<Bindings> {
     } satisfies Ran;
   });
 
-  /** A `ficus-scorer` result: 2 is the leaf's or root's fault, other failures the sandbox's. */
+  /** A `ficus-scorer` result: 2 is the attempt's or root's fault, other failures the sandbox's. */
   readonly #json = Effect.fn("Sandbox.json")(function* <A>(
     this: Sandbox,
     ran: Ran,
