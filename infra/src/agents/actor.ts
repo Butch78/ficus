@@ -69,12 +69,20 @@ const CompostEntry = Schema.Struct({
   score: Schema.NullOr(Schema.Json),
 });
 
+/** A bud's own check: what done means, on top of the root's `ficus.toml`. */
+const BudCheck = Schema.Struct({
+  name: Schema.String,
+  run: Schema.String,
+  timeout_secs: Schema.optional(Schema.Number),
+});
+
 /** What `TreeObject` sends when it starts this leaf. */
 export const Assignment = Schema.Struct({
   tree: Schema.String,
   leaf: Schema.Number,
   bud: Schema.Number,
   intent: Schema.String,
+  checks: Schema.optional(Schema.Array(BudCheck)),
   agent: Schema.String,
   /** Makes the change. */
   model: Schema.optional(Schema.String),
@@ -169,14 +177,26 @@ export const prompt = (assignment: Assignment): string => {
           .map((entry) => `- leaf ${entry.leaf} by ${entry.agent}: ${JSON.stringify(entry.reason)}; score ${JSON.stringify(entry.score)}`)
           .join("\n");
 
+  const budChecks = assignment.checks ?? [];
+
+  const done =
+    budChecks.length === 0
+      ? "The task has no checks of its own: the root's checks decide."
+      : [
+          "The task is done when each of these passes, run from the repository root (they are not in the repository and you cannot change them):",
+          ...budChecks.map((check) => `- ${check.name}: \`${check.run}\``),
+        ].join("\n");
+
   return [
     `You are ${assignment.agent}, one of several agents working on the same task in parallel. Each of you has your own copy of the repository; the smallest change that passes every check wins.`,
     "",
     `Task: ${assignment.intent}`,
     "",
+    done,
+    "",
     `Your checkout is ${LEAF_DIR} (git, on main, already configured to push). It starts at commit ${assignment.base_commit}.`,
     "",
-    "The repository's `ficus.toml` lists the checks the change must pass. If the repository has a `devenv.nix`, run checks as `devenv shell -- <command>` (the first run builds the environment and can take a few minutes). The checks cannot be changed: `ficus.toml` and the devenv files are restored from the base before scoring.",
+    "The repository's `ficus.toml` lists the checks the change must not break; the task's own checks above say when it is done. If the repository has a `devenv.nix`, run checks as `devenv shell -- <command>` (the first run builds the environment and can take a few minutes). The checks cannot be changed: `ficus.toml` and the devenv files are restored from the base before scoring.",
     "",
     "Earlier attempts at this task (the compost):",
     compost,

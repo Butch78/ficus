@@ -8,18 +8,24 @@
  *
  * - `pass`:      forward unchanged (nix and devenv caches while preparing)
  * - `deny`:      refuse (a host revoked for the check phase)
- * - `artifacts`: forward only requests for one repo, adding its token. The
- *                container never holds the token, so it cannot reach any
- *                other repo or keep access after the sandbox revokes it.
+ * - `artifacts`: forward only requests for the listed repos, adding each
+ *                repo's own token. The container never holds a token, so it
+ *                cannot reach any other repo or keep access after the
+ *                sandbox revokes it. Scoring lists one repo; a transplant
+ *                lists two: the stale leaf to read and the fresh one to push.
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
 import * as Schema from "effect/Schema";
 import { isRepoRequest } from "./repo.ts";
 
+export const RepoGrant = Schema.Struct({ repoPath: Schema.String, token: Schema.String });
+
+export type RepoGrant = Schema.Schema.Type<typeof RepoGrant>;
+
 export const EgressProps = Schema.Union([
   Schema.Struct({ mode: Schema.Literal("pass") }),
   Schema.Struct({ mode: Schema.Literal("deny") }),
-  Schema.Struct({ mode: Schema.Literal("artifacts"), repoPath: Schema.String, token: Schema.String }),
+  Schema.Struct({ mode: Schema.Literal("artifacts"), repos: Schema.Array(RepoGrant) }),
 ]);
 
 export type EgressProps = Schema.Schema.Type<typeof EgressProps>;
@@ -44,14 +50,15 @@ export class Egress extends WorkerEntrypoint<object, EgressProps> {
 
       case "artifacts": {
         const { pathname } = new URL(request.url);
+        const grant = props.repos.find((repo) => isRepoRequest(pathname, repo.repoPath));
 
-        if (!isRepoRequest(pathname, props.repoPath)) {
-          return Promise.resolve(refuse(`${pathname} is not this sandbox's repo`));
+        if (grant === undefined) {
+          return Promise.resolve(refuse(`${pathname} is not one of this sandbox's repos`));
         }
 
         const authorized = new Request(request);
 
-        authorized.headers.set("authorization", `Bearer ${props.token}`);
+        authorized.headers.set("authorization", `Bearer ${grant.token}`);
 
         return fetch(authorized);
       }

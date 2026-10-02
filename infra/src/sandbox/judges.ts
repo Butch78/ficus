@@ -8,6 +8,7 @@ import * as Schema from "effect/Schema";
 
 const CheckOutcome = Schema.Struct({
   name: Schema.String,
+  origin: Schema.Literals(["root", "bud"]),
   passed: Schema.Boolean,
   millis: Schema.Number,
   tail: Schema.String,
@@ -17,7 +18,11 @@ const CheckOutcome = Schema.Struct({
 export type CheckOutcome = Schema.Schema.Type<typeof CheckOutcome>;
 
 /** crates/ficus-core `ScoreReport`, checked before it is passed on. */
-const ScoreReport = Schema.Struct({ checks: Schema.Array(CheckOutcome), cost: Schema.Number });
+const ScoreReport = Schema.Struct({
+  checks: Schema.Array(CheckOutcome),
+  cost: Schema.Number,
+  touched: Schema.Array(Schema.String),
+});
 
 /** crates/ficus-core `JudgeSpec`. */
 const Judge = Schema.Struct({
@@ -56,6 +61,7 @@ export const judged = (judge: Judge, probability: number, millis: number): Check
 
   return {
     name: judge.name,
+    origin: "root",
     passed: probability >= passAt,
     millis,
     tail: `Clef answered yes with probability ${probability.toFixed(2)}; this judge passes at ${passAt.toFixed(2)}.`,

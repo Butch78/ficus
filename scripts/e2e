@@ -3,10 +3,13 @@
 # in scorer containers:
 #
 #   plant an empty root -> push examples/demo-root -> plant
-#   bud A: three agents (two honest fixes of different size, one cheater)
-#   bud B: one agent
+#   bud A (with its own check): three agents (two honest fixes of different
+#     size, one cheater); bud B (with its own check): one agent;
+#     bud C: one agent whose change collides with A's
 #   submit all -> containers score them -> harvest A (smallest passing diff)
-#   B's leaf is stale -> regrow on A's fruit -> submit -> harvest B
+#   B's and C's leaves are stale -> the tree transplants them onto A's fruit:
+#     B's applies and is scored there, C's conflicts and its agent regrows
+#   harvest (oldest ready bud: B) -> release the head
 #
 # Needs FICUS_API, the Api Worker's URL. Signs up a fresh user, creates an
 # organization and an API key, and drives everything through the public API.
@@ -83,10 +86,12 @@ git -C "$W/root" remote add origin "$(jq -r .remote <<<"$out")"
 push "$W/root" "$(jq -r .token <<<"$out")"
 call POST /plant '{}' | jq -c '{name, head}'
 
-step "two buds"
-A=$(call POST /buds '{"intent":"slugify should drop punctuation: \"Hello, World!\" -> \"hello-world\""}' | jq -r .bud)
-B=$(call POST /buds '{"intent":"add a test that slugify keeps digits"}' | jq -r .bud)
-echo "A=$A B=$B"
+step "three buds; A and B say what done means with checks of their own"
+A=$(call POST /buds '{"intent":"slugify should drop punctuation: \"Hello, World!\" -> \"hello-world\"","checks":[{"name":"drops-punctuation","run":"python -c \"from slug import slugify; assert slugify(\\\"Hello, World!\\\") == \\\"hello-world\\\"\""}]}' | jq -r .bud)
+B=$(call POST /buds '{"intent":"add a test that slugify keeps digits","checks":[{"name":"digits-test","run":"grep -q \"Route 66\" tests/test_slug.py"}]}' | jq -r .bud)
+C=$(call POST /buds '{"intent":"make slugify collapse whitespace with split()"}' | jq -r .bud)
+echo "A=$A B=$B C=$C"
+[ "$A" != null ] && [ "$B" != null ] && [ "$C" != null ] || { echo "FAIL: a bud was refused" >&2; exit 1; }
 
 step "bud A: alpha (regex rewrite + test), beta (smaller fix), cheater (rewrites ficus.toml)"
 alpha=$(sprout "$A" alpha)
@@ -119,8 +124,13 @@ gamma=$(sprout "$B" gamma)
 printf '\n\ndef test_keeps_digits():\n    assert slugify("Route 66") == "route-66"\n' >> "$W/$gamma/tests/test_slug.py"
 gitc gamma -C "$W/$gamma" commit -qam "gamma: digits test"; push "$W/$gamma" "$(cat "$W/token-$gamma")"
 
-step "submit all four; scorer containers run the root's checks"
-for leaf in "$alpha" "$beta" "$cheater" "$gamma"; do call POST "/leaves/$leaf/ripe" | jq -c .; done
+step "bud C: delta rewrites the same line of slug.py that beta changes"
+delta=$(sprout "$C" delta)
+sed -i 's/    words = title.lower().split()/    words = title.lower().strip().split()/' "$W/$delta/slug.py"
+gitc delta -C "$W/$delta" commit -qam "delta: strip before split"; push "$W/$delta" "$(cat "$W/token-$delta")"
+
+step "submit all five; scorer containers run the root's checks, then each bud's"
+for leaf in "$alpha" "$beta" "$cheater" "$gamma" "$delta"; do call POST "/leaves/$leaf/ripe" | jq -c .; done
 
 step "a submitted leaf's token is revoked: alpha can no longer push"
 echo "# more" >> "$W/$alpha/slug.py"
@@ -128,8 +138,8 @@ gitc alpha -C "$W/$alpha" commit -qam "alpha: more"
 if push "$W/$alpha" "$(cat "$W/token-$alpha")" 2>/dev/null; then echo "FAIL: alpha pushed after submitting" >&2; exit 1; fi
 echo "refused, as expected"
 
-step "scores"
-for leaf in "$alpha" "$beta" "$cheater" "$gamma"; do
+step "scores (the cheater passes the restored root checks, not A's own)"
+for leaf in "$alpha" "$beta" "$cheater" "$gamma" "$delta"; do
   echo "leaf $leaf: $(wait_scored "$leaf")"
   echo "  $(report "$leaf")"
 done
@@ -138,22 +148,50 @@ step "harvest A: the smallest diff that passes every check"
 H=$(call POST "/buds/$A/harvest"); echo "$H"
 [ "$(jq -r .fruit 2>/dev/null <<<"$H")" = "$beta" ] || { echo "FAIL: expected beta ($beta) to be fruit" >&2; exit 1; }
 
-step "B cannot harvest: gamma grew from the old head"
+step "B and C cannot harvest yet: gamma and delta grew from the old head"
 call POST "/buds/$B/harvest"; echo
+echo "stale, as the head sees them (overlap: paths both sides changed):"
+jq -c '.stale' <<<"$H"
 
-step "regrow gamma on A's fruit"
-R=$(call POST "/leaves/$gamma/regrow"); jq -c '{leaf, base_commit, compost: [.compost[] | {leaf, agent, reason}]}' <<<"$R"
-gamma2=$(jq -r .leaf <<<"$R"); jq -r .token <<<"$R" > "$W/token-$gamma2"
-clone "$(jq -r .remote <<<"$R")" "$(cat "$W/token-$gamma2")" "$W/$gamma2"
-grep -q isalnum "$W/$gamma2/slug.py" && echo "regrown leaf starts from beta's fruit"
-printf '\n\ndef test_keeps_digits():\n    assert slugify("Route 66") == "route-66"\n' >> "$W/$gamma2/tests/test_slug.py"
-gitc gamma -C "$W/$gamma2" commit -qam "gamma: digits test"; push "$W/$gamma2" "$(cat "$W/token-$gamma2")"
-call POST "/leaves/$gamma2/ripe" | jq -c .
-echo "leaf $gamma2: $(wait_scored "$gamma2")"
+step "the tree transplants both onto A's fruit: gamma's test applies, delta's line conflicts"
+wait_transplanted() { # leaf -> prints the stale leaf's final state
+  local state
+  for _ in $(seq 1 120); do
+    state=$(call GET "/leaves/$1" | jq -c '.leaf.state')
+    case "$state" in
+      *Transplanted*|*Withered*) echo "$state"; return 0 ;;
+      *) # still live: in flight, or conflicted (then its transplant has withered)
+        if [ "$(call GET "/leaves/$1" | jq -r '.leaf.transplant')" != null ]; then
+          local into; into=$(call GET "/leaves/$1" | jq -r '.leaf.transplant')
+          case "$(call GET "/leaves/$into" | jq -c '.leaf.state')" in *Withered*) echo "$state (transplant $into withered)"; return 0 ;; esac
+        fi
+        sleep 5 ;;
+    esac
+  done
+  echo "leaf $1 still waiting on its transplant after 10 minutes" >&2; return 1
+}
+echo "gamma: $(wait_transplanted "$gamma")"
+gamma2=$(call GET "/leaves/$gamma" | jq -r '.leaf.state.Pruned.reason.Transplanted.into')
+[ "$gamma2" != null ] || { echo "FAIL: gamma was not transplanted" >&2; exit 1; }
+echo "gamma's transplant is leaf $gamma2: $(wait_scored "$gamma2")"
+echo "  $(report "$gamma2")"
+echo "delta: $(wait_transplanted "$delta")"
+delta_t=$(call GET "/leaves/$delta" | jq -r '.leaf.transplant')
+call GET "" | jq -c --argjson l "$delta_t" '[.compost[] | select(.leaf == $l) | {leaf, reason}]'
 
-step "harvest B on top of A"
-call POST "/buds/$B/harvest" | jq -c .
+step "delta's agent regrows from A's fruit, by hand this time"
+R=$(call POST "/leaves/$delta/regrow"); jq -c '{leaf, base_commit, compost: [.compost[] | {leaf, agent, reason}]}' <<<"$R"
+delta2=$(jq -r .leaf <<<"$R")
+[ "$delta2" != null ] || { echo "FAIL: regrow refused: $R" >&2; exit 1; }
+
+step "harvest the oldest bud that is ready: B, on top of A"
+H2=$(call POST "/harvest"); jq -c . <<<"$H2"
+[ "$(jq -r .bud <<<"$H2")" = "$B" ] && [ "$(jq -r .fruit <<<"$H2")" = "$gamma2" ] || { echo "FAIL: expected B's transplanted leaf to be fruit" >&2; exit 1; }
+
+step "release the head; a deployment follows the pointer"
+call POST /release '{}' | jq -c .
+call GET /release | jq -c '{released: .released.id, commit: .released.commit[0:8], head: .head.id}'
 
 step "final tree"
-call GET "" | jq -c '{name, head, nodes: [.nodes[] | {id, parent, commit: .commit[0:8], repo, fruit_of}], compost: [.compost[] | {leaf, agent, reason}]}'
+call GET "" | jq -c '{name, head, released, nodes: [.nodes[] | {id, parent, commit: .commit[0:8], fruit_of, touched}], compost: [.compost[] | {leaf, agent, reason}]}'
 echo "tree=$T"

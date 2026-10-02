@@ -1,15 +1,22 @@
 //! Score a leaf: clone it, put the root's locked files back from the base
-//! commit, run the root's checks (inside the root's devenv when it has one),
-//! and measure the diff. The root's judges are not run here (the container
-//! has no network): `check` hands them over with the diff they judge.
+//! commit, run the root's checks then the bud's (inside the root's devenv
+//! when it has one), and measure the diff. The root's judges are not run
+//! here (the container has no network): `check` hands them over with the
+//! diff they judge.
+//!
+//! Also transplant a leaf: replay its commits onto a newer head in a fresh
+//! leaf, so the checks can run there. Conflicts are reported, never
+//! resolved: that is the agent's job, with the compost in hand.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use ficus_core::scoring::{
-    CheckOutcome, CheckRun, ChecksError, LOCKED_PATHS, LeafRef, RootChecks, ScoreReport, clip_diff,
+    CheckOrigin, CheckOutcome, CheckRun, CheckSpec, ChecksError, LOCKED_PATHS, LeafRef, RootChecks,
+    ScoreReport, TransplantRef, TransplantReport, clip_diff,
 };
+use ficus_core::tree::Oid;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
@@ -29,6 +36,8 @@ pub enum ScoreError {
     RootChecks(#[from] ChecksError),
     #[error("head does not descend from base")]
     NotDescendant,
+    #[error("the leaf's commits do not apply on the head: conflicts in {}", .0.join(", "))]
+    Conflict(Vec<String>),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -37,10 +46,115 @@ impl ScoreError {
     /// Whether the leaf or root is at fault (as opposed to the scorer).
     pub fn is_input_problem(&self) -> bool {
         match self {
-            Self::NoRootChecks | Self::RootChecks(_) | Self::NotDescendant => true,
+            Self::NoRootChecks | Self::RootChecks(_) | Self::NotDescendant | Self::Conflict(_) => {
+                true
+            }
             Self::Git { .. } | Self::Io(_) => false,
         }
     }
+}
+
+/// Replay the commits of `from` after `from_base` onto `onto_head`, and push
+/// the result to `onto`'s branch. Both remotes are reached through the
+/// sandbox's egress, which holds the tokens. Nothing is run from the repo.
+pub async fn transplant(root: &Path, job: &TransplantRef) -> Result<TransplantReport, ScoreError> {
+    let workdir = root.join(format!("transplant-{}", job.from_head.as_str()));
+    match tokio::fs::remove_dir_all(&workdir).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    tokio::fs::create_dir_all(&workdir).await?;
+    let repo = workdir.join("onto");
+    let repo_arg = repo.to_string_lossy().into_owned();
+    git(
+        &workdir,
+        "clone",
+        &["clone", "--quiet", "--no-checkout", &job.onto, &repo_arg],
+    )
+    .await?;
+    let (from_base, from_head, onto_head) = (
+        job.from_base.as_str(),
+        job.from_head.as_str(),
+        job.onto_head.as_str(),
+    );
+    git(
+        &repo,
+        "fetch the stale leaf",
+        &["fetch", "--quiet", &job.from, from_head],
+    )
+    .await?;
+    if !succeeds(
+        &repo,
+        &["merge-base", "--is-ancestor", from_base, from_head],
+    )
+    .await?
+    {
+        return Err(ScoreError::NotDescendant);
+    }
+    git(
+        &repo,
+        "checkout",
+        &["checkout", "--quiet", "--detach", from_head],
+    )
+    .await?;
+    let replayed = git(
+        &repo,
+        "count commits",
+        &["rev-list", "--count", &format!("{from_base}..{from_head}")],
+    )
+    .await?;
+    let replayed: u32 = replayed.trim().parse().unwrap_or(0);
+    // A transplant has no author of its own; the commits keep theirs.
+    let rebased = Command::new("git")
+        .args([
+            "-c",
+            "user.name=ficus",
+            "-c",
+            "user.email=ficus@transplant",
+            "-c",
+            "commit.gpgsign=false",
+            "rebase",
+            "--quiet",
+            "--onto",
+            onto_head,
+            from_base,
+        ])
+        .current_dir(&repo)
+        .stdin(Stdio::null())
+        .output()
+        .await?;
+    if !rebased.status.success() {
+        let conflicts = git(
+            &repo,
+            "list conflicts",
+            &["diff", "--name-only", "--diff-filter=U"],
+        )
+        .await
+        .unwrap_or_default();
+        let _ = succeeds(&repo, &["rebase", "--abort"]).await;
+        let mut paths: Vec<String> = conflicts.lines().map(str::to_owned).collect();
+        if paths.is_empty() {
+            paths.push(String::from_utf8_lossy(&rebased.stderr).trim().to_owned());
+        }
+        return Err(ScoreError::Conflict(paths));
+    }
+    let commit = git(&repo, "rev-parse", &["rev-parse", "HEAD"]).await?;
+    let commit = Oid::try_from(commit.trim().to_owned())
+        .map_err(|error| ScoreError::Io(std::io::Error::other(error.to_string())))?;
+    git(
+        &repo,
+        "push",
+        &[
+            "push",
+            "--quiet",
+            "origin",
+            &format!("HEAD:refs/heads/{}", job.onto_branch),
+        ],
+    )
+    .await?;
+    tokio::fs::remove_dir_all(&workdir).await?;
+    Ok(TransplantReport { commit, replayed })
 }
 
 /// What `prepare` leaves in the workdir for `check`.
@@ -143,16 +257,31 @@ pub async fn check(workdir: &Path) -> Result<CheckRun, ScoreError> {
     let repo = workdir.join("leaf");
     let (base, head) = (prepared.leaf.base.as_str(), prepared.leaf.head.as_str());
     let root = root_checks(&repo, base).await?;
+    // The root's checks first, then the bud's: what must not break, then
+    // what must be done.
+    let specs: Vec<(CheckOrigin, &CheckSpec)> = root
+        .checks
+        .iter()
+        .map(|check| (CheckOrigin::Root, check))
+        .chain(
+            prepared
+                .leaf
+                .checks
+                .iter()
+                .map(|check| (CheckOrigin::Bud, check)),
+        )
+        .collect();
 
     let checks = match &prepared.devenv {
-        None => run_checks(&repo, &root, false).await?,
-        Some(Ok(())) => run_checks(&repo, &root, true).await?,
+        None => run_checks(&repo, &specs, false).await?,
+        Some(Ok(())) => run_checks(&repo, &specs, true).await?,
         Some(Err(tail)) => {
             let tail = format!("the root's devenv shell did not build:\n{tail}");
-            root.checks
+            specs
                 .iter()
-                .map(|check| CheckOutcome {
+                .map(|(origin, check)| CheckOutcome {
                     name: check.name.clone(),
+                    origin: *origin,
                     passed: false,
                     millis: 0,
                     tail: tail.clone(),
@@ -163,6 +292,7 @@ pub async fn check(workdir: &Path) -> Result<CheckRun, ScoreError> {
     };
 
     let cost = diff_cost(&repo, base, head).await?;
+    let touched = diff_paths(&repo, base, head).await?;
     let diff = if root.judges.is_empty() {
         String::new()
     } else {
@@ -170,7 +300,11 @@ pub async fn check(workdir: &Path) -> Result<CheckRun, ScoreError> {
     };
     tokio::fs::remove_dir_all(workdir).await?;
     Ok(CheckRun {
-        report: ScoreReport { checks, cost },
+        report: ScoreReport {
+            checks,
+            cost,
+            touched,
+        },
         judges: root.judges,
         diff,
     })
@@ -199,11 +333,11 @@ async fn root_checks(repo: &Path, base: &str) -> Result<RootChecks, ScoreError> 
 
 async fn run_checks(
     repo: &Path,
-    root: &RootChecks,
+    specs: &[(CheckOrigin, &CheckSpec)],
     in_devenv: bool,
 ) -> Result<Vec<CheckOutcome>, ScoreError> {
-    let mut outcomes = Vec::with_capacity(root.checks.len());
-    for check in &root.checks {
+    let mut outcomes = Vec::with_capacity(specs.len());
+    for &(origin, check) in specs {
         let argv: Vec<&str> = if in_devenv {
             vec!["devenv", "--quiet", "shell", "--", "bash", "-c", &check.run]
         } else {
@@ -212,6 +346,7 @@ async fn run_checks(
         let ran = run(repo, &argv, check.timeout_secs()).await?;
         outcomes.push(CheckOutcome {
             name: check.name.clone(),
+            origin,
             passed: ran.passed,
             millis: ran.millis,
             tail: ran.tail,
@@ -219,6 +354,12 @@ async fn run_checks(
         });
     }
     Ok(outcomes)
+}
+
+/// Paths changed between base and head, outside the locked files.
+async fn diff_paths(repo: &Path, base: &str, head: &str) -> Result<Vec<String>, ScoreError> {
+    let names = git(repo, "diff", &diff_args(&["--name-only"], base, head)).await?;
+    Ok(names.lines().map(str::to_owned).collect())
 }
 
 struct Ran {
@@ -393,6 +534,7 @@ mod tests {
                 remote: self.path.to_string_lossy().into_owned(),
                 base,
                 head,
+                checks: vec![],
             }
         }
 
@@ -564,5 +706,184 @@ mod tests {
         let long = format!("{}é{}", "a".repeat(10), "b".repeat(TAIL_BYTES - 1));
         let kept = tail(&long);
         assert!(kept.len() <= TAIL_BYTES && kept.ends_with('b') && !kept.contains('a'));
+    }
+
+    #[tokio::test]
+    async fn the_buds_checks_run_after_the_roots_and_say_whose_they_are() {
+        let repo = Fixture::new();
+        let base = repo.commit(&[("ficus.toml", ROOT), ("greeting.txt", "hello\n")], &[]);
+        let head = repo.commit(&[("greeting.txt", "hello\n"), ("notes.txt", "fine\n")], &[]);
+        let mut leaf = repo.request(base, head);
+        leaf.checks = vec![
+            CheckSpec {
+                name: "did-the-task".into(),
+                run: "grep -q dark notes.txt".into(),
+                timeout_secs: None,
+            },
+            CheckSpec {
+                name: "has-notes".into(),
+                run: "test -f notes.txt".into(),
+                timeout_secs: Some(5),
+            },
+        ];
+        let report = score(&repo.scratch(), &leaf).await.unwrap().report;
+        let outcomes: Vec<_> = report
+            .checks
+            .iter()
+            .map(|c| (c.name.as_str(), c.origin, c.passed))
+            .collect();
+        assert_eq!(
+            outcomes,
+            vec![
+                ("has-greeting", CheckOrigin::Root, true),
+                ("no-todo", CheckOrigin::Root, true),
+                ("did-the-task", CheckOrigin::Bud, false),
+                ("has-notes", CheckOrigin::Bud, true),
+            ]
+        );
+        assert!(
+            !report.score().unwrap().passes(),
+            "the root's checks alone are not done"
+        );
+        assert_eq!(report.touched, vec!["notes.txt"]);
+    }
+
+    #[tokio::test]
+    async fn touched_paths_leave_out_the_locked_files() {
+        let repo = Fixture::new();
+        let base = repo.commit(&[("ficus.toml", ROOT), ("greeting.txt", "hello\n")], &[]);
+        let head = repo.commit(
+            &[("ficus.toml", "cheat"), ("b.txt", "b\n"), ("a.txt", "a\n")],
+            &[],
+        );
+        let report = score(&repo.scratch(), &repo.request(base, head))
+            .await
+            .unwrap();
+        assert_eq!(report.report.touched, vec!["a.txt", "b.txt"]);
+    }
+
+    /// Two repos as Artifacts would hold them: the stale leaf, forked from
+    /// the old head, and the fresh leaf, forked from the new head.
+    struct Orchard {
+        _dir: tempfile::TempDir,
+        stale: std::path::PathBuf,
+        fresh: std::path::PathBuf,
+    }
+
+    impl Orchard {
+        fn git(dir: &Path, args: &[&str]) -> String {
+            let output = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        }
+
+        fn commit(dir: &Path, files: &[(&str, &str)]) -> Oid {
+            for (path, body) in files {
+                std::fs::write(dir.join(path), body).unwrap();
+            }
+            Self::git(dir, &["add", "-A"]);
+            Self::git(dir, &["commit", "--quiet", "-m", "c"]);
+            Oid::try_from(Self::git(dir, &["rev-parse", "HEAD"])).unwrap()
+        }
+
+        /// A root, a stale leaf with `leaf_files` on top of it, and a fresh
+        /// leaf whose head is the root plus `head_files`. Returns the three
+        /// commits: root, stale head, new head.
+        fn grow(leaf_files: &[(&str, &str)], head_files: &[(&str, &str)]) -> (Self, Oid, Oid, Oid) {
+            let dir = tempfile::tempdir().unwrap();
+            let stale = dir.path().join("stale");
+            let fresh = dir.path().join("fresh");
+            std::fs::create_dir(&stale).unwrap();
+            Self::git(&stale, &["init", "--quiet", "-b", "main"]);
+            let root = Self::commit(&stale, &[("ficus.toml", ROOT), ("greeting.txt", "hello\n")]);
+            Self::git(dir.path(), &["clone", "--quiet", "stale", "fresh"]);
+            let stale_head = Self::commit(&stale, leaf_files);
+            let new_head = Self::commit(&fresh, head_files);
+            // Pushing into a checked-out branch is what Artifacts allows.
+            Self::git(
+                &fresh,
+                &["config", "receive.denyCurrentBranch", "updateInstead"],
+            );
+            let orchard = Self {
+                _dir: dir,
+                stale,
+                fresh,
+            };
+            (orchard, root, stale_head, new_head)
+        }
+
+        fn job(&self, root: Oid, stale_head: Oid, new_head: Oid) -> TransplantRef {
+            TransplantRef {
+                from: self.stale.to_string_lossy().into_owned(),
+                from_base: root,
+                from_head: stale_head,
+                onto: self.fresh.to_string_lossy().into_owned(),
+                onto_head: new_head,
+                onto_branch: "main".into(),
+            }
+        }
+
+        fn scratch(&self) -> std::path::PathBuf {
+            self.stale.with_file_name("work")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_transplant_replays_the_leaf_onto_the_new_head_and_pushes() {
+        let (orchard, root, stale_head, new_head) = Orchard::grow(
+            &[("search.rs", "fn search() {}\n")],
+            &[("auth.rs", "fn auth() {}\n")],
+        );
+        let report = transplant(
+            &orchard.scratch(),
+            &orchard.job(root, stale_head, new_head.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.replayed, 1);
+        let pushed = Orchard::git(&orchard.fresh, &["rev-parse", "main"]);
+        assert_eq!(pushed, report.commit.as_str());
+        let parent = Orchard::git(&orchard.fresh, &["rev-parse", "main^"]);
+        assert_eq!(parent, new_head.as_str(), "single parent: the new head");
+        let files = Orchard::git(&orchard.fresh, &["ls-tree", "--name-only", "main"]);
+        assert!(files.contains("auth.rs") && files.contains("search.rs"));
+    }
+
+    #[tokio::test]
+    async fn a_conflicting_transplant_names_the_paths_and_pushes_nothing() {
+        let (orchard, root, stale_head, new_head) = Orchard::grow(
+            &[("greeting.txt", "hello from the leaf\n")],
+            &[("greeting.txt", "hello from the head\n")],
+        );
+        let result = transplant(
+            &orchard.scratch(),
+            &orchard.job(root, stale_head, new_head.clone()),
+        )
+        .await;
+        match result {
+            Err(ScoreError::Conflict(ref paths)) => assert_eq!(paths, &["greeting.txt"]),
+            other => panic!("expected a conflict, got {other:?}"),
+        }
+        assert!(result.unwrap_err().is_input_problem());
+        assert_eq!(
+            Orchard::git(&orchard.fresh, &["rev-parse", "main"]),
+            new_head.as_str()
+        );
     }
 }
