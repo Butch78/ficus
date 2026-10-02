@@ -16,15 +16,16 @@
  */
 import { DurableObject } from "cloudflare:workers";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { createRegistry, Harness } from "@earendil-works/pi-durable";
-import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
-import { CLOUDFLARE_PROVIDER_ID, createAI } from "agents/models/pi-ai";
+import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
+import { createRegistry, defineExtension, defineTool, Harness } from "@earendil-works/pi-durable";
+import { CodingTools } from "@earendil-works/pi-durable/tools";
+import { PiHarness } from "agents/harness/pi";
 import { Lifecycle } from "agents/lifecycle";
+import { CLOUDFLARE_PROVIDER_ID, createAI } from "agents/models/pi-ai";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { Type } from "typebox";
 import { ContainerEnv, type SandboxStub } from "./sandbox-env.ts";
-import { BACKGROUND_CONTEXT as BACKGROUND } from "./vendor/pi-harness/context.ts";
-import { PiHarness } from "./vendor/pi-harness/index.ts";
 
 /** Where the leaf is checked out inside the agent's container. */
 const LEAF_DIR = "/work/leaf";
@@ -113,7 +114,7 @@ export class AgentActor extends DurableObject<Bindings> {
   /** The leaf's container: one `ScorerContainer` instance per agent. */
   readonly #sandbox: SandboxStub = this.env.SCORER.get(this.env.SCORER.idFromName(`agent:${this.ctx.id.name ?? this.ctx.id.toString()}`));
 
-  readonly #workspace = new ContainerEnv(this.#sandbox, LEAF_DIR);
+  readonly #workspace = new ContainerEnv(this.#sandbox, `agent:${this.ctx.id.toString()}`, LEAF_DIR);
 
   readonly harness = new PiHarness({
     harness: ({ storage, context }) => {
@@ -123,18 +124,23 @@ export class AgentActor extends DurableObject<Bindings> {
 
       const registry = createRegistry();
 
-      registry.tools.add(createReadTool());
-      registry.tools.add(createWriteTool());
-      registry.tools.add(createEditTool());
-      registry.tools.add(createBashTool());
-      registry.tools.add(this.#submitTool());
+      registry.install(CodingTools);
+      registry.install(defineExtension({ name: "ficus", tools: [this.#submitTool()] }));
 
-      return Harness.open(storage, { models, registry, env: this.#workspace }, context);
+      return Harness.open(
+        storage,
+        {
+          models,
+          registry,
+          env: () => this.#workspace,
+          settings: { retry: { enabled: true, maxRetries: 2, baseDelayMs: 500 } },
+        },
+        context,
+      );
     },
     defaults: {
-      model: { provider: CLOUDFLARE_PROVIDER_ID, modelId: DEFAULT_MODEL },
+      model: { provider: CLOUDFLARE_PROVIDER_ID, id: DEFAULT_MODEL },
       thinkingLevel: "low",
-      retry: { enabled: true, maxRetries: 2, baseDelayMs: 500 },
     },
   });
 
@@ -193,7 +199,7 @@ export class AgentActor extends DurableObject<Bindings> {
     yield* attempt(() => this.ctx.storage.put(ASSIGNMENT_KEY, assignment), failed("storing the assignment"));
 
     const session = this.harness.session();
-    const model = { provider: CLOUDFLARE_PROVIDER_ID, modelId: assignment.model ?? DEFAULT_MODEL };
+    const model = { provider: CLOUDFLARE_PROVIDER_ID, id: assignment.model ?? DEFAULT_MODEL };
 
     yield* attempt(() => session.setModel(model), failed("choosing the model"));
 
@@ -263,11 +269,11 @@ export class AgentActor extends DurableObject<Bindings> {
 
   /** `submit_leaf`, as a pi tool: the Effect above, rendered as a tool result. */
   #submitTool() {
-    return {
+    return defineTool({
       name: "submit_leaf",
       description:
         "Submit your leaf for scoring once your change is committed and pushed and the checks pass. This freezes the leaf: you cannot push after it. Takes no arguments.",
-      parameters: { type: "object", properties: {}, additionalProperties: false },
+      parameters: Type.Object({}, { additionalProperties: false }),
       replay: "unsafe" as const,
       execute: () =>
         Effect.runPromise(
@@ -278,7 +284,7 @@ export class AgentActor extends DurableObject<Bindings> {
             }),
           ),
         ),
-    };
+    });
   }
 }
 
