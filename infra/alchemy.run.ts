@@ -3,10 +3,14 @@
 //   Api      src/api/worker.ts     the one public entry: Better Auth on D1
 //                                  (users, organizations, API keys); forwards
 //                                  /v1/orgs/<org>/trees/... to Tree
-//   Worker   crates/ficus-worker   the tree service (TreeObject, scorer
-//                                  containers, Artifacts); internal only, no
-//                                  public URL: reached through Api's service
-//                                  binding, which vouches for the tenant
+//   Worker   crates/ficus-worker   the tree service (TreeObject, Artifacts);
+//                                  internal only, no public URL: reached
+//                                  through Api's service binding, which
+//                                  vouches for the tenant
+//   Sandbox  src/sandbox/worker.ts untrusted work in containers with the
+//                                  internet off; Egress decides, per phase,
+//                                  which hosts they reach (and adds the
+//                                  credentials they never see)
 //
 //   bun run plan | deploy | destroy        STAGE defaults to dev
 import * as Alchemy from "alchemy";
@@ -19,6 +23,15 @@ import * as Layer from "effect/Layer";
 // Stated here rather than inherited from alchemy's default, which moves
 // between alchemy releases: the runtime's behaviour is ours to pin.
 const COMPATIBILITY = { date: "2026-09-10" } as const;
+
+// Logs and traces for every Worker (Durable Object calls, service bindings,
+// subrequests): queryable through the Workers Observability API, which is
+// how a failed run is diagnosed without re-running it.
+const OBSERVABILITY = {
+  enabled: true,
+  logs: { enabled: true, invocationLogs: true },
+  traces: { enabled: true },
+} as const;
 
 export default Alchemy.Stack(
   "Ficus",
@@ -54,7 +67,7 @@ export default Alchemy.Stack(
     const scorerBinary = yield* Command.Build("ScorerBinary", {
       cwd: "..",
       command: "scripts/build-scorer",
-      outdir: "infra/src/scorer/context",
+      outdir: "infra/src/sandbox/context",
       memo: {
         include: [
           "crates/ficus-scorer/**",
@@ -68,20 +81,29 @@ export default Alchemy.Stack(
       },
     });
 
-    const scorer = Cloudflare.Container("Scorer", {
-      name: `ficus-scorer-${stage}`,
-      className: "ScorerContainer",
-      context: `${import.meta.dirname}/src/scorer/context`,
+    const sandboxContainer = Cloudflare.Container("SandboxContainer", {
+      name: `ficus-sandbox-${stage}`,
+      // The Durable Object class in src/sandbox/sandbox.ts that drives it.
+      className: "Sandbox",
+      context: `${import.meta.dirname}/src/sandbox/context`,
       instances: 0,
-      maxInstances: 10,
+      maxInstances: 20,
       // A root's devenv shell plus its checks: nix needs the disk and memory
       // the basic tier does not have.
       instanceType: "standard-1",
       observability: { logs: { enabled: true } },
       env: {
-        PORT: "8080",
         FICUS_SCORER_HASH: Output.map(scorerBinary.hash.output, (hash) => hash ?? "unhashed"),
       },
+    });
+
+    const sandbox = yield* Cloudflare.Worker("Sandbox", {
+      name: `ficus-sandbox-${stage}`,
+      main: "./src/sandbox/worker.ts",
+      compatibility: COMPATIBILITY,
+      observability: OBSERVABILITY,
+      workersDev: false,
+      env: { SANDBOX: sandboxContainer },
     });
 
     // One namespace per stage; Artifacts creates it with the first repo.
@@ -93,6 +115,7 @@ export default Alchemy.Stack(
       // re-export that only resolves the wasm under one bundling mode.
       main: "../crates/ficus-worker/build/index.js",
       compatibility: COMPATIBILITY,
+      observability: OBSERVABILITY,
       // Internal: trusts the tenant header, so only Api may reach it.
       workersDev: false,
       env: {
@@ -101,8 +124,12 @@ export default Alchemy.Stack(
         ARTIFACTS: artifacts,
         // `TreeObject` is the #[durable_object] struct in crates/ficus-worker.
         TREES: Cloudflare.DurableObject("TREES", { className: "TreeObject" }),
-        // `ScorerContainer` is the #[durable_object] struct that runs it.
-        SCORER: scorer,
+        // Sandboxes that score leaves: the `Sandbox` class in the sandbox Worker.
+        // By literal name: `alchemy dev` cannot coerce a deploy-time Output
+        // into a class's scriptName. The env value below keeps the edge that
+        // deploys the sandbox Worker (and its class) before this one.
+        SANDBOX: Cloudflare.DurableObject("SANDBOX", { className: "Sandbox", scriptName: `ficus-sandbox-${stage}` }),
+        FICUS_SANDBOX_SCRIPT: sandbox.workerName,
       },
     });
 
@@ -120,6 +147,7 @@ export default Alchemy.Stack(
       name: `ficus-api-${stage}`,
       main: "./src/api/worker.ts",
       compatibility: COMPATIBILITY,
+      observability: OBSERVABILITY,
       env: {
         AUTH_DB: authDb,
         BETTER_AUTH_SECRET: authSecret.text,

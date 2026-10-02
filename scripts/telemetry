@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Recent Workers Observability events for Ficus, newest first:
+#
+#   scripts/telemetry [minutes=15] [worker-substring=ficus] [limit=50]
+#
+# Needs CLOUDFLARE_ACCOUNT_ID and a CLOUDFLARE_API_TOKEN with Workers
+# Observability read. Prints time, worker, outcome/level, message.
+set -euo pipefail
+minutes=${1:-15}; worker=${2:-ficus}; limit=${3:-50}
+now=$(($(date +%s) * 1000)); from=$((now - minutes * 60 * 1000))
+body=$(jq -n --argjson from "$from" --argjson to "$now" --arg worker "$worker" --argjson limit "$limit" '{
+  queryId: "ficus-events",
+  timeframe: { from: $from, to: $to },
+  view: "events",
+  limit: $limit,
+  parameters: { filters: [ { key: "$workers.scriptName", operation: "includes", type: "string", value: $worker } ] }
+}')
+curl -s -m 60 -X POST "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/observability/telemetry/query" \
+  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "content-type: application/json" -d "$body" \
+| jq -r 'if .success then (.result.events.events // [])[] | [
+    ((.timestamp // 0) / 1000 | strftime("%H:%M:%S")),
+    (."$workers".scriptName // "?"),
+    (."$workers".outcome // ."$metadata".level // ""),
+    ((."$metadata".message // ."$metadata".error // "") | tostring | .[0:200])
+  ] | @tsv else ("query failed: " + (.errors | tostring)) end'

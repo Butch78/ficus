@@ -2,15 +2,14 @@
 //! commit, run the root's checks (inside the root's devenv when it has one),
 //! and measure the diff.
 
-pub mod sandbox;
-
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use ficus_core::scoring::{
-    CheckOutcome, ChecksError, LOCKED_PATHS, RootChecks, ScoreReport, ScoreRequest,
+    CheckOutcome, ChecksError, LOCKED_PATHS, LeafRef, RootChecks, ScoreReport,
 };
+use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
 /// Bytes of a check's output kept for the report.
@@ -43,27 +42,38 @@ impl ScoreError {
     }
 }
 
-pub async fn score(request: &ScoreRequest) -> Result<ScoreReport, ScoreError> {
-    let workdir = tempfile::tempdir()?;
-    let repo = workdir.path().join("leaf");
-    let header = format!("http.extraHeader=Authorization: Bearer {}", request.token);
+/// What `prepare` leaves in the workdir for `check`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Prepared {
+    leaf: LeafRef,
+    /// `None` without a root devenv; otherwise whether its shell built, and
+    /// the end of its output when it did not.
+    devenv: Option<Result<(), String>>,
+}
+
+const PREPARED_FILE: &str = "prepared.json";
+
+/// Phase one, with network: clone the leaf into a fresh workdir under
+/// `root`, check `head` descends from `base`, put the root's locked files
+/// back, and build the root's devenv shell. Returns the workdir.
+pub async fn prepare(root: &Path, leaf: &LeafRef) -> Result<PathBuf, ScoreError> {
+    let workdir = root.join(leaf.head.as_str());
+    match tokio::fs::remove_dir_all(&workdir).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    tokio::fs::create_dir_all(&workdir).await?;
+    let repo = workdir.join("leaf");
     let repo_arg = repo.to_string_lossy().into_owned();
     git(
-        workdir.path(),
+        &workdir,
         "clone",
-        &[
-            "-c",
-            &header,
-            "clone",
-            "--quiet",
-            "--no-checkout",
-            &request.remote,
-            &repo_arg,
-        ],
+        &["clone", "--quiet", "--no-checkout", &leaf.remote, &repo_arg],
     )
     .await?;
 
-    let (base, head) = (request.base.as_str(), request.head.as_str());
+    let (base, head) = (leaf.base.as_str(), leaf.head.as_str());
     git(
         &repo,
         "checkout",
@@ -73,19 +83,8 @@ pub async fn score(request: &ScoreRequest) -> Result<ScoreReport, ScoreError> {
     if !succeeds(&repo, &["merge-base", "--is-ancestor", base, head]).await? {
         return Err(ScoreError::NotDescendant);
     }
-
-    let root_toml = match git(
-        &repo,
-        "show ficus.toml",
-        &["show", &format!("{base}:ficus.toml")],
-    )
-    .await
-    {
-        Ok(text) => text,
-        Err(ScoreError::Git { .. }) => return Err(ScoreError::NoRootChecks),
-        Err(other) => return Err(other),
-    };
-    let root = RootChecks::parse(&root_toml)?;
+    // Fail now, while it is cheap, if the root defines nothing to run.
+    root_checks(&repo, base).await?;
 
     let mut root_has_devenv = false;
     for path in LOCKED_PATHS {
@@ -106,17 +105,49 @@ pub async fn score(request: &ScoreRequest) -> Result<ScoreReport, ScoreError> {
         }
     }
 
-    let checks = if root_has_devenv {
-        let prepare = run(
+    let devenv = if root_has_devenv {
+        let built = run(
             &repo,
             &["devenv", "--quiet", "shell", "--", "true"],
             DEVENV_PREPARE_SECS,
         )
         .await?;
-        if prepare.passed {
-            run_checks(&repo, &root, true).await?
+        Some(if built.passed {
+            Ok(())
         } else {
-            let tail = format!("the root's devenv shell did not build:\n{}", prepare.tail);
+            Err(built.tail)
+        })
+    } else {
+        None
+    };
+
+    let prepared = Prepared {
+        leaf: leaf.clone(),
+        devenv,
+    };
+    tokio::fs::write(
+        workdir.join(PREPARED_FILE),
+        serde_json::to_vec(&prepared).map_err(std::io::Error::other)?,
+    )
+    .await?;
+    Ok(workdir)
+}
+
+/// Phase two, without network: run the root's checks in a prepared workdir,
+/// cost the diff, and remove the workdir.
+pub async fn check(workdir: &Path) -> Result<ScoreReport, ScoreError> {
+    let prepared: Prepared =
+        serde_json::from_slice(&tokio::fs::read(workdir.join(PREPARED_FILE)).await?)
+            .map_err(|error| ScoreError::Io(std::io::Error::other(error)))?;
+    let repo = workdir.join("leaf");
+    let (base, head) = (prepared.leaf.base.as_str(), prepared.leaf.head.as_str());
+    let root = root_checks(&repo, base).await?;
+
+    let checks = match &prepared.devenv {
+        None => run_checks(&repo, &root, false).await?,
+        Some(Ok(())) => run_checks(&repo, &root, true).await?,
+        Some(Err(tail)) => {
+            let tail = format!("the root's devenv shell did not build:\n{tail}");
             root.checks
                 .iter()
                 .map(|check| CheckOutcome {
@@ -127,12 +158,32 @@ pub async fn score(request: &ScoreRequest) -> Result<ScoreReport, ScoreError> {
                 })
                 .collect()
         }
-    } else {
-        run_checks(&repo, &root, false).await?
     };
 
     let cost = diff_cost(&repo, base, head).await?;
+    tokio::fs::remove_dir_all(workdir).await?;
     Ok(ScoreReport { checks, cost })
+}
+
+/// Both phases back to back, for callers with no network policy to switch.
+pub async fn score(root: &Path, leaf: &LeafRef) -> Result<ScoreReport, ScoreError> {
+    let workdir = prepare(root, leaf).await?;
+    check(&workdir).await
+}
+
+/// The root's checks, always read from the base commit.
+async fn root_checks(repo: &Path, base: &str) -> Result<RootChecks, ScoreError> {
+    match git(
+        repo,
+        "show ficus.toml",
+        &["show", &format!("{base}:ficus.toml")],
+    )
+    .await
+    {
+        Ok(text) => Ok(RootChecks::parse(&text)?),
+        Err(ScoreError::Git { .. }) => Err(ScoreError::NoRootChecks),
+        Err(other) => Err(other),
+    }
 }
 
 async fn run_checks(
@@ -318,13 +369,17 @@ mod tests {
             Oid::try_from(self.git(&["rev-parse", "HEAD"])).unwrap()
         }
 
-        fn request(&self, base: Oid, head: Oid) -> ScoreRequest {
-            ScoreRequest {
+        fn request(&self, base: Oid, head: Oid) -> LeafRef {
+            LeafRef {
                 remote: self.path.to_string_lossy().into_owned(),
-                token: "unused".into(),
                 base,
                 head,
             }
+        }
+
+        /// Where workdirs go: beside the origin, inside the fixture's tempdir.
+        fn scratch(&self) -> std::path::PathBuf {
+            self.path.with_file_name("work")
         }
     }
 
@@ -335,7 +390,9 @@ mod tests {
         let repo = Fixture::new();
         let base = repo.commit(&[("ficus.toml", ROOT), ("greeting.txt", "hi\n")], &[]);
         let head = repo.commit(&[("greeting.txt", "hello\nworld\n")], &[]);
-        let report = score(&repo.request(base, head)).await.unwrap();
+        let report = score(&repo.scratch(), &repo.request(base, head))
+            .await
+            .unwrap();
         let passed: Vec<_> = report
             .checks
             .iter()
@@ -352,7 +409,9 @@ mod tests {
         let repo = Fixture::new();
         let base = repo.commit(&[("ficus.toml", ROOT), ("greeting.txt", "hello\n")], &[]);
         let head = repo.commit(&[("notes.txt", "TODO: finish\n")], &[]);
-        let report = score(&repo.request(base, head)).await.unwrap();
+        let report = score(&repo.scratch(), &repo.request(base, head))
+            .await
+            .unwrap();
         let no_todo = report.checks.iter().find(|c| c.name == "no-todo").unwrap();
         assert!(!no_todo.passed);
         assert!(!report.score().unwrap().passes());
@@ -366,7 +425,9 @@ mod tests {
         // adds a devenv.nix the root never had.
         let cheat = "[[check]]\nname = \"has-greeting\"\nrun = \"true\"\n";
         let head = repo.commit(&[("ficus.toml", cheat), ("devenv.nix", "{ }")], &[]);
-        let report = score(&repo.request(base.clone(), head)).await.unwrap();
+        let report = score(&repo.scratch(), &repo.request(base.clone(), head))
+            .await
+            .unwrap();
         assert!(
             !report
                 .checks
@@ -383,7 +444,9 @@ mod tests {
         assert_eq!(report.cost, 0, "locked files are not part of the cost");
 
         let deleted = repo.commit(&[], &["ficus.toml", "devenv.nix"]);
-        let report = score(&repo.request(base, deleted)).await.unwrap();
+        let report = score(&repo.scratch(), &repo.request(base, deleted))
+            .await
+            .unwrap();
         assert_eq!(report.checks.len(), 2);
     }
 
@@ -393,7 +456,7 @@ mod tests {
         let base = repo.commit(&[("greeting.txt", "hi\n")], &[]);
         let head = repo.commit(&[("greeting.txt", "hello\n")], &[]);
         assert!(matches!(
-            score(&repo.request(base, head)).await,
+            score(&repo.scratch(), &repo.request(base, head)).await,
             Err(ScoreError::NoRootChecks)
         ));
     }
@@ -406,7 +469,7 @@ mod tests {
         // Different content: an identical tree, message and second would
         // produce the very same root commit as `base`.
         let unrelated = repo.commit(&[("greeting.txt", "hello, elsewhere\n")], &[]);
-        let result = score(&repo.request(base, unrelated)).await;
+        let result = score(&repo.scratch(), &repo.request(base, unrelated)).await;
         assert!(
             matches!(result, Err(ScoreError::NotDescendant)),
             "{result:?}"
@@ -419,7 +482,9 @@ mod tests {
         let slow = "[[check]]\nname = \"slow\"\nrun = \"sleep 5\"\ntimeout_secs = 1\n";
         let base = repo.commit(&[("ficus.toml", slow)], &[]);
         let head = repo.commit(&[("a.txt", "a\n")], &[]);
-        let report = score(&repo.request(base, head)).await.unwrap();
+        let report = score(&repo.scratch(), &repo.request(base, head))
+            .await
+            .unwrap();
         assert_eq!(
             (report.checks[0].passed, report.checks[0].tail.as_str()),
             (false, "timed out after 1s")

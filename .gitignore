@@ -8,4 +8,4 @@ devenv.local.nix
 .dev.vars
 node_modules
 .alchemy/
-infra/src/scorer/context/ficus-scorer
+infra/src/sandbox/context/ficus-scorer

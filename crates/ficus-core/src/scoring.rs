@@ -79,12 +79,33 @@ impl RootChecks {
     }
 }
 
-/// What the Worker asks the scorer: clone `remote` with the read `token` and
-/// score `head` against `base`.
+/// What the tree asks the sandbox: score `head` against `base`, reading the
+/// leaf at `remote` with `token`. Worker-side only: the sandbox keeps the
+/// token in its egress handler and hands the container a [`LeafRef`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScoreRequest {
     pub remote: String,
     pub token: String,
+    pub base: Oid,
+    pub head: Oid,
+}
+
+impl ScoreRequest {
+    pub fn leaf(&self) -> LeafRef {
+        LeafRef {
+            remote: self.remote.clone(),
+            base: self.base.clone(),
+            head: self.head.clone(),
+        }
+    }
+}
+
+/// What the container is told: a leaf to clone and the two commits to
+/// compare. No credentials: the sandbox's egress handler adds them on the
+/// way out, for this repo only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeafRef {
+    pub remote: String,
     pub base: Oid,
     pub head: Oid,
 }

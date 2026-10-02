@@ -252,7 +252,7 @@ impl TreeObject {
         let attempt = async {
             let stub = self
                 .env
-                .durable_object("SCORER")?
+                .durable_object("SANDBOX")?
                 .get_by_name(repo.as_str())?;
             // axum's Json extractor refuses a body without this (415).
             let headers = Headers::new();

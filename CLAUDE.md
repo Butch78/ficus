@@ -31,12 +31,20 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   `POST /trees/<t>/buds/<b>/harvest` · `POST /trees/<t>/leaves/<l>/{regrow,wither}` · `GET /trees/<t>`.
   Every leaf/node is its own Artifacts repo (`<t>-l<id>`); git auth is `http.extraHeader="Authorization: Bearer <token>"`.
 - `POST /trees/<t>/plant {}` with no `source` creates an empty root and returns a write token; push, plant again.
-- Scoring: TreeObject's alarm scores every Ripening leaf in parallel, one `ScorerContainer` (Rust DO +
-  Cloudflare Container running `crates/ficus-scorer`) per leaf. The root's `ficus.toml` and devenv files
+- Scoring: TreeObject's alarm scores every Ripening leaf in parallel, one `Sandbox` per leaf
+  (infra/src/sandbox: TS Durable Object on native `ctx.container`, Sandbox SDK 1.0 style; NOT the
+  legacy @cloudflare/containers class, which ends 2026-12-31). Internet is off; `Egress` (a
+  WorkerEntrypoint via ctx.exports with props) is the only way out: prepare phase = leaf repo (token
+  added by Egress, never in the container) + nix/devenv caches; check phase = nothing.
+  `ficus-scorer prepare|check` is a CLI run by native exec. The root's `ficus.toml` and devenv files
   come from the base commit (LOCKED_PATHS), so a leaf cannot change its own checks. Cost = diff lines.
-  Image: `infra/src/scorer/context` (nix + devenv; binary from `scripts/build-scorer`).
+  Image: `infra/src/sandbox/context` (nix + devenv; binary from `scripts/build-scorer`).
 - The deploy token needs Containers: Edit (registry credentials) on top of Workers, Workers AI, Artifacts.
 - `just e2e` (FICUS_API=https://ficus-dev.fruitcards.workers.dev) runs the full cycle live.
 - After a deploy, old isolates keep serving for a few seconds: wait before judging a change live
   (an API key minted 7s after a deploy still got the old 10-requests-a-day limit).
 - Better Auth refuses cookie-authenticated POSTs without an `Origin` header (CSRF); scripts must send it.
+- Fast loop: `cd infra && bun run dev` (alchemy dev, stage `local`): whole stack on localhost in seconds,
+  containers via local Docker. Deploy only to verify what local can't (Artifacts, egress interception).
+- Debug from telemetry, not re-runs: `scripts/telemetry [minutes] [worker] [limit]` (Workers
+  Observability; every Worker has logs + traces on). Egress logs one line per decision.

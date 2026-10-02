@@ -8,17 +8,20 @@
     "plan": "bun --bun alchemy plan alchemy.run.ts --stage ${STAGE:-dev}",
     "deploy": "bun --bun alchemy deploy alchemy.run.ts --stage ${STAGE:-dev} --yes",
     "destroy": "bun --bun alchemy destroy alchemy.run.ts --stage ${STAGE:-dev}",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p src/agents && tsc --noEmit -p src/api",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p src/agents && tsc --noEmit -p src/api && tsc --noEmit -p src/sandbox",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "test": "bun test ./src/",
     "clef-review": "bun --bun ./src/clef/review.ts",
     "prepare": "effect-tsgo patch --typescript --oxlint",
-    "auth:schema": "bun ./scripts/auth-schema.ts"
+    "auth:schema": "bun ./scripts/auth-schema.ts",
+    "dev": "bun --bun alchemy dev alchemy.run.ts --stage ${STAGE:-local}"
   },
   "dependencies": {
     "@alchemy.run/better-auth": "2.0.0-beta.80",
     "@better-auth/api-key": "1.7.7",
+    "@cloudflare/containers": "0.3.7",
+    "@cloudflare/sandbox": "1.0.0",
     "@earendil-works/chord": "0.99.2",
     "@earendil-works/pi-ai": "0.99.2",
     "@earendil-works/pi-durable": "0.99.2",

@@ -1,36 +1,63 @@
-//! The scorer's HTTP face, for the `ScorerContainer` Durable Object:
-//! `GET /health` and `POST /score` (a `ScoreRequest`, answered with a
-//! `ScoreReport`), plus the agent sandbox (`POST /fs/<op>`, `POST /exec`).
+//! `ficus-scorer`, run inside the sandbox container with the platform's
+//! `exec`. Two phases, because the sandbox changes the network between them:
+//!
+//!   ficus-scorer prepare '<LeafRef JSON>'   network: Artifacts + nix caches
+//!       clones the leaf, restores the root's locked files, builds the root's
+//!       devenv shell; prints {"workdir": "..."}
+//!   ficus-scorer check <workdir>            network: none
+//!       runs the root's checks, costs the diff; prints a ScoreReport
+//!
+//! Exit 0 with JSON on stdout on success. Exit 2 when the leaf or root
+//! cannot be scored (retrying will not help), 1 for anything else; the
+//! reason is on stderr either way.
 
-use axum::http::StatusCode;
-use axum::routing::{get, post};
-use axum::{Json, Router};
-use ficus_core::scoring::{ScoreReport, ScoreRequest};
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
-async fn score(
-    Json(request): Json<ScoreRequest>,
-) -> Result<Json<ScoreReport>, (StatusCode, String)> {
-    match ficus_scorer::score(&request).await {
-        Ok(report) => Ok(Json(report)),
-        Err(error) if error.is_input_problem() => {
-            Err((StatusCode::UNPROCESSABLE_ENTITY, error.to_string()))
+use ficus_core::scoring::LeafRef;
+use ficus_scorer::ScoreError;
+
+/// Where `prepare` puts workdirs: one per head commit.
+const WORK_ROOT: &str = "/work/score";
+
+#[tokio::main]
+async fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let outcome = match args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        ["prepare", leaf] => prepare(leaf).await,
+        ["check", workdir] => check(Path::new(workdir)).await,
+        _ => {
+            eprintln!(
+                "usage: ficus-scorer prepare '<LeafRef JSON>' | ficus-scorer check <workdir>"
+            );
+            return ExitCode::from(1);
+        }
+    };
+    match outcome {
+        Ok(json) => {
+            println!("{json}");
+            ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("score {}: {error}", request.head.as_str());
-            Err((StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
+            eprintln!("{error}");
+            ExitCode::from(if error.is_input_problem() { 2 } else { 1 })
         }
     }
 }
 
-#[tokio::main]
-async fn main() -> std::io::Result<()> {
-    let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_owned());
-    let app = Router::new()
-        .route("/health", get(|| async { "ok" }))
-        .route("/score", post(score))
-        .route("/fs/{op}", post(ficus_scorer::sandbox::fs))
-        .route("/exec", post(ficus_scorer::sandbox::exec));
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
-    eprintln!("ficus-scorer listening on {port}");
-    axum::serve(listener, app).await
+async fn prepare(leaf: &str) -> Result<String, ScoreError> {
+    let leaf: LeafRef =
+        serde_json::from_str(leaf).map_err(|error| ScoreError::Io(std::io::Error::other(error)))?;
+    let workdir: PathBuf = ficus_scorer::prepare(Path::new(WORK_ROOT), &leaf).await?;
+    Ok(serde_json::json!({ "workdir": workdir }).to_string())
+}
+
+async fn check(workdir: &Path) -> Result<String, ScoreError> {
+    let report = ficus_scorer::check(workdir).await?;
+    serde_json::to_string(&report).map_err(|error| ScoreError::Io(std::io::Error::other(error)))
 }
