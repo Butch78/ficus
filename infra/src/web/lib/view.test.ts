@@ -68,9 +68,11 @@ describe("status", () => {
     expect(status({ Ripe: { commit: b, score: { checks_passed: 2, checks_total: 2, cost: 7 } } }).label).toBe(
       "ripe: passes 2/2 checks, cost 7",
     );
-    expect(status({ Ripe: { commit: b, score: { checks_passed: 1, checks_total: 2, cost: 7 } } }).label).toBe(
-      "ripe: fails 1/2 checks, cost 7",
-    );
+    expect(status({ Ripe: { commit: b, score: { checks_passed: 1, checks_total: 2, cost: 7 } } })).toEqual({
+      tone: "failing",
+      label: "ripe: fails 1/2 checks, cost 7",
+      commit: b,
+    });
     expect(status({ Fruit: { node: 3 } }).tone).toBe("fruit");
     expect(status({ Pruned: { reason: { Regrown: { into: 9 } } } }).label).toBe("pruned: regrown as leaf 9");
     expect(status({ Pruned: { reason: { Withered: { note: "gave up" } } } }).label).toBe("pruned: withered: gave up");

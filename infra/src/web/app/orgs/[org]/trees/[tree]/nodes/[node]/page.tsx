@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { PageHeader } from "../../../../../../../components/page-header.tsx";
 import { RepoBrowser } from "../../../../../../../components/repo-browser.tsx";
 
 export const dynamic = "force-dynamic";
@@ -20,9 +21,14 @@ export default async function NodePage({ params, searchParams }: Props) {
 
   return (
     <>
-      <p>
-        <a href="/">Organizations</a> / <a href={`/orgs/${org}`}>{org}</a> / <a href={base}>{tree}</a> / node {node}
-      </p>
+      <PageHeader
+        trail={[
+          ["Organizations", "/"],
+          [org, `/orgs/${org}`],
+          [tree, base],
+        ]}
+        title={`node ${node}`}
+      />
       <RepoBrowser
         org={org}
         tree={tree}

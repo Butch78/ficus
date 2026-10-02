@@ -1,8 +1,11 @@
+import { Badge, Empty, LayerCard, Text } from "@cloudflare/kumo";
 import { notFound } from "next/navigation";
 import { LeafStatus } from "../../../../../../../components/leaf-status.tsx";
+import { PageHeader } from "../../../../../../../components/page-header.tsx";
 import { RepoBrowser } from "../../../../../../../components/repo-browser.tsx";
 import * as Api from "../../../../../../../lib/api.ts";
 import { load } from "../../../../../../../lib/run.ts";
+import { CollapsiblePanel, CollapsibleRoot, CollapsibleTrigger, LayerCardPrimary, LayerCardSecondary } from "../../../../../../../components/kumo.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -24,37 +27,52 @@ export default async function LeafPage({ params, searchParams }: Props) {
 
   return (
     <>
-      <p>
-        <a href="/">Organizations</a> / <a href={`/orgs/${org}`}>{org}</a> / <a href={base}>{tree}</a> / leaf {leaf}
-      </p>
-      <h2>
-        Leaf {leaf}: {detail.leaf.agent}
-      </h2>
-      <p>
+      <PageHeader
+        trail={[
+          ["Organizations", "/"],
+          [org, `/orgs/${org}`],
+          [tree, base],
+        ]}
+        title={`leaf ${leaf}: ${detail.leaf.agent}`}
+      />
+      <div className="flex flex-col gap-1">
         <LeafStatus state={detail.leaf.state} />
-      </p>
-      <p className="muted">
-        Bud {detail.leaf.bud}, grown from <a href={`${base}/nodes/${detail.leaf.base}`}>node {detail.leaf.base}</a>.
-      </p>
-      <h2>Scoring report</h2>
-      {detail.report === null ? (
-        <p className="muted">Not scored yet: the root's checks run once the leaf is submitted.</p>
-      ) : (
-        <>
-          <p>
-            Cost <strong>{detail.report.cost}</strong> (lines changed outside the locked paths)
-          </p>
-          {detail.report.checks.map((check) => (
-            <details key={check.name} className="card">
-              <summary>
-                {check.passed ? "✅" : "❌"} <code>{check.name}</code>{" "}
-                <span className="muted">{(check.millis / 1000).toFixed(1)}s</span>
-              </summary>
-              <pre>{check.tail || "(no output)"}</pre>
-            </details>
-          ))}
-        </>
-      )}
+        <Text variant="secondary" size="sm">
+          Bud {detail.leaf.bud}, grown from node {detail.leaf.base}.
+        </Text>
+      </div>
+      <LayerCard>
+        <LayerCardSecondary className="flex items-center justify-between">
+          <span>Scoring report</span>
+          {detail.report === null ? null : <Badge variant="outline">cost {detail.report.cost}</Badge>}
+        </LayerCardSecondary>
+        <LayerCardPrimary className="flex flex-col gap-2">
+          {detail.report === null ? (
+            <Empty size="sm" title="Not scored yet" description="The root's checks run once the leaf is submitted." />
+          ) : (
+            detail.report.checks.map((check) => (
+              <CollapsibleRoot key={check.name}>
+                <CollapsibleTrigger>
+                  <span className="inline-flex items-center gap-2">
+                    <Badge variant={check.passed ? "success" : "error"}>{check.passed ? "passed" : "failed"}</Badge>
+                    <Text variant="mono">
+                      {check.name}
+                    </Text>
+                    <Text variant="secondary" as="span" size="sm">
+                      {(check.millis / 1000).toFixed(1)}s
+                    </Text>
+                  </span>
+                </CollapsibleTrigger>
+                <CollapsiblePanel>
+                  <pre className="overflow-x-auto rounded-md border border-kumo-hairline bg-kumo-recessed p-3 font-mono text-sm text-kumo-default">
+                    {check.tail || "(no output)"}
+                  </pre>
+                </CollapsiblePanel>
+              </CollapsibleRoot>
+            ))
+          )}
+        </LayerCardPrimary>
+      </LayerCard>
       <RepoBrowser
         org={org}
         tree={tree}

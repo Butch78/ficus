@@ -50,6 +50,11 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   The browser only talks to the UI's origin: `app/api/auth/*` proxies Better Auth, server components call
   the Api over the binding with the UI's origin, and the Api builds one Better Auth per origin.
   Pages run Effects through `lib/run.ts` (`load`: 401 → /sign-in, 404 → notFound). `just e2e-web` smokes it.
+  Styled with Kumo (`@cloudflare/kumo`, Tailwind v4; guide: `node_modules/@cloudflare/kumo/ai/USAGE.md`, or
+  `bunx kumo doc <Component>`): Kumo components and semantic tokens only (`bg-kumo-*`, `text-kumo-*`,
+  `border-kumo-*`), no palette colors, no `dark:` (`src/web/kumo-styling.test.ts` enforces it). Server
+  components take compound parts (`Table.Row`, `LayerCard.Primary`, ...) from `components/kumo.ts`: on a
+  client reference, `Table.Row` is undefined (React error #130).
   vinext's build needs cwd = `src/web` (alchemy's build child does that).
 - Scoring: TreeObject's alarm first rebases every behind submitted attempt (one `Sandbox` per attempt,
   `POST /rebase`: Egress grants the behind repo read and the fresh repo write; a conflict is 422

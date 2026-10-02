@@ -1,8 +1,11 @@
+import { Button, Empty, Input, LayerCard, Link, Table, Text } from "@cloudflare/kumo";
 import { redirect } from "next/navigation";
+import { FailureBanner } from "../components/failure-banner.tsx";
 import { SignOutButton } from "../components/sign-out-button.tsx";
 import * as Api from "../lib/api.ts";
 import { load } from "../lib/run.ts";
 import { createOrganization } from "./actions.ts";
+import { LayerCardPrimary, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/kumo.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -17,23 +20,54 @@ export default async function Home({ searchParams }: { readonly searchParams: Pr
 
   return (
     <>
-      <p className="muted">
-        Signed in as {session.user.email} <SignOutButton />
-      </p>
-      <h2>Organizations</h2>
-      {organizations.length === 0 ? <p className="muted">None yet: create one to plant trees in.</p> : null}
-      <ul>
-        {organizations.map((organization) => (
-          <li key={organization.id}>
-            <a href={`/orgs/${organization.slug}`}>{organization.name}</a> <code className="muted">{organization.slug}</code>
-          </li>
-        ))}
-      </ul>
-      <form action={createOrganization}>
-        <input name="name" placeholder="new organization" required />
-        <button type="submit">Create</button>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <Text variant="heading" as="h2" size="lg">
+          Organizations
+        </Text>
+        <span className="flex items-center gap-3">
+          <Text variant="secondary" as="span" size="sm">
+            {session.user.email}
+          </Text>
+          <SignOutButton />
+        </span>
+      </div>
+      <FailureBanner error={error} />
+      {organizations.length === 0 ? (
+        <Empty title="No organizations yet" description="Create one to plant trees in." />
+      ) : (
+        <LayerCard>
+          <LayerCardPrimary className="p-0">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Slug</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {organizations.map((organization) => (
+                  <TableRow key={organization.id}>
+                    <TableCell>
+                      <Link href={`/orgs/${organization.slug}`}>{organization.name}</Link>
+                    </TableCell>
+                    <TableCell>
+                      <Text variant="mono-secondary">
+                        {organization.slug}
+                      </Text>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </LayerCardPrimary>
+        </LayerCard>
+      )}
+      <form action={createOrganization} className="flex flex-wrap items-end gap-2">
+        <Input name="name" label="New organization" placeholder="acme" required />
+        <Button type="submit" variant="primary">
+          Create
+        </Button>
       </form>
-      {error === undefined ? null : <p className="error">{error}</p>}
     </>
   );
 }

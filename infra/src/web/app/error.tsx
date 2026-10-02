@@ -1,10 +1,14 @@
 "use client";
 
+import { Banner, Link } from "@cloudflare/kumo";
+
 export default function Failed({ error }: { readonly error: Error }) {
   return (
-    <div className="card">
-      <p className="error">{error.message}</p>
-      <a href="/">Back to your organizations</a>
-    </div>
+    <Banner
+      variant="error"
+      title="Something went wrong"
+      description={error.message}
+      action={<Link href="/">Back to your organizations</Link>}
+    />
   );
 }

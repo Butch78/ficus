@@ -4,7 +4,8 @@
  */
 import type { Bud, Leaf, LeafState, PruneReason, Tree, TreeNode } from "./answers.ts";
 
-export type Tone = "growing" | "ripening" | "ripe" | "fruit" | "pruned";
+/** Where a leaf stands; `failing` is ripe with at least one failed check. */
+export type Tone = "growing" | "ripening" | "ripe" | "failing" | "fruit" | "pruned";
 
 export interface Status {
   readonly tone: Tone;
@@ -37,11 +38,11 @@ export const status = (state: LeafState): Status => {
 
   if ("Ripe" in state) {
     const { score, commit } = state.Ripe;
-    const verdict = score.checks_passed === score.checks_total ? "passes" : "fails";
+    const passes = score.checks_passed === score.checks_total;
 
     return {
-      tone: "ripe",
-      label: `ripe: ${verdict} ${score.checks_passed}/${score.checks_total} checks, cost ${score.cost}`,
+      tone: passes ? "ripe" : "failing",
+      label: `ripe: ${passes ? "passes" : "fails"} ${score.checks_passed}/${score.checks_total} checks, cost ${score.cost}`,
       commit,
     };
   }

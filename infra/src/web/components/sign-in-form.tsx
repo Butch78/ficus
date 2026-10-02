@@ -4,6 +4,7 @@
  * Email sign-in and sign-up, posted to Better Auth through this origin
  * (app/api/auth), which answers with the session cookie.
  */
+import { Banner, Button, Input, LayerCard } from "@cloudflare/kumo";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { type FormEvent, useState } from "react";
@@ -56,26 +57,31 @@ export function SignInForm() {
   };
 
   return (
-    <div className="card">
-      <h2>{mode === "sign-in" ? "Sign in" : "Create an account"}</h2>
-      <form onSubmit={submit}>
-        <input name="email" type="email" placeholder="email" autoComplete="email" required />
-        <input
-          name="password"
-          type="password"
-          placeholder="password (8+ characters)"
-          autoComplete={mode === "sign-in" ? "current-password" : "new-password"}
-          minLength={8}
-          required
-        />
-        <button type="submit" disabled={busy}>
-          {mode === "sign-in" ? "Sign in" : "Sign up"}
-        </button>
-      </form>
-      {failure === undefined ? null : <p className="error">{failure}</p>}
-      <button type="button" onClick={() => setMode(mode === "sign-in" ? "sign-up" : "sign-in")}>
-        {mode === "sign-in" ? "No account? Sign up" : "Have an account? Sign in"}
-      </button>
-    </div>
+    <LayerCard className="mx-auto w-full max-w-md">
+      <LayerCard.Secondary>{mode === "sign-in" ? "Sign in" : "Create an account"}</LayerCard.Secondary>
+      <LayerCard.Primary>
+        <form onSubmit={submit} className="flex flex-col gap-4">
+          <Input name="email" type="email" label="Email" autoComplete="email" required />
+          <Input
+            name="password"
+            type="password"
+            label="Password"
+            description={mode === "sign-up" ? "At least 8 characters." : undefined}
+            autoComplete={mode === "sign-in" ? "current-password" : "new-password"}
+            minLength={8}
+            required
+          />
+          {failure === undefined ? null : <Banner variant="error" size="sm" description={failure} />}
+          <div className="flex items-center justify-between gap-2">
+            <Button type="submit" variant="primary" loading={busy}>
+              {mode === "sign-in" ? "Sign in" : "Sign up"}
+            </Button>
+            <Button type="button" variant="ghost" onClick={() => setMode(mode === "sign-in" ? "sign-up" : "sign-in")}>
+              {mode === "sign-in" ? "No account? Sign up" : "Have an account? Sign in"}
+            </Button>
+          </div>
+        </form>
+      </LayerCard.Primary>
+    </LayerCard>
   );
 }

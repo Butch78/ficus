@@ -98,7 +98,8 @@ just fl               # fmt + clippy (native and wasm32)
 ## Web UI
 
 `infra/src/web` is a [vinext](https://github.com/cloudflare/vinext) app (Cloudflare's Vite
-reimplementation of the Next.js API) on Workers, deployed as its own alchemy stack (`web.run.ts`)
+reimplementation of the Next.js API) on Workers, styled with [Kumo](https://kumo-ui.com) (Cloudflare's
+design system), deployed as its own alchemy stack (`web.run.ts`)
 next to the Api it talks to over a service binding. Sign in, browse your organizations and trees
 (buds → leaves → fruit, each leaf's state and scoring report), and read any leaf's or node's repo
 (history, directories, files) through Artifacts. Every pull request's preview comment links it.
