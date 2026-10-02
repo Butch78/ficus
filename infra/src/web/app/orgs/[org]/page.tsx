@@ -1,6 +1,7 @@
-import { Button, Empty, Input, LayerCard, Link, Table, Text } from "@cloudflare/kumo";
+import { Empty, Input, LayerCard, Link, Table, Text } from "@cloudflare/kumo";
 import { FailureBanner } from "../../../components/failure-banner.tsx";
 import { PageHeader } from "../../../components/page-header.tsx";
+import { SubmitButton } from "../../../components/submit-button.tsx";
 import * as Api from "../../../lib/api.ts";
 import { load } from "../../../lib/run.ts";
 import { plantTree } from "../../actions.ts";
@@ -56,8 +57,8 @@ export default async function Organization({ params, searchParams }: Props) {
         <LayerCardSecondary>Plant a tree</LayerCardSecondary>
         <LayerCardPrimary className="flex flex-col gap-3">
           <Text variant="secondary" size="sm">
-            From a public HTTPS git remote: its default branch becomes the root. Buds and leaves come from agents,
-            through the Api.
+            From a public HTTPS git remote: its default branch becomes the root. Importing takes up to a minute. Buds
+            and leaves come from agents, through the Api.
           </Text>
           <form action={plantTree} className="flex flex-wrap items-end gap-2">
             <input type="hidden" name="org" value={org} />
@@ -70,9 +71,7 @@ export default async function Organization({ params, searchParams }: Props) {
               className="min-w-80"
               required
             />
-            <Button type="submit" variant="primary">
-              Plant
-            </Button>
+            <SubmitButton pending="Planting…">Plant</SubmitButton>
           </form>
         </LayerCardPrimary>
       </LayerCard>

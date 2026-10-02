@@ -38,8 +38,14 @@ export async function createOrganization(form: FormData) {
 export async function plantTree(form: FormData) {
   const org = field(form, "org");
   const tree = field(form, "tree");
-  const outcome = await attempt(Api.plant(org, tree, field(form, "source")));
+  const source = field(form, "source");
+  const outcome = await attempt(Api.plant(org, tree, source));
   const page = `/orgs/${encodeURIComponent(org)}`;
 
-  redirect(back(page, outcome, `${page}/trees/${encodeURIComponent(tree)}`));
+  // The tree page confirms the plant; a refusal names the tree it was for.
+  redirect(
+    Result.isSuccess(outcome)
+      ? `${page}/trees/${encodeURIComponent(tree)}?planted=${encodeURIComponent(source)}`
+      : `${page}?error=${encodeURIComponent(`Could not plant ${tree}: ${outcome.failure.message}`)}`,
+  );
 }

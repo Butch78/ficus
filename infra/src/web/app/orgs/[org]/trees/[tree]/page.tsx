@@ -1,4 +1,4 @@
-import { Badge, Empty, LayerCard, Link, Table, Text } from "@cloudflare/kumo";
+import { Badge, Banner, Empty, LayerCard, Link, Table, Text } from "@cloudflare/kumo";
 import { LeafStatus } from "../../../../../components/leaf-status.tsx";
 import { PageHeader } from "../../../../../components/page-header.tsx";
 import * as Api from "../../../../../lib/api.ts";
@@ -8,8 +8,14 @@ import { LayerCardPrimary, LayerCardSecondary, TableBody, TableCell, TableHead, 
 
 export const dynamic = "force-dynamic";
 
-export default async function TreePage({ params }: { readonly params: Promise<{ org: string; tree: string }> }) {
-  const { org, tree: name } = await params;
+interface Props {
+  readonly params: Promise<{ org: string; tree: string }>;
+  /** `planted`: the source a plant just imported, to confirm it. */
+  readonly searchParams: Promise<{ planted?: string }>;
+}
+
+export default async function TreePage({ params, searchParams }: Props) {
+  const [{ org, tree: name }, { planted }] = await Promise.all([params, searchParams]);
   const tree = await load(Api.showTree(org, name));
   const base = `/orgs/${org}/trees/${name}`;
   const budViews = buds(tree);
@@ -23,6 +29,9 @@ export default async function TreePage({ params }: { readonly params: Promise<{ 
         ]}
         title={name}
       />
+      {planted === undefined ? null : (
+        <Banner title={`Planted ${name}`} description={`Its root is the default branch of ${planted}, at node 0.`} />
+      )}
       <LayerCard>
         <LayerCardSecondary>Trunk: the root, then one node per harvested bud</LayerCardSecondary>
         <LayerCardPrimary className="p-0">

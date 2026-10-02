@@ -1,7 +1,8 @@
-import { Button, Empty, Input, LayerCard, Link, Table, Text } from "@cloudflare/kumo";
+import { Empty, Input, LayerCard, Link, Table, Text } from "@cloudflare/kumo";
 import { redirect } from "next/navigation";
 import { FailureBanner } from "../components/failure-banner.tsx";
 import { SignOutButton } from "../components/sign-out-button.tsx";
+import { SubmitButton } from "../components/submit-button.tsx";
 import * as Api from "../lib/api.ts";
 import { load } from "../lib/run.ts";
 import { createOrganization } from "./actions.ts";
@@ -64,9 +65,7 @@ export default async function Home({ searchParams }: { readonly searchParams: Pr
       )}
       <form action={createOrganization} className="flex flex-wrap items-end gap-2">
         <Input name="name" label="New organization" placeholder="acme" required />
-        <Button type="submit" variant="primary">
-          Create
-        </Button>
+        <SubmitButton pending="Creating…">Create</SubmitButton>
       </form>
     </>
   );
