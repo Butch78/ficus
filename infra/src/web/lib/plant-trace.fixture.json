@@ -1,0 +1,1003 @@
+[
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "401b41912d8772c1",
+      "type": "cf-worker-event",
+      "service": "ficus-pr-1"
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "type": "cf-worker-event",
+      "service": "ficus-web-pr-1"
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "e127288d74dc3720",
+      "type": "cf-worker-event",
+      "service": "ficus-api-pr-1"
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "566fccb999f71944",
+      "type": "cf-worker-event",
+      "service": "ficus-pr-1"
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "566fccb999f71944",
+      "parentSpanId": "4f46e19f95d308d8",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "fetch",
+      "transactionName": "fetch /trees/site",
+      "startTime": 1790973667747,
+      "endTime": 1790973667752
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "401b41912d8772c1",
+      "parentSpanId": "1f9a31e0a8a477cb",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "fetch",
+      "transactionName": "fetch /trees/site",
+      "startTime": 1790973667747,
+      "endTime": 1790973667752
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "1f9a31e0a8a477cb",
+      "parentSpanId": "57c8f3e5b3049dee",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "durable_object_subrequest",
+      "transactionName": "durable_object_subrequest",
+      "startTime": 1790973667747,
+      "endTime": 1790973667752
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "57c8f3e5b3049dee",
+      "parentSpanId": "566fccb999f71944",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "GET",
+      "transactionName": "GET http://tree/trees/site",
+      "startTime": 1790973667747,
+      "endTime": 1790973667752
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "c27966334ea398ce",
+      "parentSpanId": "4f46e19f95d308d8",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973667741,
+      "endTime": 1790973667747
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "bd0f4e4a42ac7090",
+      "parentSpanId": "4f46e19f95d308d8",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973667735,
+      "endTime": 1790973667741
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "264e04c02a3d07e7",
+      "parentSpanId": "4f46e19f95d308d8",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973667730,
+      "endTime": 1790973667735
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "c0c0e5f82afcfa12",
+      "parentSpanId": "4f46e19f95d308d8",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973667724,
+      "endTime": 1790973667730
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "48338170a2016c0d",
+      "type": "cf-worker-event",
+      "service": "ficus-pr-1"
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "58a466eb7cfa1f4c",
+      "parentSpanId": "b58d6988c1fa383c",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "durable_object_storage_get",
+      "transactionName": "durable_object_storage_get",
+      "startTime": 1790973667720,
+      "endTime": 1790973667720
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "b58d6988c1fa383c",
+      "parentSpanId": "401b41912d8772c1",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "GET",
+      "transactionName": "GET http://tree/trees/site",
+      "startTime": 1790973667720,
+      "endTime": 1790973672429
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "527058e77d4a7341",
+      "parentSpanId": "4f46e19f95d308d8",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973667714,
+      "endTime": 1790973667724
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "83eca1ddbf91289c",
+      "parentSpanId": "4f46e19f95d308d8",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973667708,
+      "endTime": 1790973667714
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "ad40981cf766d2f7",
+      "parentSpanId": "4f46e19f95d308d8",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973667701,
+      "endTime": 1790973667708
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "562fbfa3db5eb1d7",
+      "parentSpanId": "4f46e19f95d308d8",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973667693,
+      "endTime": 1790973667701
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "23d20d6d48b854e2",
+      "parentSpanId": "4f46e19f95d308d8",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973667687,
+      "endTime": 1790973667693
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "4f46e19f95d308d8",
+      "parentSpanId": "e127288d74dc3720",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "GET",
+      "transactionName": "GET https://ficus-web-pr-1.example.workers.dev/v1/orgs/acme/trees/site",
+      "startTime": 1790973667687,
+      "endTime": 1790973667752
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "e127288d74dc3720",
+      "parentSpanId": "e1b0879e8910a670",
+      "type": "span",
+      "service": "ficus-web-pr-1",
+      "spanName": "fetch",
+      "transactionName": "fetch /v1/orgs/acme/trees/site",
+      "startTime": 1790973667657,
+      "endTime": 1790973667755
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "742ad94d50fa3b4e",
+      "type": "cf-worker-event",
+      "service": "ficus-api-pr-1"
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "f0acc61db9ba3c8b",
+      "type": "cf-worker-event",
+      "service": "ficus-pr-1"
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "f0acc61db9ba3c8b",
+      "parentSpanId": "8cdd15f6978491b1",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "fetch",
+      "transactionName": "fetch /trees/site",
+      "startTime": 1790973667640,
+      "endTime": 1790973667647
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "48338170a2016c0d",
+      "parentSpanId": "a8492b8781cac37b",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "fetch",
+      "transactionName": "fetch /trees/site",
+      "startTime": 1790973667640,
+      "endTime": 1790973667647
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "a8492b8781cac37b",
+      "parentSpanId": "f01771ffdff04fe8",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "durable_object_subrequest",
+      "transactionName": "durable_object_subrequest",
+      "startTime": 1790973667640,
+      "endTime": 1790973667647
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "f01771ffdff04fe8",
+      "parentSpanId": "f0acc61db9ba3c8b",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "GET",
+      "transactionName": "GET http://tree/trees/site",
+      "startTime": 1790973667640,
+      "endTime": 1790973667647
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "08b3d75b975f9eda",
+      "parentSpanId": "8cdd15f6978491b1",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973667634,
+      "endTime": 1790973667640
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "c07ae4b952fd3ab0",
+      "parentSpanId": "8cdd15f6978491b1",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973667628,
+      "endTime": 1790973667634
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "54ea58c5093d5a3c",
+      "parentSpanId": "8cdd15f6978491b1",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973667622,
+      "endTime": 1790973667628
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "964caca764be3994",
+      "parentSpanId": "8cdd15f6978491b1",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973667616,
+      "endTime": 1790973667622
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "908e3b8a98873903",
+      "parentSpanId": "8cdd15f6978491b1",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973667609,
+      "endTime": 1790973667616
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "427808675c53b4f5",
+      "type": "cf-worker-event",
+      "service": "ficus-pr-1"
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "d9f98b24fc7a5160",
+      "parentSpanId": "31f30ce5a73b9f28",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "durable_object_storage_get",
+      "transactionName": "durable_object_storage_get",
+      "startTime": 1790973667607,
+      "endTime": 1790973667607
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "31f30ce5a73b9f28",
+      "parentSpanId": "48338170a2016c0d",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "GET",
+      "transactionName": "GET http://tree/trees/site",
+      "startTime": 1790973667607,
+      "endTime": 1790973667720
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "0e189c47cc125887",
+      "parentSpanId": "8cdd15f6978491b1",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973667603,
+      "endTime": 1790973667609
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "848f383f2be8f8d4",
+      "parentSpanId": "8cdd15f6978491b1",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973667596,
+      "endTime": 1790973667603
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "06991b7664b4c6ad",
+      "parentSpanId": "8cdd15f6978491b1",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973667589,
+      "endTime": 1790973667596
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "bace64ec5b196ccb",
+      "parentSpanId": "8cdd15f6978491b1",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973667582,
+      "endTime": 1790973667589
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "8cdd15f6978491b1",
+      "parentSpanId": "742ad94d50fa3b4e",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "GET",
+      "transactionName": "GET https://ficus-web-pr-1.example.workers.dev/v1/orgs/acme/trees/site",
+      "startTime": 1790973667582,
+      "endTime": 1790973667647
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "742ad94d50fa3b4e",
+      "parentSpanId": "e1b0879e8910a670",
+      "type": "span",
+      "service": "ficus-web-pr-1",
+      "spanName": "fetch",
+      "transactionName": "fetch /v1/orgs/acme/trees/site",
+      "startTime": 1790973667562,
+      "endTime": 1790973667656
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "11ed44a766937853",
+      "parentSpanId": "006e46a840def9fa",
+      "type": "span",
+      "service": "ficus-web-pr-1",
+      "spanName": "resolve segment modules",
+      "transactionName": "resolve segment modules",
+      "startTime": 1790973667562,
+      "endTime": 1790973667562
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "1986ad16c963a48e",
+      "parentSpanId": "006e46a840def9fa",
+      "type": "span",
+      "service": "ficus-web-pr-1",
+      "spanName": "resolve segment modules",
+      "transactionName": "resolve segment modules",
+      "startTime": 1790973667562,
+      "endTime": 1790973667562
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "006e46a840def9fa",
+      "parentSpanId": "e1b0879e8910a670",
+      "type": "span",
+      "service": "ficus-web-pr-1",
+      "spanName": "build component tree",
+      "transactionName": "build component tree",
+      "startTime": 1790973667562,
+      "endTime": 1790973667562
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "c99a0f123cbce571",
+      "parentSpanId": "e1b0879e8910a670",
+      "type": "span",
+      "service": "ficus-web-pr-1",
+      "spanName": "resolve page components",
+      "transactionName": "resolve page components /orgs/[org]/trees/[tree]",
+      "startTime": 1790973667562,
+      "endTime": 1790973667562
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "e1b0879e8910a670",
+      "parentSpanId": "25067d7803d4da83",
+      "type": "span",
+      "service": "ficus-web-pr-1",
+      "spanName": "RSC GET /orgs/[org]/trees/[tree]",
+      "transactionName": "RSC GET /orgs/[org]/trees/[tree] /orgs/[org]/trees/[tree] /orgs/[org]/trees/[tree] /orgs/acme/trees/site",
+      "startTime": 1790973667562,
+      "endTime": 1790973667756
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "a170ed7c073e0bf9",
+      "type": "cf-worker-event",
+      "service": "ficus-api-pr-1"
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "49be8bec5a944c85",
+      "parentSpanId": "c0cbb17bb0904557",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_run",
+      "transactionName": "d1 run insert or ignore into \"ficus_tree\" (\"org",
+      "startTime": 1790973667521,
+      "endTime": 1790973667557
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "b502dc98835834e9",
+      "type": "cf-worker-event",
+      "service": "ficus-pr-1"
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "2565ca9cbf06de9e",
+      "parentSpanId": "0f17ff697cc0a719",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "durable_object_storage_put",
+      "transactionName": "durable_object_storage_put",
+      "startTime": 1790973667429,
+      "endTime": 1790973667429
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "369ef51df2e116c5",
+      "parentSpanId": "0f17ff697cc0a719",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "durable_object_storage_get",
+      "transactionName": "durable_object_storage_get",
+      "startTime": 1790973667429,
+      "endTime": 1790973667429
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "a46c93ae82b5cc1b",
+      "parentSpanId": "9f57d3d5d3915051",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "jsRpcCall",
+      "transactionName": "RPC call: revokeToken",
+      "startTime": 1790973667385,
+      "endTime": 1790973667429
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "d810aba155285ee8",
+      "parentSpanId": "9f57d3d5d3915051",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "jsRpcCall",
+      "transactionName": "RPC call: listTokens",
+      "startTime": 1790973667322,
+      "endTime": 1790973667385
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "9f57d3d5d3915051",
+      "parentSpanId": "3cc4b9812d78dfe6",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "jsRpcCall",
+      "transactionName": "RPC call: get",
+      "startTime": 1790973667289,
+      "endTime": 1790973667322
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "3cc4b9812d78dfe6",
+      "parentSpanId": "0f17ff697cc0a719",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "jsRpcSession",
+      "transactionName": "RPC session",
+      "startTime": 1790973667289,
+      "endTime": 1790973667607
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "c05d81f57a7b8af8",
+      "parentSpanId": "d3e23bc6900b3da0",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "jsRpcCall",
+      "transactionName": "RPC call: log",
+      "startTime": 1790973667248,
+      "endTime": 1790973667289
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "d3e23bc6900b3da0",
+      "parentSpanId": "960f347dcdf15eb4",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "jsRpcCall",
+      "transactionName": "RPC call: get",
+      "startTime": 1790973667185,
+      "endTime": 1790973667248
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "960f347dcdf15eb4",
+      "parentSpanId": "0f17ff697cc0a719",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "jsRpcSession",
+      "transactionName": "RPC session",
+      "startTime": 1790973667185,
+      "endTime": 1790973667607
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "fcdeaefaea98d60d",
+      "parentSpanId": "d43dd11b280e62ae",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "jsRpcCall",
+      "transactionName": "RPC call: import",
+      "startTime": 1790973663149,
+      "endTime": 1790973667185
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "d43dd11b280e62ae",
+      "parentSpanId": "0f17ff697cc0a719",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "jsRpcSession",
+      "transactionName": "RPC session",
+      "startTime": 1790973663149,
+      "endTime": 1790973667185
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "c2cabe21fadbf767",
+      "parentSpanId": "0f17ff697cc0a719",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "durable_object_storage_get",
+      "transactionName": "durable_object_storage_get",
+      "startTime": 1790973663149,
+      "endTime": 1790973663149
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "0f17ff697cc0a719",
+      "parentSpanId": "427808675c53b4f5",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "POST",
+      "transactionName": "POST http://tree/trees/site/plant",
+      "startTime": 1790973663148,
+      "endTime": 1790973667607
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "427808675c53b4f5",
+      "parentSpanId": "c5dec7f1a92a7a62",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "fetch",
+      "transactionName": "fetch /trees/site/plant",
+      "startTime": 1790973662835,
+      "endTime": 1790973667520
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "c5dec7f1a92a7a62",
+      "parentSpanId": "9e960b529f5fc90f",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "durable_object_subrequest",
+      "transactionName": "durable_object_subrequest",
+      "startTime": 1790973662835,
+      "endTime": 1790973667520
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "9e960b529f5fc90f",
+      "parentSpanId": "b502dc98835834e9",
+      "type": "span",
+      "service": "ficus-pr-1",
+      "spanName": "POST",
+      "transactionName": "POST http://tree/trees/site/plant",
+      "startTime": 1790973662793,
+      "endTime": 1790973667520
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "b502dc98835834e9",
+      "parentSpanId": "c0cbb17bb0904557",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "fetch",
+      "transactionName": "fetch /trees/site/plant",
+      "startTime": 1790973662753,
+      "endTime": 1790973667521
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "b27c4e496c84f820",
+      "parentSpanId": "c0cbb17bb0904557",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973662746,
+      "endTime": 1790973662753
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "3fa46ad93a6cc756",
+      "parentSpanId": "c0cbb17bb0904557",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973662739,
+      "endTime": 1790973662746
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "0a72b18dc5d08b04",
+      "parentSpanId": "c0cbb17bb0904557",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973662731,
+      "endTime": 1790973662739
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "82934fcff96d3af2",
+      "parentSpanId": "c0cbb17bb0904557",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973662724,
+      "endTime": 1790973662731
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "14441c8e8c896aea",
+      "parentSpanId": "c0cbb17bb0904557",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973662713,
+      "endTime": 1790973662724
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "094edfb87ad80ba3",
+      "parentSpanId": "c0cbb17bb0904557",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973662707,
+      "endTime": 1790973662713
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "c121335d4a8a4c45",
+      "parentSpanId": "c0cbb17bb0904557",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973662698,
+      "endTime": 1790973662707
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "70ad0e7c2fe69918",
+      "parentSpanId": "c0cbb17bb0904557",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973662689,
+      "endTime": 1790973662698
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "0cb93d38d7688a5f",
+      "parentSpanId": "c0cbb17bb0904557",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "d1_all",
+      "transactionName": "d1 all select \"primary\".* from (select * from \"",
+      "startTime": 1790973662682,
+      "endTime": 1790973662689
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "c0cbb17bb0904557",
+      "parentSpanId": "a170ed7c073e0bf9",
+      "type": "span",
+      "service": "ficus-api-pr-1",
+      "spanName": "POST",
+      "transactionName": "POST https://ficus-web-pr-1.example.workers.dev/v1/orgs/acme/trees/site/plant",
+      "startTime": 1790973662682,
+      "endTime": 1790973667557
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "a170ed7c073e0bf9",
+      "parentSpanId": "93d6d4b1049317b7",
+      "type": "span",
+      "service": "ficus-web-pr-1",
+      "spanName": "fetch",
+      "transactionName": "fetch /v1/orgs/acme/trees/site/plant",
+      "startTime": 1790973662654,
+      "endTime": 1790973667560
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "93d6d4b1049317b7",
+      "parentSpanId": "25067d7803d4da83",
+      "type": "span",
+      "service": "ficus-web-pr-1",
+      "spanName": "ficus.plant",
+      "transactionName": "ficus.plant",
+      "startTime": 1790973662654,
+      "endTime": 1790973667562
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "25067d7803d4da83",
+      "parentSpanId": "49ae047d6ddf2149",
+      "type": "span",
+      "service": "ficus-web-pr-1",
+      "spanName": "RSC POST",
+      "transactionName": "RSC POST /orgs/[org]/trees/[tree] /orgs/acme",
+      "startTime": 1790973662654,
+      "endTime": 1790973667756
+    }
+  },
+  {
+    "$metadata": {
+      "traceId": "t",
+      "spanId": "49ae047d6ddf2149",
+      "type": "span",
+      "service": "ficus-web-pr-1",
+      "spanName": "POST",
+      "transactionName": "POST https://ficus-web-pr-1.example.workers.dev/orgs/acme",
+      "startTime": 1790973662654,
+      "endTime": 1790973667756
+    }
+  }
+]

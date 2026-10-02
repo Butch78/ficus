@@ -1,4 +1,5 @@
 import { Badge, Banner, Empty, LayerCard, Link, Table, Text } from "@cloudflare/kumo";
+import { ActivityPanel } from "../../../../../components/activity-panel.tsx";
 import { LeafStatus } from "../../../../../components/leaf-status.tsx";
 import { PageHeader } from "../../../../../components/page-header.tsx";
 import * as Api from "../../../../../lib/api.ts";
@@ -10,12 +11,12 @@ export const dynamic = "force-dynamic";
 
 interface Props {
   readonly params: Promise<{ org: string; tree: string }>;
-  /** `planted`: the source a plant just imported, to confirm it. */
-  readonly searchParams: Promise<{ planted?: string }>;
+  /** `planted`: the source a plant just imported, to confirm it; `trace`: its operation, to show its trace. */
+  readonly searchParams: Promise<{ planted?: string; trace?: string }>;
 }
 
 export default async function TreePage({ params, searchParams }: Props) {
-  const [{ org, tree: name }, { planted }] = await Promise.all([params, searchParams]);
+  const [{ org, tree: name }, { planted, trace }] = await Promise.all([params, searchParams]);
   const tree = await load(Api.showTree(org, name));
   const base = `/orgs/${org}/trees/${name}`;
   const budViews = buds(tree);
@@ -32,6 +33,7 @@ export default async function TreePage({ params, searchParams }: Props) {
       {planted === undefined ? null : (
         <Banner title={`Planted ${name}`} description={`Its root is the default branch of ${planted}, at node 0.`} />
       )}
+      {trace === undefined ? null : <ActivityPanel org={org} operation={trace} />}
       <LayerCard>
         <LayerCardSecondary>Trunk: the root, then one node per harvested bud</LayerCardSecondary>
         <LayerCardPrimary className="p-0">

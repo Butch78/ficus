@@ -55,6 +55,14 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   `border-kumo-*`), no palette colors, no `dark:` (`src/web/kumo-styling.test.ts` enforces it). Server
   components take compound parts (`Table.Row`, `LayerCard.Primary`, ...) from `components/kumo.ts`: on a
   client reference, `Table.Row` is undefined (React error #130).
+- "What happened" panel: the UI shows an operation's Cloudflare trace. Same-account service bindings share one
+  trace (UI → Api → tree Worker → TreeObject → Artifacts/D1). A Worker can't read its trace id, so
+  `lib/trace.ts` `traced()` opens a `ficus.<op>` span with attributes `ficus.operation` (uuid) + `ficus.org`;
+  `/api/activity` (members only) finds the trace by those via the Workers Observability query API, and
+  `lib/activity.ts` turns spans into steps (re-parents orphans, folds repeats). Traces are queryable ~15-20 s
+  after the work, Durable Object spans later still; streaming tail Workers would be live but Cloudflare does
+  not deliver them in production yet. Needs `FICUS_OBSERVABILITY_TOKEN` (Workers Observability Read;
+  bootstrap mints `ficus-observability-read` for CI); unset → the panel says tracing isn't configured.
   vinext's build needs cwd = `src/web` (alchemy's build child does that).
 - Scoring: TreeObject's alarm first rebases every behind submitted attempt (one `Sandbox` per attempt,
   `POST /rebase`: Egress grants the behind repo read and the fresh repo write; a conflict is 422

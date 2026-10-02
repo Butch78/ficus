@@ -38,6 +38,8 @@ jobs:
       PULL_REQUEST: ${{ github.event.pull_request.number }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      # Read-only; the UI shows operations' traces with it (web.run.ts).
+      FICUS_OBSERVABILITY_TOKEN: ${{ secrets.FICUS_OBSERVABILITY_TOKEN }}
       GITHUB_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -1,4 +1,5 @@
 import { Empty, Input, LayerCard, Link, Table, Text } from "@cloudflare/kumo";
+import { ActivityPanel } from "../../../components/activity-panel.tsx";
 import { FailureBanner } from "../../../components/failure-banner.tsx";
 import { PageHeader } from "../../../components/page-header.tsx";
 import { SubmitButton } from "../../../components/submit-button.tsx";
@@ -11,17 +12,19 @@ export const dynamic = "force-dynamic";
 
 interface Props {
   readonly params: Promise<{ org: string }>;
-  readonly searchParams: Promise<{ error?: string }>;
+  /** `trace`: the operation whose Cloudflare trace to show (a refused plant). */
+  readonly searchParams: Promise<{ error?: string; trace?: string }>;
 }
 
 export default async function Organization({ params, searchParams }: Props) {
-  const [{ org }, { error }] = await Promise.all([params, searchParams]);
+  const [{ org }, { error, trace }] = await Promise.all([params, searchParams]);
   const { trees } = await load(Api.trees(org));
 
   return (
     <>
       <PageHeader trail={[["Organizations", "/"]]} title={org} />
       <FailureBanner error={error} />
+      {trace === undefined ? null : <ActivityPanel org={org} operation={trace} />}
       {trees.length === 0 ? (
         <Empty title="No trees yet" description="Plant one from a public git remote below." />
       ) : (

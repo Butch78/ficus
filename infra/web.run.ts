@@ -34,12 +34,25 @@ export default Alchemy.Stack(
     // alchemy.run.ts's `Api`, as deployed to this same stage.
     const api = yield* Cloudflare.Worker.ref("Api", { stack: "Ficus", stage });
 
+    // Reads Workers Observability, so the UI can show an operation's trace
+    // (src/web/lib/trace.ts). Optional: without it the activity panel says
+    // tracing is not configured. Read-only by intent: bootstrap.run.ts mints
+    // one with Workers Observability Read and nothing else.
+    const observabilityToken = yield* Config.option(Config.Redacted("FICUS_OBSERVABILITY_TOKEN"));
+    const accountId = yield* Config.String("CLOUDFLARE_ACCOUNT_ID");
+
     const web = yield* Cloudflare.Website.Vinext("Web", {
       name: `ficus-web-${stage}`,
       rootDir: `${import.meta.dirname}/src/web`,
       compatibility: COMPATIBILITY,
       observability: OBSERVABILITY,
-      env: { API: api },
+      env: {
+        API: api,
+        CLOUDFLARE_ACCOUNT_ID: accountId,
+        // A secret when configured; an empty plain value (read as "not
+        // configured") otherwise.
+        FICUS_OBSERVABILITY_TOKEN: Option.getOrElse(observabilityToken, () => ""),
+      },
     });
 
     // A pull request's preview stage says where it lives, on the pull request:
