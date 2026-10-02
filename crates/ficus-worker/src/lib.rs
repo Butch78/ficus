@@ -2,11 +2,13 @@
 //! tree's Durable Object.
 
 mod artifacts;
+mod scorer_container;
 mod tree_object;
 
 use ficus_core::tree::RepoName;
 use worker::{Context, Env, Request, Response, Result, event};
 
+pub use scorer_container::ScorerContainer;
 pub use tree_object::TreeObject;
 
 #[event(fetch)]

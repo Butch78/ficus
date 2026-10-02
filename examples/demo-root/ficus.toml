@@ -1,0 +1,12 @@
+# The root's checks. A leaf becomes fruit only if every one passes; among
+# those, the smallest diff wins.
+
+[[check]]
+name = "tests"
+run = "python -m pytest -q"
+timeout_secs = 300
+
+[[check]]
+name = "compiles"
+run = "python -m compileall -q slug.py"
+timeout_secs = 60

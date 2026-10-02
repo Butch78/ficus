@@ -1,75 +1,138 @@
 #!/usr/bin/env bash
-# End-to-end against a deployed Ficus Worker: plant -> bud -> three agents
-# push -> ripen -> harvest -> stale -> regrow -> harvest. Needs FICUS_API and
-# FICUS_ADMIN_TOKEN. Creates repos in the stage's Artifacts namespace.
+# End-to-end against a deployed Ficus Worker, scored by the root's own checks
+# in scorer containers:
+#
+#   plant an empty root -> push examples/demo-root -> plant
+#   bud A: three agents (two honest fixes of different size, one cheater)
+#   bud B: one agent
+#   submit all -> containers score them -> harvest A (smallest passing diff)
+#   B's leaf is stale -> regrow on A's fruit -> submit -> harvest B
+#
+# Needs FICUS_API and FICUS_ADMIN_TOKEN. Creates repos in the stage's
+# Artifacts namespace.
 set -euo pipefail
 API=${FICUS_API:?set FICUS_API to the Worker URL, e.g. https://ficus-dev.<account>.workers.dev}
+ROOT_DIR=$(cd "$(dirname "$0")/../examples/demo-root" && pwd)
 T="e2e-$(date +%s)"
 W=$(mktemp -d)
 auth=(-H "Authorization: Bearer $FICUS_ADMIN_TOKEN" -H "content-type: application/json")
 call() { local m=$1 p=$2 d=${3:-}; if [ -n "$d" ]; then curl -s -X "$m" "${auth[@]}" "$API/trees/$T$p" -d "$d"; else curl -s -X "$m" "${auth[@]}" "$API/trees/$T$p"; fi; }
 step() { echo; echo "== $*"; }
+gitc() { git -c user.name="$1" -c user.email="$1@ficus.dev" -c commit.gpgsign=false "${@:2}"; }
+
+clone() { # remote token dir
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    git -c http.extraHeader="Authorization: Bearer $2" clone -q "$1" "$3" 2>/dev/null && return 0
+    rm -rf "$3"; sleep 2
+  done
+  echo "clone of $1 failed" >&2; return 1
+}
+
+push() { # dir token
+  git -C "$1" -c http.extraHeader="Authorization: Bearer $2" push -q origin HEAD
+}
+
+sprout() { # bud agent -> leaf id; clones into $W/<leaf>
+  local out leaf
+  out=$(call POST "/buds/$1/leaves" "{\"agent\":\"$2\"}")
+  leaf=$(jq -r .leaf <<<"$out")
+  [ "$leaf" != null ] || { echo "sprout failed: $out" >&2; return 1; }
+  jq -r .token <<<"$out" > "$W/token-$leaf"
+  clone "$(jq -r .remote <<<"$out")" "$(cat "$W/token-$leaf")" "$W/$leaf"
+  echo "$leaf"
+}
+
+wait_scored() { # leaf -> prints its state once it is no longer ripening
+  local state
+  for _ in $(seq 1 120); do
+    state=$(call GET "/leaves/$1" | jq -c '.leaf.state')
+    case "$state" in *Ripening*) sleep 5 ;; *) echo "$state"; return 0 ;; esac
+  done
+  echo "leaf $1 still ripening after 10 minutes" >&2; return 1
+}
+
+report() { # leaf
+  call GET "/leaves/$1" | jq -c '{cost: .report.cost, checks: [.report.checks[]? | {name, passed}]}'
+}
 
 step "unauthenticated request is refused"
 curl -s -o /dev/null -w "%{http_code}\n" "$API/trees/$T"
 
-step "plant $T from octocat/Hello-World"
-call POST /plant '{"source":"https://github.com/octocat/Hello-World"}' | jq -c '{name, head}'
+step "plant an empty root, push the demo root into it, plant again"
+out=$(call POST /plant '{}'); jq -c '{state}' <<<"$out"
+mkdir "$W/root" && cp -r "$ROOT_DIR"/. "$W/root/" && rm -rf "$W/root/.devenv" "$W/root/__pycache__"
+git -C "$W/root" init -q -b main && git -C "$W/root" add -A && gitc root -C "$W/root" commit -qm "demo root"
+git -C "$W/root" remote add origin "$(jq -r .remote <<<"$out")"
+push "$W/root" "$(jq -r .token <<<"$out")"
+call POST /plant '{}' | jq -c '{name, head}'
 
 step "two buds"
-A=$(call POST /buds '{"intent":"add a CONTRIBUTING file"}' | jq -r .bud)
-B=$(call POST /buds '{"intent":"add a LICENSE file"}' | jq -r .bud)
+A=$(call POST /buds '{"intent":"slugify should drop punctuation: \"Hello, World!\" -> \"hello-world\""}' | jq -r .bud)
+B=$(call POST /buds '{"intent":"add a test that slugify keeps digits"}' | jq -r .bud)
 echo "A=$A B=$B"
 
-grow() { # bud agent file content -> prints leaf id, pushes a commit
-  local bud=$1 agent=$2 file=$3 body=$4
-  local out; out=$(call POST "/buds/$bud/leaves" "{\"agent\":\"$agent\"}")
-  local leaf remote token; leaf=$(jq -r .leaf <<<"$out"); remote=$(jq -r .remote <<<"$out"); token=$(jq -r .token <<<"$out")
-  if [ "$leaf" = null ]; then echo "sprout failed: $out" >&2; return 1; fi
-  echo "$token" > "$W/token-$leaf"
-  for i in 1 2 3 4 5 6 7 8 9 10; do
-    git -c http.extraHeader="Authorization: Bearer $token" clone -q "$remote" "$W/$leaf" 2>/dev/null && break
-    rm -rf "$W/$leaf"; sleep 2
-  done
-  [ -d "$W/$leaf" ] || { echo "clone failed for leaf $leaf" >&2; return 1; }
-  ( cd "$W/$leaf" && echo "$body" > "$file" && git add "$file" && git -c user.name="$agent" -c user.email="$agent@ficus.dev" commit -qm "$agent: $file" \
-    && git -c http.extraHeader="Authorization: Bearer $token" push -q origin HEAD 2>&1 ) >&2
-  echo "$leaf"
-}
+step "bud A: alpha (regex rewrite + test), beta (smaller fix), cheater (rewrites ficus.toml)"
+alpha=$(sprout "$A" alpha)
+cat > "$W/$alpha/slug.py" <<'PY'
+"""Turn a title into a URL slug."""
 
-step "three agents grow leaves (alpha, beta on A; gamma on B)"
-L1=$(grow "$A" alpha CONTRIBUTING.md "alpha's long contributing guide")
-L2=$(grow "$A" beta CONTRIBUTING.md "beta: short guide")
-L3=$(grow "$B" gamma LICENSE "MIT")
-echo "alpha=$L1 beta=$L2 gamma=$L3"
+import re
 
-step "ripen all three (beta cheapest on A)"
-call POST "/leaves/$L1/ripe" '{"checks_passed":3,"checks_total":3,"cost":50}' | jq -c .
-call POST "/leaves/$L2/ripe" '{"checks_passed":3,"checks_total":3,"cost":20}' | jq -c .
-call POST "/leaves/$L3/ripe" '{"checks_passed":3,"checks_total":3,"cost":10}' | jq -c .
+_WORD = re.compile(r"[a-z0-9]+")
 
-step "a ripe leaf's token is revoked: alpha can no longer push"
-if ( cd "$W/$L1" && echo more >> CONTRIBUTING.md \
-  && git -c user.name=alpha -c user.email=alpha@ficus.dev commit -qam "alpha: more" \
-  && git -c http.extraHeader="Authorization: Bearer $(cat "$W/token-$L1")" push -q origin HEAD 2>/dev/null ); then
-  echo "FAIL: alpha pushed after ripening" >&2; exit 1
-fi
+
+def slugify(title: str) -> str:
+    """Lowercase `title` and join its runs of letters and digits with hyphens."""
+    return "-".join(_WORD.findall(title.lower()))
+PY
+printf '\n\ndef test_drops_punctuation():\n    assert slugify("Hello, World!") == "hello-world"\n' >> "$W/$alpha/tests/test_slug.py"
+gitc alpha -C "$W/$alpha" commit -qam "alpha: regex slugify"; push "$W/$alpha" "$(cat "$W/token-$alpha")"
+
+beta=$(sprout "$A" beta)
+sed -i 's/    words = title.lower().split()/    words = "".join(c if c.isalnum() else " " for c in title.lower()).split()/' "$W/$beta/slug.py"
+gitc beta -C "$W/$beta" commit -qam "beta: treat punctuation as spaces"; push "$W/$beta" "$(cat "$W/token-$beta")"
+
+cheater=$(sprout "$A" cheater)
+printf 'def slugify(title):\n    return title\n' > "$W/$cheater/slug.py"
+printf '[[check]]\nname = "tests"\nrun = "true"\n' > "$W/$cheater/ficus.toml"
+gitc cheater -C "$W/$cheater" commit -qam "cheater: make the checks pass"; push "$W/$cheater" "$(cat "$W/token-$cheater")"
+
+step "bud B: gamma adds a test"
+gamma=$(sprout "$B" gamma)
+printf '\n\ndef test_keeps_digits():\n    assert slugify("Route 66") == "route-66"\n' >> "$W/$gamma/tests/test_slug.py"
+gitc gamma -C "$W/$gamma" commit -qam "gamma: digits test"; push "$W/$gamma" "$(cat "$W/token-$gamma")"
+
+step "submit all four; scorer containers run the root's checks"
+for leaf in "$alpha" "$beta" "$cheater" "$gamma"; do call POST "/leaves/$leaf/ripe" | jq -c .; done
+
+step "a submitted leaf's token is revoked: alpha can no longer push"
+echo "# more" >> "$W/$alpha/slug.py"
+gitc alpha -C "$W/$alpha" commit -qam "alpha: more"
+if push "$W/$alpha" "$(cat "$W/token-$alpha")" 2>/dev/null; then echo "FAIL: alpha pushed after submitting" >&2; exit 1; fi
 echo "refused, as expected"
 
-step "harvest A"
+step "scores"
+for leaf in "$alpha" "$beta" "$cheater" "$gamma"; do
+  echo "leaf $leaf: $(wait_scored "$leaf")"
+  echo "  $(report "$leaf")"
+done
+
+step "harvest A: the smallest diff that passes every check"
 H=$(call POST "/buds/$A/harvest"); jq -c . <<<"$H"
+[ "$(jq -r .fruit <<<"$H")" = "$beta" ] || { echo "FAIL: expected beta ($beta) to be fruit" >&2; exit 1; }
 
 step "B cannot harvest: gamma grew from the old head"
 call POST "/buds/$B/harvest"; echo
 
-step "regrow gamma from the new head"
-R=$(call POST "/leaves/$L3/regrow"); jq -c '{leaf, base_commit, compost: [.compost[] | {leaf, agent, reason}]}' <<<"$R"
-L4=$(jq -r .leaf <<<"$R"); token=$(jq -r .token <<<"$R"); remote=$(jq -r .remote <<<"$R")
-for i in 1 2 3 4 5 6 7 8 9 10; do git -c http.extraHeader="Authorization: Bearer $token" clone -q "$remote" "$W/$L4" 2>/dev/null && break; rm -rf "$W/$L4"; sleep 2; done
-echo "regrown leaf has beta's fruit: $(cat "$W/$L4/CONTRIBUTING.md")"
-( cd "$W/$L4" && echo MIT > LICENSE && git add LICENSE && git -c user.name=gamma -c user.email=g@ficus.dev commit -qm "gamma: LICENSE" \
-  && git -c http.extraHeader="Authorization: Bearer $token" push -q origin HEAD )
-call POST "/leaves/$L4/ripe" '{"checks_passed":3,"checks_total":3,"cost":10}' | jq -c .
+step "regrow gamma on A's fruit"
+R=$(call POST "/leaves/$gamma/regrow"); jq -c '{leaf, base_commit, compost: [.compost[] | {leaf, agent, reason}]}' <<<"$R"
+gamma2=$(jq -r .leaf <<<"$R"); jq -r .token <<<"$R" > "$W/token-$gamma2"
+clone "$(jq -r .remote <<<"$R")" "$(cat "$W/token-$gamma2")" "$W/$gamma2"
+grep -q isalnum "$W/$gamma2/slug.py" && echo "regrown leaf starts from beta's fruit"
+printf '\n\ndef test_keeps_digits():\n    assert slugify("Route 66") == "route-66"\n' >> "$W/$gamma2/tests/test_slug.py"
+gitc gamma -C "$W/$gamma2" commit -qam "gamma: digits test"; push "$W/$gamma2" "$(cat "$W/token-$gamma2")"
+call POST "/leaves/$gamma2/ripe" | jq -c .
+echo "leaf $gamma2: $(wait_scored "$gamma2")"
 
 step "harvest B on top of A"
 call POST "/buds/$B/harvest" | jq -c .

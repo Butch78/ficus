@@ -42,6 +42,42 @@ export default Alchemy.Stack(
       },
     });
 
+    // The scorer: ficus-scorer (static musl) in an image with nix + devenv.
+    // The binary's hash rides into the container's env, which is the edge
+    // that builds the binary before the image that copies it.
+    const scorerBinary = yield* Command.Build("ScorerBinary", {
+      cwd: "..",
+      command: "scripts/build-scorer",
+      outdir: "infra/src/scorer/context",
+      memo: {
+        include: [
+          "crates/ficus-scorer/**",
+          "crates/ficus-core/**",
+          "Cargo.toml",
+          "Cargo.lock",
+          "rust-toolchain.toml",
+          "scripts/build-scorer",
+        ],
+        lockfile: false,
+      },
+    });
+
+    const scorer = Cloudflare.Container("Scorer", {
+      name: `ficus-scorer-${stage}`,
+      className: "ScorerContainer",
+      context: `${import.meta.dirname}/src/scorer/context`,
+      instances: 0,
+      maxInstances: 10,
+      // A root's devenv shell plus its checks: nix needs the disk and memory
+      // the basic tier does not have.
+      instanceType: "standard-1",
+      observability: { logs: { enabled: true } },
+      env: {
+        PORT: "8080",
+        FICUS_SCORER_HASH: Output.map(scorerBinary.hash.output, (hash) => hash ?? "unhashed"),
+      },
+    });
+
     // One namespace per stage; Artifacts creates it with the first repo.
     const artifacts = yield* Cloudflare.Artifacts.Namespace("Artifacts", { namespace: `ficus-${stage}` });
 
@@ -60,6 +96,8 @@ export default Alchemy.Stack(
         ARTIFACTS: artifacts,
         // `TreeObject` is the #[durable_object] struct in crates/ficus-worker.
         TREES: Cloudflare.DurableObject("TREES", { className: "TreeObject" }),
+        // `ScorerContainer` is the #[durable_object] struct that runs it.
+        SCORER: scorer,
       },
     });
 

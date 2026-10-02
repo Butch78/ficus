@@ -1,6 +1,7 @@
 //! Ficus domain logic. Nothing here may depend on the Workers runtime, so it
 //! builds and tests natively under `cargo nextest run`.
 
+pub mod scoring;
 pub mod tree;
 
 /// A repository's `owner/name` path.

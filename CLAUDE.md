@@ -23,8 +23,14 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
 - Secrets: secretspec, `~/.config/ficus/.env`. Agents must set SECRETSPEC_REASON to enter the shell.
 - Worker API (all under `Authorization: Bearer $FICUS_ADMIN_TOKEN`), one `TreeObject` DO per tree:
   `POST /trees/<t>/plant {source}` · `POST /trees/<t>/buds {intent}` ·
-  `POST /trees/<t>/buds/<b>/leaves {agent}` → fork + write token · `POST /trees/<t>/leaves/<l>/ripe
-  {checks_passed,checks_total,cost}` (revokes tokens, reads head from Artifacts) ·
+  `POST /trees/<t>/buds/<b>/leaves {agent}` → fork + write token · `POST /trees/<t>/leaves/<l>/ripe`
+  (revokes tokens, reads head from Artifacts, queues scoring; 202) · `GET /trees/<t>/leaves/<l>` (state + report) ·
   `POST /trees/<t>/buds/<b>/harvest` · `POST /trees/<t>/leaves/<l>/{regrow,wither}` · `GET /trees/<t>`.
   Every leaf/node is its own Artifacts repo (`<t>-l<id>`); git auth is `http.extraHeader="Authorization: Bearer <token>"`.
+- `POST /trees/<t>/plant {}` with no `source` creates an empty root and returns a write token; push, plant again.
+- Scoring: TreeObject's alarm scores every Ripening leaf in parallel, one `ScorerContainer` (Rust DO +
+  Cloudflare Container running `crates/ficus-scorer`) per leaf. The root's `ficus.toml` and devenv files
+  come from the base commit (LOCKED_PATHS), so a leaf cannot change its own checks. Cost = diff lines.
+  Image: `infra/src/scorer/context` (nix + devenv; binary from `scripts/build-scorer`).
+- The deploy token needs Containers: Edit (registry credentials) on top of Workers, Workers AI, Artifacts.
 - `just e2e` (FICUS_API=https://ficus-dev.fruitcards.workers.dev) runs the full cycle live.

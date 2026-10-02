@@ -6,11 +6,17 @@
 //! Where a handler needs Artifacts both before and after a change, it reloads
 //! the tree after the await rather than reusing the copy it read before.
 
-use ficus_core::tree::{BudId, Compost, LeafId, Oid, RepoName, Score, Tree, TreeError};
-use serde::{Deserialize, Serialize};
-use worker::{DurableObject, Env, Method, Request, Response, Result, State, durable_object};
+use std::time::Duration;
 
-use crate::artifacts::{ArtifactsError, Namespace};
+use ficus_core::scoring::{ScoreReport, ScoreRequest};
+use ficus_core::tree::{BudId, Compost, LeafId, Oid, RepoName, Tree, TreeError};
+use futures_util::future::join_all;
+use serde::{Deserialize, Serialize};
+use worker::{
+    DurableObject, Env, Method, Request, RequestInit, Response, Result, State, durable_object,
+};
+
+use crate::artifacts::{ArtifactsError, Namespace, Scope};
 
 const TREE_KEY: &str = "tree";
 /// How long `plant` waits for an import before giving up: 30 polls, 2s apart.
@@ -18,6 +24,12 @@ const IMPORT_POLLS: u32 = 30;
 const IMPORT_POLL_MS: u64 = 2000;
 /// Deep enough to find a leaf's base under any sensible amount of work.
 const HISTORY_DEPTH: u32 = 1000;
+/// The scorer's read token outlives any scoring run, including a cold devenv.
+const SCORER_TOKEN_TTL_SECS: u32 = 3600;
+/// A leaf whose scoring fails this many times for the scorer's own reasons
+/// is withered rather than retried forever.
+const SCORING_ATTEMPTS: u32 = 5;
+const SCORING_RETRY: Duration = Duration::from_secs(60);
 
 #[durable_object]
 pub struct TreeObject {
@@ -25,9 +37,12 @@ pub struct TreeObject {
     env: Env,
 }
 
+/// `source` imports an HTTPS git remote as the root. Without it, the first
+/// call creates an empty root repo and returns a write token to push the root
+/// with; the next call plants the tree on whatever was pushed.
 #[derive(Deserialize)]
 struct PlantBody {
-    source: String,
+    source: Option<String>,
     branch: Option<String>,
 }
 
@@ -39,13 +54,6 @@ struct BudBody {
 #[derive(Deserialize)]
 struct SproutBody {
     agent: String,
-}
-
-#[derive(Deserialize)]
-struct RipeBody {
-    checks_passed: u32,
-    checks_total: u32,
-    cost: u64,
 }
 
 #[derive(Deserialize)]
@@ -72,6 +80,10 @@ impl DurableObject for TreeObject {
         Self { state, env }
     }
 
+    async fn alarm(&self) -> Result<Response> {
+        self.score_ripening().await
+    }
+
     async fn fetch(&self, mut req: Request) -> Result<Response> {
         let path = req.path();
         let segments: Vec<&str> = path.trim_matches('/').split('/').collect();
@@ -87,6 +99,10 @@ impl DurableObject for TreeObject {
         };
         match (req.method(), route) {
             (Method::Get, []) => self.show().await,
+            (Method::Get, ["leaves", leaf]) => match leaf.parse() {
+                Ok(leaf) => self.show_leaf(leaf).await,
+                Err(_) => Response::error("leaf id must be a number", 400),
+            },
             (Method::Post, ["plant"]) => self.plant(name, req.json().await?).await,
             (Method::Post, ["buds"]) => self.bud(req.json().await?).await,
             (Method::Post, ["buds", bud, "leaves"]) => match bud.parse() {
@@ -99,7 +115,7 @@ impl DurableObject for TreeObject {
             },
             (Method::Post, ["leaves", leaf, action]) => match leaf.parse() {
                 Ok(leaf) => match *action {
-                    "ripe" => self.ripen(leaf, req.json().await?).await,
+                    "ripe" => self.submit(leaf).await,
                     "wither" => self.wither(leaf, req.json().await?).await,
                     "regrow" => self.regrow(leaf).await,
                     _ => Response::error("not found", 404),
@@ -112,6 +128,167 @@ impl DurableObject for TreeObject {
 }
 
 impl TreeObject {
+    /// Score every leaf waiting for its checks, in parallel, one scorer
+    /// container per leaf. Runs from the alarm `submit` sets.
+    async fn score_ripening(&self) -> Result<Response> {
+        let Some(tree) = self.load().await? else {
+            return Response::ok("no tree");
+        };
+        let pending: Vec<Pending> = tree
+            .ripening()
+            .map(|(leaf, head)| Pending {
+                leaf: leaf.id,
+                repo: leaf.repo.clone(),
+                base: tree
+                    .node(leaf.base)
+                    .expect("a leaf's base is a node of its tree")
+                    .commit
+                    .clone(),
+                head: head.clone(),
+            })
+            .collect();
+        if pending.is_empty() {
+            return Response::ok("nothing to score");
+        }
+        let outcomes = join_all(pending.iter().map(|job| self.score_one(job))).await;
+
+        // Scoring awaited; other requests may have changed the tree since.
+        let Some(mut tree) = self.load().await? else {
+            return Response::ok("no tree");
+        };
+        let mut retry = false;
+        for (job, outcome) in pending.iter().zip(outcomes) {
+            let attempts_key = format!("attempts:{}", job.leaf);
+            match outcome {
+                Scored::Report(report) => {
+                    self.state
+                        .storage()
+                        .put(
+                            &format!("report:{}", job.leaf),
+                            serde_json::to_string(&report)?,
+                        )
+                        .await?;
+                    match report.score() {
+                        Ok(score) => settle(job.leaf, tree.ripen(job.leaf, score)),
+                        Err(error) => settle(
+                            job.leaf,
+                            tree.wither(job.leaf, format!("unscorable report: {error}")),
+                        ),
+                    }
+                }
+                Scored::Unscorable(reason) => settle(
+                    job.leaf,
+                    tree.wither(job.leaf, format!("unscorable: {reason}")),
+                ),
+                Scored::Failed(reason) => {
+                    let attempts = self
+                        .state
+                        .storage()
+                        .get::<u32>(&attempts_key)
+                        .await?
+                        .unwrap_or(0)
+                        + 1;
+                    if attempts >= SCORING_ATTEMPTS {
+                        settle(
+                            job.leaf,
+                            tree.wither(
+                                job.leaf,
+                                format!("scorer failed {attempts} times; last: {reason}"),
+                            ),
+                        );
+                    } else {
+                        self.state.storage().put(&attempts_key, attempts).await?;
+                        retry = true;
+                    }
+                }
+            }
+        }
+        self.save(&tree).await?;
+        if retry {
+            self.state.storage().set_alarm(SCORING_RETRY).await?;
+        }
+        Response::ok("scored")
+    }
+
+    /// Mint a short-lived read token, ask a scorer container, revoke the token.
+    async fn score_one(&self, job: &Pending) -> Scored {
+        let artifacts = match self.artifacts() {
+            Ok(artifacts) => artifacts,
+            Err(error) => return Scored::Failed(error.to_string()),
+        };
+        let repo = match artifacts.repo(&job.repo).await {
+            Ok(repo) => repo,
+            Err(error) => return Scored::Failed(error.to_string()),
+        };
+        let (info, token) = match (
+            repo.info().await,
+            repo.create_token(Scope::Read, SCORER_TOKEN_TTL_SECS).await,
+        ) {
+            (Ok(info), Ok(token)) => (info, token),
+            (Err(error), _) | (_, Err(error)) => return Scored::Failed(error.to_string()),
+        };
+        let request = ScoreRequest {
+            remote: info.remote,
+            token: token.plaintext,
+            base: job.base.clone(),
+            head: job.head.clone(),
+        };
+        let scored = self.ask_scorer(&job.repo, &request).await;
+        if let Err(error) = repo.revoke_token(&token.id).await {
+            worker::console_error!(
+                "revoking the scorer's token on {}: {error}",
+                job.repo.as_str()
+            );
+        }
+        scored
+    }
+
+    async fn ask_scorer(&self, repo: &RepoName, request: &ScoreRequest) -> Scored {
+        let attempt = async {
+            let stub = self
+                .env
+                .durable_object("SCORER")?
+                .get_by_name(repo.as_str())?;
+            let mut init = RequestInit::new();
+            init.with_method(Method::Post)
+                .with_body(Some(serde_json::to_string(request)?.into()));
+            let mut response = stub
+                .fetch_with_request(Request::new_with_init("http://scorer/score", &init)?)
+                .await?;
+            Ok::<_, worker::Error>((response.status_code(), response.text().await?))
+        };
+        match attempt.await {
+            Ok((200, body)) => match serde_json::from_str::<ScoreReport>(&body) {
+                Ok(report) => Scored::Report(report),
+                Err(error) => Scored::Failed(format!(
+                    "scorer answered with an unreadable report: {error}"
+                )),
+            },
+            Ok((422, reason)) => Scored::Unscorable(reason),
+            Ok((status, body)) => Scored::Failed(format!("scorer answered {status}: {body}")),
+            Err(error) => Scored::Failed(error.to_string()),
+        }
+    }
+
+    async fn show_leaf(&self, leaf: LeafId) -> Result<Response> {
+        let Some(tree) = self.load().await? else {
+            return Response::error("no such tree", 404);
+        };
+        let Some(entry) = tree.leaf(leaf) else {
+            return tree_error(&TreeError::UnknownLeaf(leaf));
+        };
+        let report = match self
+            .state
+            .storage()
+            .get::<String>(&format!("report:{leaf}"))
+            .await?
+        {
+            Some(json) => Some(serde_json::from_str::<ScoreReport>(&json)?),
+            None => None,
+        };
+        Response::from_json(&serde_json::json!({ "leaf": entry, "report": report }))
+    }
+
     fn artifacts(&self) -> Result<Namespace> {
         self.env.get_binding::<Namespace>("ARTIFACTS")
     }
@@ -143,18 +320,61 @@ impl TreeObject {
             return Response::error("tree already planted", 409);
         }
         let artifacts = self.artifacts()?;
-        // ALREADY_EXISTS means an earlier plant got this far and then timed
-        // out; carry on and pick up the repo it imported.
-        match artifacts
-            .import(&body.source, body.branch.as_deref(), &name)
-            .await
-        {
-            Ok(_) => {}
-            Err(error) if error.is("ALREADY_EXISTS") => {}
-            Err(error) => return artifacts_error(&error),
-        }
-        let Some(head) = settled_head(&artifacts, &name).await? else {
-            return Response::error("import has not finished; plant again to pick it up", 504);
+        let head = match body.source {
+            Some(source) => {
+                // ALREADY_EXISTS means an earlier plant got this far and then
+                // timed out; carry on and pick up the repo it imported.
+                match artifacts
+                    .import(&source, body.branch.as_deref(), &name)
+                    .await
+                {
+                    Ok(_) => {}
+                    Err(error) if error.is("ALREADY_EXISTS") => {}
+                    Err(error) => return artifacts_error(&error),
+                }
+                match settled_head(&artifacts, &name).await? {
+                    Some(head) => head,
+                    None => {
+                        return Response::error(
+                            "import has not finished; plant again to pick it up",
+                            504,
+                        );
+                    }
+                }
+            }
+            None => match artifacts.repo(&name).await {
+                Ok(repo) => match repo.history(1).await {
+                    Ok(history) => match history.first() {
+                        Some(head) => match Oid::try_from(head.hash.clone()) {
+                            Ok(head) => head,
+                            Err(error) => return tree_error(&error),
+                        },
+                        None => {
+                            return Response::error(
+                                "the root repo is empty: push the root, then plant again",
+                                409,
+                            );
+                        }
+                    },
+                    Err(error) => return artifacts_error(&error),
+                },
+                Err(error) if error.is("NOT_FOUND") => {
+                    return match artifacts.create(&name, "ficus root").await {
+                        Ok(created) => {
+                            let mut response = Response::from_json(&serde_json::json!({
+                                "state": "awaiting root",
+                                "remote": created.remote,
+                                "token": created.token,
+                                "next": "push the root to `remote` (http.extraHeader=\"Authorization: Bearer <token>\"), then POST plant again",
+                            }))?;
+                            response = response.with_status(202);
+                            Ok(response)
+                        }
+                        Err(error) => artifacts_error(&error),
+                    };
+                }
+                Err(error) => return artifacts_error(&error),
+            },
         };
         let repo = match artifacts.repo(&name).await {
             Ok(repo) => repo,
@@ -241,14 +461,11 @@ impl TreeObject {
         }
     }
 
-    /// Freeze the leaf (revoke its tokens), then read its head commit from
-    /// Artifacts and record it. The commit is never taken from the caller,
-    /// and must descend from the leaf's base.
-    async fn ripen(&self, leaf: LeafId, body: RipeBody) -> Result<Response> {
-        let score = match Score::new(body.checks_passed, body.checks_total, body.cost) {
-            Ok(score) => score,
-            Err(error) => return tree_error(&error),
-        };
+    /// Freeze the leaf (revoke its tokens), read its head commit from
+    /// Artifacts, and queue it for the root's checks. The commit is never
+    /// taken from the caller, and must descend from the leaf's base. Scoring
+    /// runs from the alarm; poll `GET /trees/<t>/leaves/<leaf>` for the result.
+    async fn submit(&self, leaf: LeafId) -> Result<Response> {
         let Some(tree) = self.load().await? else {
             return Response::error("no such tree", 404);
         };
@@ -291,13 +508,16 @@ impl TreeObject {
         let Some(mut tree) = self.load().await? else {
             return Response::error("no such tree", 404);
         };
-        match tree.ripen(leaf, head.clone(), score) {
-            Ok(()) => {
-                self.save(&tree).await?;
-                Response::from_json(&serde_json::json!({ "leaf": leaf, "commit": head.as_str() }))
-            }
-            Err(error) => tree_error(&error),
+        if let Err(error) = tree.submit(leaf, head.clone()) {
+            return tree_error(&error);
         }
+        self.save(&tree).await?;
+        self.state.storage().set_alarm(Duration::ZERO).await?;
+        let mut response = Response::from_json(
+            &serde_json::json!({ "leaf": leaf, "commit": head.as_str(), "state": "ripening" }),
+        )?;
+        response = response.with_status(202);
+        Ok(response)
     }
 
     async fn harvest(&self, bud: BudId) -> Result<Response> {
@@ -380,6 +600,32 @@ impl TreeObject {
     }
 }
 
+/// Apply a scoring result to a leaf that may have moved on while its checks
+/// ran: withered or pruned meanwhile is expected and the result is moot;
+/// anything else is a bug worth seeing in the logs.
+fn settle(leaf: LeafId, applied: std::result::Result<(), TreeError>) {
+    match applied {
+        Ok(()) | Err(TreeError::NotRipening(_) | TreeError::NotLive(_)) => {}
+        Err(error) => worker::console_error!("applying the score of leaf {leaf}: {error}"),
+    }
+}
+
+struct Pending {
+    leaf: LeafId,
+    repo: RepoName,
+    base: Oid,
+    head: Oid,
+}
+
+enum Scored {
+    Report(ScoreReport),
+    /// The scorer says the leaf or root cannot be scored (no ficus.toml,
+    /// head not descending from base): retrying will not help.
+    Unscorable(String),
+    /// The scorer or the path to it failed: worth another attempt.
+    Failed(String),
+}
+
 /// The head of `name` once its import has landed, or `None` if it has not
 /// within `IMPORT_POLLS`.
 async fn settled_head(artifacts: &Namespace, name: &RepoName) -> Result<Option<Oid>> {
@@ -412,6 +658,7 @@ fn tree_error(error: &TreeError) -> Result<Response> {
         TreeError::UnknownBud(_) | TreeError::UnknownLeaf(_) => 404,
         TreeError::BudFruited(_)
         | TreeError::NotGrowing(_)
+        | TreeError::NotRipening(_)
         | TreeError::NotLive(_)
         | TreeError::NotStale(_)
         | TreeError::NothingToHarvest(_) => 409,

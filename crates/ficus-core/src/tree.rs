@@ -195,9 +195,20 @@ pub struct Bud {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LeafState {
     Growing,
-    Ripe { commit: Oid, score: Score },
-    Fruit { node: NodeId },
-    Pruned { reason: PruneReason },
+    /// Submitted at `commit` and frozen; the root's checks have not run yet.
+    Ripening {
+        commit: Oid,
+    },
+    Ripe {
+        commit: Oid,
+        score: Score,
+    },
+    Fruit {
+        node: NodeId,
+    },
+    Pruned {
+        reason: PruneReason,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,6 +276,8 @@ pub enum TreeError {
     BudFruited(BudId),
     #[error("leaf {0:?} is no longer growing")]
     NotGrowing(LeafId),
+    #[error("leaf {0:?} is not waiting for its checks")]
+    NotRipening(LeafId),
     #[error("leaf {0:?} is already fruit or pruned")]
     NotLive(LeafId),
     #[error("leaf {0:?} grew from the head, so there is nothing to regrow")]
@@ -385,21 +398,54 @@ impl Tree {
         Ok(id)
     }
 
-    /// Record that `leaf` finished growing at `commit` and how it scored.
-    pub fn ripen(&mut self, leaf: LeafId, commit: Oid, score: Score) -> Result<(), TreeError> {
+    /// Record that `leaf` finished growing at `commit`. Its checks run next.
+    pub fn submit(&mut self, leaf: LeafId, commit: Oid) -> Result<(), TreeError> {
         let entry = self
             .leaves
             .get_mut(&leaf)
             .ok_or(TreeError::UnknownLeaf(leaf))?;
         match entry.state {
             LeafState::Growing => {
-                entry.state = LeafState::Ripe { commit, score };
+                entry.state = LeafState::Ripening { commit };
                 Ok(())
             }
-            LeafState::Ripe { .. } | LeafState::Fruit { .. } | LeafState::Pruned { .. } => {
-                Err(TreeError::NotGrowing(leaf))
-            }
+            LeafState::Ripening { .. }
+            | LeafState::Ripe { .. }
+            | LeafState::Fruit { .. }
+            | LeafState::Pruned { .. } => Err(TreeError::NotGrowing(leaf)),
         }
+    }
+
+    /// Record how the root's checks scored a submitted leaf.
+    pub fn ripen(&mut self, leaf: LeafId, score: Score) -> Result<(), TreeError> {
+        let entry = self
+            .leaves
+            .get_mut(&leaf)
+            .ok_or(TreeError::UnknownLeaf(leaf))?;
+        match &entry.state {
+            LeafState::Ripening { commit } => {
+                entry.state = LeafState::Ripe {
+                    commit: commit.clone(),
+                    score,
+                };
+                Ok(())
+            }
+            LeafState::Growing
+            | LeafState::Ripe { .. }
+            | LeafState::Fruit { .. }
+            | LeafState::Pruned { .. } => Err(TreeError::NotRipening(leaf)),
+        }
+    }
+
+    /// Leaves waiting for their checks, with the commit each was submitted at.
+    pub fn ripening(&self) -> impl Iterator<Item = (&Leaf, &Oid)> {
+        self.leaves.values().filter_map(|leaf| match &leaf.state {
+            LeafState::Ripening { commit } => Some((leaf, commit)),
+            LeafState::Growing
+            | LeafState::Ripe { .. }
+            | LeafState::Fruit { .. }
+            | LeafState::Pruned { .. } => None,
+        })
     }
 
     /// Cut a live leaf, for example because its agent gave up.
@@ -442,6 +488,7 @@ impl Tree {
                 }
                 LeafState::Ripe { .. }
                 | LeafState::Growing
+                | LeafState::Ripening { .. }
                 | LeafState::Fruit { .. }
                 | LeafState::Pruned { .. } => None,
             })
@@ -509,7 +556,7 @@ impl Tree {
             .get_mut(&leaf)
             .ok_or(TreeError::UnknownLeaf(leaf))?;
         let score = match &entry.state {
-            LeafState::Growing => None,
+            LeafState::Growing | LeafState::Ripening { .. } => None,
             LeafState::Ripe { score, .. } => Some(*score),
             LeafState::Fruit { .. } | LeafState::Pruned { .. } => {
                 return Err(TreeError::NotLive(leaf));
@@ -537,7 +584,7 @@ impl Tree {
 
 fn is_live(state: &LeafState) -> bool {
     match state {
-        LeafState::Growing | LeafState::Ripe { .. } => true,
+        LeafState::Growing | LeafState::Ripening { .. } | LeafState::Ripe { .. } => true,
         LeafState::Fruit { .. } | LeafState::Pruned { .. } => false,
     }
 }
@@ -553,6 +600,12 @@ mod tests {
 
     fn repo(name: &str) -> RepoName {
         RepoName::try_from(name.to_owned()).expect("test repo names are well formed")
+    }
+
+    /// Submit and score in one step, as the scorer would.
+    fn ripen(tree: &mut Tree, leaf: LeafId, commit: Oid, score: Score) {
+        tree.submit(leaf, commit).unwrap();
+        tree.ripen(leaf, score).unwrap();
     }
 
     fn passing(cost: u64) -> Score {
@@ -593,10 +646,9 @@ mod tests {
         let cheap = tree.sprout(bud, "agent-b").unwrap();
         let failing = tree.sprout(bud, "agent-c").unwrap();
         let unfinished = tree.sprout(bud, "agent-d").unwrap();
-        tree.ripen(costly, oid('a'), passing(900)).unwrap();
-        tree.ripen(cheap, oid('b'), passing(120)).unwrap();
-        tree.ripen(failing, oid('c'), Score::new(2, 3, 1).unwrap())
-            .unwrap();
+        ripen(&mut tree, costly, oid('a'), passing(900));
+        ripen(&mut tree, cheap, oid('b'), passing(120));
+        ripen(&mut tree, failing, oid('c'), Score::new(2, 3, 1).unwrap());
 
         let harvest = tree.harvest(bud).unwrap();
 
@@ -649,8 +701,8 @@ mod tests {
         let bud = tree.bud_new("intent").unwrap();
         let first = tree.sprout(bud, "a").unwrap();
         let second = tree.sprout(bud, "b").unwrap();
-        tree.ripen(second, oid('b'), passing(5)).unwrap();
-        tree.ripen(first, oid('a'), passing(5)).unwrap();
+        ripen(&mut tree, second, oid('b'), passing(5));
+        ripen(&mut tree, first, oid('a'), passing(5));
         assert_eq!(tree.harvest(bud).unwrap().fruit, first);
     }
 
@@ -660,8 +712,7 @@ mod tests {
         let bud = tree.bud_new("intent").unwrap();
         let leaf = tree.sprout(bud, "a").unwrap();
         assert_eq!(tree.harvest(bud), Err(TreeError::NothingToHarvest(bud)));
-        tree.ripen(leaf, oid('a'), Score::new(0, 1, 0).unwrap())
-            .unwrap();
+        ripen(&mut tree, leaf, oid('a'), Score::new(0, 1, 0).unwrap());
         assert_eq!(tree.harvest(bud), Err(TreeError::NothingToHarvest(bud)));
         assert_eq!(tree.head().id, NodeId(0));
     }
@@ -673,8 +724,8 @@ mod tests {
         let search = tree.bud_new("add search").unwrap();
         let auth_leaf = tree.sprout(auth, "a").unwrap();
         let search_leaf = tree.sprout(search, "b").unwrap();
-        tree.ripen(auth_leaf, oid('a'), passing(1)).unwrap();
-        tree.ripen(search_leaf, oid('b'), passing(1)).unwrap();
+        ripen(&mut tree, auth_leaf, oid('a'), passing(1));
+        ripen(&mut tree, search_leaf, oid('b'), passing(1));
 
         let harvest = tree.harvest(auth).unwrap();
         assert_eq!(harvest.stale, vec![search_leaf]);
@@ -700,7 +751,7 @@ mod tests {
             vec![(search_leaf, PruneReason::Regrown { into: regrown })]
         );
 
-        tree.ripen(regrown, oid('c'), passing(1)).unwrap();
+        ripen(&mut tree, regrown, oid('c'), passing(1));
         let second = tree.harvest(search).unwrap();
         assert_eq!(tree.node(second.node).unwrap().parent, Some(harvest.node));
     }
@@ -718,7 +769,7 @@ mod tests {
         let mut tree = Tree::plant(repo("t"), oid('0')).unwrap();
         let bud = tree.bud_new("intent").unwrap();
         let leaf = tree.sprout(bud, "a").unwrap();
-        tree.ripen(leaf, oid('a'), passing(1)).unwrap();
+        ripen(&mut tree, leaf, oid('a'), passing(1));
         tree.harvest(bud).unwrap();
         assert_eq!(tree.sprout(bud, "late"), Err(TreeError::BudFruited(bud)));
         assert_eq!(tree.harvest(bud), Err(TreeError::BudFruited(bud)));
@@ -729,10 +780,15 @@ mod tests {
         let mut tree = Tree::plant(repo("t"), oid('0')).unwrap();
         let bud = tree.bud_new("intent").unwrap();
         let leaf = tree.sprout(bud, "a").unwrap();
-        tree.ripen(leaf, oid('a'), passing(1)).unwrap();
+        tree.submit(leaf, oid('a')).unwrap();
         assert_eq!(
-            tree.ripen(leaf, oid('b'), passing(0)),
+            tree.submit(leaf, oid('b')),
             Err(TreeError::NotGrowing(leaf))
+        );
+        tree.ripen(leaf, passing(1)).unwrap();
+        assert_eq!(
+            tree.ripen(leaf, passing(0)),
+            Err(TreeError::NotRipening(leaf))
         );
         tree.wither(leaf, "lost interest").unwrap();
         assert_eq!(tree.wither(leaf, "again"), Err(TreeError::NotLive(leaf)));
@@ -746,6 +802,24 @@ mod tests {
                 Some(passing(1))
             )
         );
+    }
+
+    #[test]
+    fn a_submitted_leaf_waits_for_its_checks_and_cannot_be_harvested_yet() {
+        let mut tree = Tree::plant(repo("t"), oid('0')).unwrap();
+        let bud = tree.bud_new("intent").unwrap();
+        let leaf = tree.sprout(bud, "a").unwrap();
+        assert_eq!(
+            tree.ripen(leaf, passing(1)),
+            Err(TreeError::NotRipening(leaf))
+        );
+        tree.submit(leaf, oid('a')).unwrap();
+        let waiting: Vec<_> = tree.ripening().map(|(l, c)| (l.id, c.clone())).collect();
+        assert_eq!(waiting, vec![(leaf, oid('a'))]);
+        assert_eq!(tree.harvest(bud), Err(TreeError::NothingToHarvest(bud)));
+        tree.ripen(leaf, passing(1)).unwrap();
+        assert_eq!(tree.ripening().count(), 0);
+        assert_eq!(tree.harvest(bud).unwrap().fruit, leaf);
     }
 
     #[test]
@@ -764,7 +838,7 @@ mod tests {
             tree.leaf(leaf).unwrap().repo,
             repo(&format!("site-l{}", leaf.0))
         );
-        tree.ripen(leaf, oid('a'), passing(1)).unwrap();
+        ripen(&mut tree, leaf, oid('a'), passing(1));
         let harvest = tree.harvest(bud).unwrap();
         assert_eq!(
             tree.node(harvest.node).unwrap().repo,
@@ -790,7 +864,7 @@ mod tests {
         let mut tree = Tree::plant(repo("t"), oid('0')).unwrap();
         let bud = tree.bud_new("intent").unwrap();
         let leaf = tree.sprout(bud, "a").unwrap();
-        tree.ripen(leaf, oid('a'), passing(1)).unwrap();
+        ripen(&mut tree, leaf, oid('a'), passing(1));
         let json = serde_json::to_string(&tree).unwrap();
         assert_eq!(serde_json::from_str::<Tree>(&json).unwrap(), tree);
         let bad = json.replace(&"0".repeat(40), "not-an-oid");

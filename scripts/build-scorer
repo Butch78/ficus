@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Build ficus-scorer as a static musl binary and put it in the container's
+# Docker context, where the scorer image's Dockerfile copies it from.
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$root"
+cargo build --release -p ficus-scorer --target x86_64-unknown-linux-musl
+install -m 755 target/x86_64-unknown-linux-musl/release/ficus-scorer infra/src/scorer/context/ficus-scorer
+ls -la infra/src/scorer/context/ficus-scorer

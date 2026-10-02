@@ -20,6 +20,9 @@ extern "C" {
     #[wasm_bindgen(method, catch, js_name = get)]
     async fn get_raw(this: &Namespace, name: &str) -> Result<JsValue, JsValue>;
 
+    #[wasm_bindgen(method, catch, js_name = create)]
+    async fn create_raw(this: &Namespace, name: &str, opts: JsValue) -> Result<JsValue, JsValue>;
+
     #[wasm_bindgen(method, catch, js_name = import)]
     async fn import_raw(this: &Namespace, params: JsValue) -> Result<JsValue, JsValue>;
 
@@ -38,6 +41,9 @@ extern "C" {
 
     #[wasm_bindgen(method, catch, js_name = revokeToken)]
     async fn revoke_token_raw(this: &Repo, token_or_id: &str) -> Result<JsValue, JsValue>;
+
+    #[wasm_bindgen(method, catch, js_name = info)]
+    async fn info_raw(this: &Repo) -> Result<JsValue, JsValue>;
 
     #[wasm_bindgen(method, catch, js_name = log)]
     async fn log_raw(this: &Repo, opts: JsValue) -> Result<JsValue, JsValue>;
@@ -133,6 +139,12 @@ struct TokenList {
     tokens: Vec<TokenInfo>,
 }
 
+/// `ArtifactsRepoInfo`, the fields Ficus reads.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RepoInfo {
+    pub remote: String,
+}
+
 /// `ArtifactsCommitMetadata`, the fields Ficus reads.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -162,6 +174,13 @@ struct ImportParams<'a> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct CreateOptions<'a> {
+    description: &'a str,
+    set_default_branch: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ForkOptions<'a> {
     description: &'a str,
     default_branch_only: bool,
@@ -178,6 +197,23 @@ impl Namespace {
             .await
             .map(JsCast::unchecked_into)
             .map_err(ArtifactsError::from_js)
+    }
+
+    /// Create an empty repo `name` with `main` as its default branch.
+    pub async fn create(
+        &self,
+        name: &RepoName,
+        description: &str,
+    ) -> Result<CreatedRepo, ArtifactsError> {
+        let opts = encode(&CreateOptions {
+            description,
+            set_default_branch: "main",
+        })?;
+        decode(
+            self.create_raw(name.as_str(), opts)
+                .await
+                .map_err(ArtifactsError::from_js)?,
+        )
     }
 
     /// Import `url` (an HTTPS git remote) as the repo `name`.
@@ -229,6 +265,19 @@ impl Repo {
                 .await
                 .map_err(ArtifactsError::from_js)?,
         )
+    }
+
+    pub async fn info(&self) -> Result<RepoInfo, ArtifactsError> {
+        decode(self.info_raw().await.map_err(ArtifactsError::from_js)?)
+    }
+
+    /// Revoke one token by id; `false` if it was not found.
+    pub async fn revoke_token(&self, id: &str) -> Result<bool, ArtifactsError> {
+        let done = self
+            .revoke_token_raw(id)
+            .await
+            .map_err(ArtifactsError::from_js)?;
+        Ok(done.as_bool() == Some(true))
     }
 
     /// Revoke every token on the repo that is still active; returns how many.
