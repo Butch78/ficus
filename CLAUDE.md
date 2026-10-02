@@ -41,6 +41,8 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   added by Egress, never in the container) + nix/devenv caches; check phase = nothing.
   `ficus-scorer prepare|check` is a CLI run by native exec. The root's `ficus.toml` and devenv files
   come from the base commit (LOCKED_PATHS), so a leaf cannot change its own checks. Cost = diff lines.
+  `[[judge]]` in ficus.toml = a yes/no question on `{task, diff}` the Sandbox asks Clef (Workers AI binding)
+  after the container is gone; counts as a check, and its mean confidence breaks cost ties at harvest.
   Image: `infra/src/sandbox/context` (nix + devenv; binary from `scripts/build-scorer`).
 - The deploy token needs Containers: Edit (registry credentials) on top of Workers, Workers AI, Artifacts.
 - `just e2e` (FICUS_API=https://ficus-dev.fruitcards.workers.dev) runs the full cycle live.

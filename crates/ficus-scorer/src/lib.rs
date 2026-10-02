@@ -1,13 +1,14 @@
 //! Score a leaf: clone it, put the root's locked files back from the base
 //! commit, run the root's checks (inside the root's devenv when it has one),
-//! and measure the diff.
+//! and measure the diff. The root's judges are not run here (the container
+//! has no network): `check` hands them over with the diff they judge.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use ficus_core::scoring::{
-    CheckOutcome, ChecksError, LOCKED_PATHS, LeafRef, RootChecks, ScoreReport,
+    CheckOutcome, CheckRun, ChecksError, LOCKED_PATHS, LeafRef, RootChecks, ScoreReport, clip_diff,
 };
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
@@ -134,8 +135,8 @@ pub async fn prepare(root: &Path, leaf: &LeafRef) -> Result<PathBuf, ScoreError>
 }
 
 /// Phase two, without network: run the root's checks in a prepared workdir,
-/// cost the diff, and remove the workdir.
-pub async fn check(workdir: &Path) -> Result<ScoreReport, ScoreError> {
+/// cost the diff, collect what the root's judges need, and remove the workdir.
+pub async fn check(workdir: &Path) -> Result<CheckRun, ScoreError> {
     let prepared: Prepared =
         serde_json::from_slice(&tokio::fs::read(workdir.join(PREPARED_FILE)).await?)
             .map_err(|error| ScoreError::Io(std::io::Error::other(error)))?;
@@ -155,18 +156,28 @@ pub async fn check(workdir: &Path) -> Result<ScoreReport, ScoreError> {
                     passed: false,
                     millis: 0,
                     tail: tail.clone(),
+                    confidence: None,
                 })
                 .collect()
         }
     };
 
     let cost = diff_cost(&repo, base, head).await?;
+    let diff = if root.judges.is_empty() {
+        String::new()
+    } else {
+        clip_diff(&git(&repo, "diff", &diff_args(&["--no-color"], base, head)).await?)
+    };
     tokio::fs::remove_dir_all(workdir).await?;
-    Ok(ScoreReport { checks, cost })
+    Ok(CheckRun {
+        report: ScoreReport { checks, cost },
+        judges: root.judges,
+        diff,
+    })
 }
 
 /// Both phases back to back, for callers with no network policy to switch.
-pub async fn score(root: &Path, leaf: &LeafRef) -> Result<ScoreReport, ScoreError> {
+pub async fn score(root: &Path, leaf: &LeafRef) -> Result<CheckRun, ScoreError> {
     let workdir = prepare(root, leaf).await?;
     check(&workdir).await
 }
@@ -204,6 +215,7 @@ async fn run_checks(
             passed: ran.passed,
             millis: ran.millis,
             tail: ran.tail,
+            confidence: None,
         });
     }
     Ok(outcomes)
@@ -261,15 +273,18 @@ fn tail(text: &str) -> String {
     text[start..].to_owned()
 }
 
+/// `git diff <flags> base head`, outside the locked files.
+fn diff_args(flags: &[&str], base: &str, head: &str) -> Vec<String> {
+    let mut args = vec!["diff".to_owned()];
+    args.extend(flags.iter().map(|flag| (*flag).to_owned()));
+    args.extend([base, head, "--", "."].map(str::to_owned));
+    args.extend(LOCKED_PATHS.iter().map(|path| format!(":(exclude){path}")));
+    args
+}
+
 /// Lines added plus deleted between base and head, outside the locked files.
 async fn diff_cost(repo: &Path, base: &str, head: &str) -> Result<u64, ScoreError> {
-    let excludes: Vec<String> = LOCKED_PATHS
-        .iter()
-        .map(|path| format!(":(exclude){path}"))
-        .collect();
-    let mut args = vec!["diff", "--numstat", base, head, "--", "."];
-    args.extend(excludes.iter().map(String::as_str));
-    let numstat = git(repo, "diff", &args).await?;
+    let numstat = git(repo, "diff", &diff_args(&["--numstat"], base, head)).await?;
     Ok(numstat.lines().map(numstat_line_cost).sum())
 }
 
@@ -286,7 +301,11 @@ fn numstat_line_cost(line: &str) -> u64 {
     }
 }
 
-async fn git(dir: &Path, step: &'static str, args: &[&str]) -> Result<String, ScoreError> {
+async fn git(
+    dir: &Path,
+    step: &'static str,
+    args: &[impl AsRef<std::ffi::OsStr>],
+) -> Result<String, ScoreError> {
     let output = Command::new("git")
         .args(args)
         .current_dir(dir)
@@ -392,7 +411,8 @@ mod tests {
         let head = repo.commit(&[("greeting.txt", "hello\nworld\n")], &[]);
         let report = score(&repo.scratch(), &repo.request(base, head))
             .await
-            .unwrap();
+            .unwrap()
+            .report;
         let passed: Vec<_> = report
             .checks
             .iter()
@@ -411,7 +431,8 @@ mod tests {
         let head = repo.commit(&[("notes.txt", "TODO: finish\n")], &[]);
         let report = score(&repo.scratch(), &repo.request(base, head))
             .await
-            .unwrap();
+            .unwrap()
+            .report;
         let no_todo = report.checks.iter().find(|c| c.name == "no-todo").unwrap();
         assert!(!no_todo.passed);
         assert!(!report.score().unwrap().passes());
@@ -427,7 +448,8 @@ mod tests {
         let head = repo.commit(&[("ficus.toml", cheat), ("devenv.nix", "{ }")], &[]);
         let report = score(&repo.scratch(), &repo.request(base.clone(), head))
             .await
-            .unwrap();
+            .unwrap()
+            .report;
         assert!(
             !report
                 .checks
@@ -446,8 +468,46 @@ mod tests {
         let deleted = repo.commit(&[], &["ficus.toml", "devenv.nix"]);
         let report = score(&repo.scratch(), &repo.request(base, deleted))
             .await
-            .unwrap();
+            .unwrap()
+            .report;
         assert_eq!(report.checks.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn hands_the_roots_judges_the_diff_without_locked_files() {
+        let repo = Fixture::new();
+        let root = format!("{ROOT}\n[[judge]]\nname = \"greets\"\nask = \"Does `diff` greet?\"\n");
+        let base = repo.commit(&[("ficus.toml", &root), ("greeting.txt", "hi\n")], &[]);
+        let head = repo.commit(
+            &[
+                ("greeting.txt", "hello\n"),
+                ("ficus.toml", "[[check]]\nname = \"x\"\nrun = \"true\"\n"),
+            ],
+            &[],
+        );
+        let run = score(&repo.scratch(), &repo.request(base, head))
+            .await
+            .unwrap();
+        let judges: Vec<_> = run.judges.iter().map(|judge| judge.name.as_str()).collect();
+        assert_eq!(judges, vec!["greets"]);
+        assert!(run.diff.contains("+hello"), "{}", run.diff);
+        assert!(!run.diff.contains("ficus.toml"), "{}", run.diff);
+        assert_eq!(
+            run.report.checks.len(),
+            2,
+            "judges are not run in the container"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_root_without_judges_hands_over_no_diff() {
+        let repo = Fixture::new();
+        let base = repo.commit(&[("ficus.toml", ROOT), ("greeting.txt", "hi\n")], &[]);
+        let head = repo.commit(&[("greeting.txt", "hello\n")], &[]);
+        let run = score(&repo.scratch(), &repo.request(base, head))
+            .await
+            .unwrap();
+        assert_eq!((run.judges.len(), run.diff.as_str()), (0, ""));
     }
 
     #[tokio::test]
@@ -484,7 +544,8 @@ mod tests {
         let head = repo.commit(&[("a.txt", "a\n")], &[]);
         let report = score(&repo.scratch(), &repo.request(base, head))
             .await
-            .unwrap();
+            .unwrap()
+            .report;
         assert_eq!(
             (report.checks[0].passed, report.checks[0].tail.as_str()),
             (false, "timed out after 1s")

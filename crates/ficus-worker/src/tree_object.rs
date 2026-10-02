@@ -144,6 +144,11 @@ impl TreeObject {
             .map(|(leaf, head)| Pending {
                 leaf: leaf.id,
                 repo: leaf.repo.clone(),
+                intent: tree
+                    .bud(leaf.bud)
+                    .expect("a leaf's bud is in its tree")
+                    .intent
+                    .clone(),
                 base: tree
                     .node(leaf.base)
                     .expect("a leaf's base is a node of its tree")
@@ -237,6 +242,7 @@ impl TreeObject {
             token: token.plaintext,
             base: job.base.clone(),
             head: job.head.clone(),
+            intent: job.intent.clone(),
         };
         let scored = self.ask_scorer(&job.repo, &request).await;
         if let Err(error) = repo.revoke_token(&token.id).await {
@@ -622,6 +628,8 @@ fn settle(leaf: LeafId, applied: std::result::Result<(), TreeError>) {
 struct Pending {
     leaf: LeafId,
     repo: RepoName,
+    /// The bud's intent, for the root's judges.
+    intent: String,
     base: Oid,
     head: Oid,
 }

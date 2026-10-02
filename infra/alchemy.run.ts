@@ -10,7 +10,8 @@
 //   Sandbox  src/sandbox/worker.ts untrusted work in containers with the
 //                                  internet off; Egress decides, per phase,
 //                                  which hosts they reach (and adds the
-//                                  credentials they never see)
+//                                  credentials they never see); asks Clef
+//                                  the root's judges once a container is gone
 //
 //   bun run plan | deploy | destroy        STAGE defaults to dev
 import * as Alchemy from "alchemy";
@@ -107,7 +108,8 @@ export default Alchemy.Stack(
       compatibility: COMPATIBILITY,
       observability: OBSERVABILITY,
       workersDev: false,
-      env: { SANDBOX: sandboxContainer },
+      // Workers AI, for Clef: the root's judges are asked from here.
+      env: { SANDBOX: sandboxContainer, AI: Cloudflare.Workers.AI() },
     });
 
     // One namespace per stage; Artifacts creates it with the first repo.

@@ -11,14 +11,20 @@
  *        caches; `ficus-scorer prepare` clones, restores the root's locked
  *        files and builds the root's devenv shell
  *     2. check:   nothing; `ficus-scorer check` runs the root's checks
- *   then the container is destroyed. The answer is the ScoreReport, or 422
- *   when the leaf or root cannot be scored (retrying will not help).
+ *   then the container is destroyed, and the root's judges (`[[judge]]` in
+ *   its ficus.toml) are put to Clef here, through the Workers AI binding,
+ *   with the bud's intent and the leaf's diff. The answer is the ScoreReport,
+ *   judges included as checks, or 422 when the leaf or root cannot be scored
+ *   (retrying will not help).
  */
 import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
+import * as DecisionModel from "effect/ai/DecisionModel";
+import { Clef } from "../clef/clef.ts";
 import type { EgressProps } from "./egress.ts";
+import { type CheckOutcome, CheckRun, judged, judging } from "./judges.ts";
 import { repoOf } from "./repo.ts";
 
 declare global {
@@ -66,19 +72,13 @@ export const ScoreRequest = Schema.Struct({
   token: Schema.String,
   base: Oid,
   head: Oid,
+  // Optional: a tree Worker from before judges sends none.
+  intent: Schema.optional(Schema.String),
 });
 
 export interface ScoreRequest extends Schema.Schema.Type<typeof ScoreRequest> {}
 
 const Prepared = Schema.Struct({ workdir: Schema.String });
-
-/** crates/ficus-core `ScoreReport`, checked before it is passed on. */
-const ScoreReport = Schema.Struct({
-  checks: Schema.Array(
-    Schema.Struct({ name: Schema.String, passed: Schema.Boolean, millis: Schema.Number, tail: Schema.String }),
-  ),
-  cost: Schema.Number,
-});
 
 export class SandboxFailure extends Schema.TaggedError<SandboxFailure>()("Sandbox.Failure", {
   status: Schema.Number,
@@ -93,7 +93,11 @@ interface Ran {
   readonly stderr: string;
 }
 
-export class Sandbox extends DurableObject<object> {
+interface Bindings {
+  readonly AI: Clef.AiBinding;
+}
+
+export class Sandbox extends DurableObject<Bindings> {
   override async fetch(request: Request): Promise<Response> {
     const { pathname } = new URL(request.url);
 
@@ -103,6 +107,8 @@ export class Sandbox extends DurableObject<object> {
 
     return Effect.runPromise(
       this.#score(request).pipe(
+        // oxlint-disable-next-line effecttsgo/strict-effect-provide -- a request is an entry point
+        Effect.provide(Clef.layerBinding(this.env.AI)),
         Effect.map((report) => Response.json(report)),
         Effect.catchTag("Sandbox.Failure", (error) => Effect.succeed(new Response(error.message, { status: error.status }))),
       ),
@@ -147,11 +153,34 @@ export class Sandbox extends DurableObject<object> {
 
     const { workdir } = yield* this.#json(prepared, Prepared, "prepare");
     const checked = yield* this.#exec([SCORER, "check", workdir]);
-    const report = yield* this.#json(checked, ScoreReport, "check");
+    const run = yield* this.#json(checked, CheckRun, "check");
 
     yield* Effect.promise(() => this.#container().destroy());
 
-    return report;
+    return yield* this.#judge(run, score.intent ?? "");
+  });
+
+  /** The report with the root's judges' outcomes added. A Clef failure is retryable: 503. */
+  readonly #judge = Effect.fn("Sandbox.judge")(function* (run: Schema.Schema.Type<typeof CheckRun>, task: string) {
+    if (run.judges.length === 0) {
+      return run.report;
+    }
+
+    const started = Date.now();
+
+    const { answers } = yield* DecisionModel.decide(judging(run.judges), { input: { task, diff: run.diff } }).pipe(
+      Effect.mapError((error) => failure(503, `judging the leaf: ${error.message}`)),
+    );
+
+    const millis = Date.now() - started;
+    const outcomes: Array<CheckOutcome> = [];
+
+    // DecisionModel has checked every judge got its answer.
+    for (const judge of run.judges) {
+      outcomes.push(judged(judge, answers[judge.name]?.probability ?? 0, millis));
+    }
+
+    return { checks: [...run.report.checks, ...outcomes], cost: run.report.cost };
   });
 
   #container(): Container {

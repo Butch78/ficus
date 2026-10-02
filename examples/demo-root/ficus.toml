@@ -10,3 +10,13 @@ timeout_secs = 300
 name = "compiles"
 run = "python -m compileall -q slug.py"
 timeout_secs = 60
+
+# A judge: a yes/no question about the leaf's diff, put to Clef (Cloudflare's
+# decision model) with the bud's intent as `task`. "Yes" passes when Clef
+# gives it at least `pass_at` (default 0.5); a judge counts as a check. On
+# equal cost, the leaf the judges were surest of wins.
+[[judge]]
+name = "does_the_task"
+ask = "Does `diff` do everything `task` asks, without changing anything the task does not need?"
+yes = "The whole task is done, and nothing else is changed."
+no = "Part of the task is missing, or the diff changes unrelated code."
