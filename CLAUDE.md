@@ -44,17 +44,31 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
 - `POST /trees/<t>/init {}` with no `source` creates an empty root and returns a write token; push, init again.
 - Scoring: TreeObject's alarm first rebases every behind submitted attempt (one `Sandbox` per attempt,
   `POST /rebase`: Egress grants the behind repo read and the fresh repo write; a conflict is 422
-  and final, a sandbox failure retries up to 5 times), then scores every Checking attempt in parallel, one `Sandbox` per attempt
-  (infra/src/sandbox: TS Durable Object on native `ctx.container`, Sandbox SDK 1.0 style; NOT the
-  legacy @cloudflare/containers class, which ends 2026-12-31). Internet is off; `Egress` (a
-  WorkerEntrypoint via ctx.exports with props) is the only way out: prepare phase = attempt repo (token
-  added by Egress, never in the container) + nix/devenv caches; check phase = nothing.
-  `ficus-scorer prepare|check` is a CLI run by native exec. The root's `ficus.toml` and devenv files
-  come from the base commit (LOCKED_PATHS), so a attempt cannot change its own checks; the task's checks
-  travel in the request and run after the root's. Cost = diff lines; the report also lists `touched` paths.
+  and final, a sandbox failure retries up to 5 times), then scores every Checking attempt in parallel,
+  one `Sandbox` per attempt.
+  `infra/src/sandbox` is an Effect-native alchemy Worker: `Sandbox` (scoring, rebasing) and `Workspace`
+  (an agent's container) are `Cloudflare.DurableObject`s, each with its own `Cloudflare.Container` (same
+  image). They drive the raw `state.container` (exec, `interceptOutboundHttps`, `snapshotContainer`):
+  alchemy's container handle has none of those and starts eagerly, so `containers.ts` binds through
+  alchemy's internal `~alchemy/Container/Binding` key (recheck on alchemy upgrades). NOT the legacy
+  @cloudflare/containers class, which ends 2026-12-31. Internet is off; Egress is the Worker's default
+  export, routed per host via `ctx.exports.default({ props })` (an Effect-native Worker cannot export a
+  named WorkerEntrypoint): prepare phase = attempt repo (token added by Egress, never in the container)
+  + nix/devenv caches; check phase = nothing. `ficus-scorer prepare|check|rebase|fs` is a CLI run by
+  native exec. The root's `ficus.toml` and devenv files come from the base commit (LOCKED_PATHS), so an
+  attempt cannot change its own checks; the task's checks travel in the request and run after the
+  root's. Cost = diff lines; the report also lists `touched` paths.
   `[[judge]]` in ficus.toml = a yes/no question on `{task, diff}` the Sandbox asks Clef (Workers AI binding)
   after the container is gone; counts as a check, and its mean confidence breaks cost ties at acceptance.
   Image: `infra/src/sandbox/context` (nix + devenv; binary from `scripts/build-scorer`).
+- Snapshots: per base commit. The first cold scoring of a base warms one (prepare the base alone, clear
+  the workdir, `snapshotContainer`) and TreeObject stores its id (`snapshot:<base>`); later scorings and
+  agents' Workspaces of that base boot from it, falling back to the image if it will not restore. Boots
+  carry a nonce so a ready-marker restored from a snapshot never passes for the new boot's.
+- Agents: every attempt start/retry starts an `AgentActor` (async `ficus-agents` Worker: pi's Lifecycle needs
+  a plain DO class) unless the body says `start_agent: false`; the Api does it (`src/api/agents.ts`), so the
+  deploy order stays tree → agents → Api. The e2e opts out. Local dev cannot run it end to end:
+  cross-script DO calls lose `ctx.id.name`, which pi's Lifecycle requires.
 - The deploy token needs Containers: Edit (registry credentials) on top of Workers, Workers AI, Artifacts.
 - `just e2e` (FICUS_API=https://ficus-dev.fruitcards.workers.dev) runs the full cycle live.
 - After a deploy, old isolates keep serving for a few seconds: wait before judging a change live

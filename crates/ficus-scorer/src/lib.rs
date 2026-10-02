@@ -8,6 +8,8 @@
 //! attempt, so the checks can run there. Conflicts are reported, never
 //! resolved: that is the agent's job, with the history in hand.
 
+pub mod fs;
+
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};

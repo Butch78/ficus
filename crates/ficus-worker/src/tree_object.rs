@@ -8,7 +8,10 @@
 
 use std::time::Duration;
 
-use ficus_core::scoring::{CheckSpec, RebaseReport, RebaseRequest, ScoreReport, ScoreRequest};
+use ficus_core::scoring::{
+    CheckSpec, RebaseReport, RebaseRequest, SNAPSHOT_STALE_HEADER, SNAPSHOT_TAKEN_HEADER,
+    ScoreReport, ScoreRequest,
+};
 use ficus_core::tree::{AttemptId, HistoryEntry, NodeId, Oid, RepoName, TaskId, Tree, TreeError};
 use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
@@ -86,6 +89,8 @@ struct Started {
     token: String,
     base_commit: String,
     history: Vec<HistoryEntry>,
+    /// A warmed container snapshot of the base, when the tree has one.
+    snapshot: Option<String>,
 }
 
 impl DurableObject for TreeObject {
@@ -184,7 +189,53 @@ impl TreeObject {
         if pending.is_empty() {
             return Response::ok("nothing to score");
         }
-        let outcomes = join_all(pending.iter().map(|job| self.score_one(job))).await;
+        // One cold job per base warms a snapshot; the rest of that base's
+        // jobs, now and later, start from it once it exists.
+        let mut snapshots = std::collections::BTreeMap::new();
+        for job in &pending {
+            if let std::collections::btree_map::Entry::Vacant(slot) =
+                snapshots.entry(job.base.as_str().to_owned())
+            {
+                slot.insert(self.snapshot_of(&job.base).await?);
+            }
+        }
+        let mut warming = std::collections::BTreeSet::new();
+        let plans: Vec<(Option<String>, bool)> = pending
+            .iter()
+            .map(|job| {
+                let base = job.base.as_str();
+                match snapshots.get(base).cloned().flatten() {
+                    Some(id) => (Some(id), false),
+                    None => (None, warming.insert(base.to_owned())),
+                }
+            })
+            .collect();
+        let scored = join_all(
+            pending
+                .iter()
+                .zip(&plans)
+                .map(|(job, (snapshot, take))| self.score_one(job, snapshot.clone(), *take)),
+        )
+        .await;
+        let mut outcomes = Vec::with_capacity(scored.len());
+        for (job, (outcome, news)) in pending.iter().zip(scored) {
+            match news {
+                SnapshotNews::Taken(id) => {
+                    self.state
+                        .storage()
+                        .put(&snapshot_key(&job.base), id)
+                        .await?;
+                }
+                SnapshotNews::Stale => {
+                    self.state
+                        .storage()
+                        .delete(&snapshot_key(&job.base))
+                        .await?;
+                }
+                SnapshotNews::None => {}
+            }
+            outcomes.push(outcome);
+        }
 
         // Scoring awaited; other requests may have changed the tree since.
         let Some(mut tree) = self.load().await? else {
@@ -247,22 +298,36 @@ impl TreeObject {
         Response::ok("scored")
     }
 
+    /// The warmed container snapshot of `base`, if one was taken.
+    async fn snapshot_of(&self, base: &Oid) -> Result<Option<String>> {
+        self.state
+            .storage()
+            .get::<String>(&snapshot_key(base))
+            .await
+    }
+
     /// Mint a short-lived read token, ask a scorer container, revoke the token.
-    async fn score_one(&self, job: &Pending) -> SandboxOutcome {
+    async fn score_one(
+        &self,
+        job: &Pending,
+        snapshot: Option<String>,
+        take_snapshot: bool,
+    ) -> (SandboxOutcome, SnapshotNews) {
+        let failed = |error: String| (SandboxOutcome::Failed(error), SnapshotNews::None);
         let artifacts = match self.artifacts() {
             Ok(artifacts) => artifacts,
-            Err(error) => return SandboxOutcome::Failed(error.to_string()),
+            Err(error) => return failed(error.to_string()),
         };
         let repo = match artifacts.repo(&job.repo).await {
             Ok(repo) => repo,
-            Err(error) => return SandboxOutcome::Failed(error.to_string()),
+            Err(error) => return failed(error.to_string()),
         };
         let (info, token) = match (
             repo.info().await,
             repo.create_token(Scope::Read, SCORER_TOKEN_TTL_SECS).await,
         ) {
             (Ok(info), Ok(token)) => (info, token),
-            (Err(error), _) | (_, Err(error)) => return SandboxOutcome::Failed(error.to_string()),
+            (Err(error), _) | (_, Err(error)) => return failed(error.to_string()),
         };
         let request = ScoreRequest {
             remote: info.remote,
@@ -271,6 +336,8 @@ impl TreeObject {
             head: job.head.clone(),
             intent: job.intent.clone(),
             checks: job.checks.clone(),
+            snapshot,
+            take_snapshot,
         };
         let scored = self.ask_sandbox(&job.repo, "score", &request).await;
         if let Err(error) = repo.revoke_token(&token.id).await {
@@ -408,7 +475,8 @@ impl TreeObject {
             onto_head: job.onto_head.clone(),
             onto_branch: onto.default_branch,
         };
-        let outcome = match self.ask_sandbox(&fresh.repo, "rebase", &request).await {
+        let (outcome, _) = self.ask_sandbox(&fresh.repo, "rebase", &request).await;
+        let outcome = match outcome {
             SandboxOutcome::Report(report) => RebaseOutcome::Report(report),
             SandboxOutcome::Unscorable(reason) => RebaseOutcome::Conflict(reason),
             SandboxOutcome::Failed(reason) => RebaseOutcome::Failed(reason),
@@ -441,7 +509,7 @@ impl TreeObject {
         repo: &RepoName,
         action: &str,
         request: &Req,
-    ) -> SandboxOutcome<Rep> {
+    ) -> (SandboxOutcome<Rep>, SnapshotNews) {
         let attempt = async {
             let stub = self
                 .env
@@ -460,20 +528,36 @@ impl TreeObject {
                     &init,
                 )?)
                 .await?;
-            Ok::<_, worker::Error>((response.status_code(), response.text().await?))
+            let headers = response.headers();
+            let news = match (
+                headers.get(SNAPSHOT_TAKEN_HEADER)?,
+                headers.get(SNAPSHOT_STALE_HEADER)?,
+            ) {
+                (Some(id), _) => SnapshotNews::Taken(id),
+                (None, Some(_)) => SnapshotNews::Stale,
+                (None, None) => SnapshotNews::None,
+            };
+            Ok::<_, worker::Error>((response.status_code(), response.text().await?, news))
         };
         match attempt.await {
-            Ok((200, body)) => match serde_json::from_str::<Rep>(&body) {
-                Ok(report) => SandboxOutcome::Report(report),
-                Err(error) => SandboxOutcome::Failed(format!(
-                    "sandbox answered {action} with an unreadable report: {error}"
-                )),
+            Ok((200, body, news)) => match serde_json::from_str::<Rep>(&body) {
+                Ok(report) => (SandboxOutcome::Report(report), news),
+                Err(error) => (
+                    SandboxOutcome::Failed(format!(
+                        "sandbox answered {action} with an unreadable report: {error}"
+                    )),
+                    news,
+                ),
             },
-            Ok((422, reason)) => SandboxOutcome::Unscorable(reason),
-            Ok((status, body)) => {
-                SandboxOutcome::Failed(format!("sandbox answered {status}: {body}"))
-            }
-            Err(error) => SandboxOutcome::Failed(error.to_string()),
+            Ok((422, reason, news)) => (SandboxOutcome::Unscorable(reason), news),
+            Ok((status, body, news)) => (
+                SandboxOutcome::Failed(format!("sandbox answered {status}: {body}")),
+                news,
+            ),
+            Err(error) => (
+                SandboxOutcome::Failed(error.to_string()),
+                SnapshotNews::None,
+            ),
         }
     }
 
@@ -678,6 +762,7 @@ impl TreeObject {
             .task(entry.task)
             .expect("a attempt's task is in its tree");
         let (intent, checks) = (task.intent.clone(), task.checks.clone());
+        let snapshot = self.snapshot_of(&base.commit).await?;
         let artifacts = self.artifacts()?;
         let forked = match artifacts.repo(&base.repo).await {
             Ok(base_repo) => base_repo.fork(&entry.repo, &intent).await,
@@ -695,6 +780,7 @@ impl TreeObject {
                 token: created.token,
                 base_commit: base.commit.as_str().to_owned(),
                 history: tree.history_of(entry.task).cloned().collect(),
+                snapshot,
             }),
             Err(error) => {
                 if let Some(mut tree) = self.load().await?
@@ -890,6 +976,19 @@ struct Rebase {
     from_base: Oid,
     from_head: Oid,
     onto_head: Oid,
+}
+
+/// What a sandbox call said about its base's warmed snapshot.
+enum SnapshotNews {
+    None,
+    /// A snapshot of the base was taken: start this base's containers from it.
+    Taken(String),
+    /// The snapshot asked for could not be restored: forget it.
+    Stale,
+}
+
+fn snapshot_key(base: &Oid) -> String {
+    format!("snapshot:{}", base.as_str())
 }
 
 enum SandboxOutcome<Report = ScoreReport> {

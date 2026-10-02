@@ -53,7 +53,8 @@ push() { # dir token
 
 start() { # task agent -> attempt id; clones into $W/<attempt>
   local out attempt
-  out=$(call POST "/tasks/$1/attempts" "{\"agent\":\"$2\"}")
+  # start_agent: false: this script pushes the attempt itself, so no pi agent is started.
+  out=$(call POST "/tasks/$1/attempts" "{\"agent\":\"$2\",\"start_agent\":false}")
   attempt=$(jq -r .attempt <<<"$out")
   [ "$attempt" != null ] || { echo "start failed: $out" >&2; return 1; }
   jq -r .token <<<"$out" > "$W/token-$attempt"
@@ -180,7 +181,7 @@ delta_t=$(call GET "/attempts/$delta" | jq -r '.attempt.rebase')
 call GET "" | jq -c --argjson l "$delta_t" '[.history[] | select(.attempt == $l) | {attempt, reason}]'
 
 step "delta's agent retries from A's new head, by hand this time"
-R=$(call POST "/attempts/$delta/retry"); jq -c '{attempt, base_commit, history: [.history[] | {attempt, agent, reason}]}' <<<"$R"
+R=$(call POST "/attempts/$delta/retry" '{"start_agent":false}'); jq -c '{attempt, base_commit, history: [.history[] | {attempt, agent, reason}]}' <<<"$R"
 delta2=$(jq -r .attempt <<<"$R")
 [ "$delta2" != null ] || { echo "FAIL: retry refused: $R" >&2; exit 1; }
 

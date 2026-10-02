@@ -10,7 +10,7 @@
  * - `GET /status`: whether the agent is still working, its phase, and its
  *   last words.
  *
- * The agent works in a container (`ScorerContainer`, the same image the
+ * The agent works in a container (a `Workspace` in the sandbox Worker, the same image the
  * scorer uses: nix, devenv, git), through pi's read/write/edit/bash tools, so
  * it can run the root's own checks before it submits. A attempt grows in two
  * phases, one pi conversation throughout, each phase with its own model, tools
@@ -53,8 +53,11 @@ import { Clef } from "../clef/clef.ts";
 import { clip, describe, DIFF, effort, MAX_REJECTIONS, objections, type Objection, PLAN } from "./gates.ts";
 import { ContainerEnv, type SandboxStub } from "./sandbox-env.ts";
 
-/** Where the attempt is checked out inside the agent's container. */
+/** Where the attempt is checked out inside the agent's container: the Workspace's `ATTEMPT_DIR`. */
 const ATTEMPT_DIR = "/work/attempt";
+
+/** crates/ficus-core `TENANT_HEADER`. */
+const TENANT_HEADER = "x-ficus-tenant";
 
 /** The model that makes the change when the assignment names none. */
 export const DEFAULT_MODEL = "@cf/moonshotai/kimi-k2.7-code";
@@ -76,8 +79,13 @@ const TaskCheck = Schema.Struct({
   timeout_secs: Schema.optional(Schema.Number),
 });
 
-/** What `TreeObject` sends when it starts this attempt. */
+/**
+ * What the Api sends when it starts this attempt: the tree's `Started`
+ * answer to a start or retry, with the tenant and tree it was asked of.
+ */
 export const Assignment = Schema.Struct({
+  /** The organization's tenant key: the tree's Durable Object is `<tenant>-<tree>`. */
+  tenant: Schema.String,
   tree: Schema.String,
   attempt: Schema.Number,
   task: Schema.Number,
@@ -92,6 +100,8 @@ export const Assignment = Schema.Struct({
   token: Schema.String,
   base_commit: Schema.String,
   history: Schema.Array(CompostEntry),
+  /** A warmed container snapshot of the base, when the tree has one. */
+  snapshot: Schema.optional(Schema.NullOr(Schema.String)),
 });
 
 export interface Assignment extends Schema.Schema.Type<typeof Assignment> {}
@@ -106,9 +116,18 @@ const LOCKED_PATHS = ["ficus.toml", "devenv.nix", "devenv.yaml", "devenv.lock", 
 
 type Gate = "plan" | "submit";
 
+/** What the Workspace's `/prepare` takes: src/sandbox/workspace.ts `Preparation`. */
+interface Preparation {
+  readonly remote: string;
+  readonly token: string;
+  readonly base_commit: string;
+  readonly agent: string;
+  snapshot?: string;
+}
+
 interface Bindings {
   readonly AI: Ai;
-  readonly SCORER: DurableObjectNamespace;
+  readonly WORKSPACES: DurableObjectNamespace;
   readonly TREES: DurableObjectNamespace;
 }
 
@@ -235,8 +254,10 @@ const changeRules = (plan: string): string =>
 export class AgentActor extends DurableObject<Bindings> {
   readonly #ai = createAI({ binding: this.env.AI });
 
-  /** The attempt's container: one `ScorerContainer` instance per agent. */
-  readonly #sandbox: SandboxStub = this.env.SCORER.get(this.env.SCORER.idFromName(`agent:${this.ctx.id.name ?? this.ctx.id.toString()}`));
+  /** The attempt's container: one `Workspace` per agent. */
+  readonly #sandbox: SandboxStub = this.env.WORKSPACES.get(
+    this.env.WORKSPACES.idFromName(`agent:${this.ctx.id.name ?? this.ctx.id.toString()}`),
+  );
 
   readonly #workspace = new ContainerEnv(this.#sandbox, `agent:${this.ctx.id.toString()}`, ATTEMPT_DIR);
 
@@ -343,30 +364,42 @@ export class AgentActor extends DurableObject<Bindings> {
     );
   });
 
-  /** Clone the attempt into the container and set the identity it commits as. */
+  /**
+   * Have the workspace boot (from the base's snapshot when there is one),
+   * open the attempt's repo to it and clone the attempt. The token goes to
+   * the workspace's Egress, never into the container.
+   */
   readonly #prepare = Effect.fn("Agent.prepare")(function* (this: AgentActor, assignment: Assignment) {
-    const auth = `Authorization: Bearer ${assignment.token}`;
+    const preparation: Preparation = {
+      remote: assignment.remote,
+      token: assignment.token,
+      base_commit: assignment.base_commit,
+      agent: assignment.agent,
+    };
 
-    const script = [
-      `rm -rf ${ATTEMPT_DIR} && mkdir -p /work`,
-      `git -c http.extraHeader='${auth}' clone --quiet '${assignment.remote}' ${ATTEMPT_DIR}`,
-      `cd ${ATTEMPT_DIR}`,
-      `git config http.extraHeader '${auth}'`,
-      `git config user.name '${assignment.agent}'`,
-      `git config user.email '${assignment.agent}@agents.ficus.dev'`,
-    ].join(" && ");
+    if (assignment.snapshot !== undefined && assignment.snapshot !== null) {
+      preparation.snapshot = assignment.snapshot;
+    }
 
-    const ran = yield* attempt(
-      () => this.#workspace.exec(script, { cwd: "/", timeout: 300_000 }, BACKGROUND),
+    const response = yield* attempt(
+      () =>
+        this.#sandbox.fetch(
+          new Request("http://workspace/prepare", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(preparation),
+          }),
+        ),
       (cause) => new GrowRejected({ status: 502, message: `preparing the attempt: ${String(cause)}` }),
     );
 
-    if (!ran.ok) {
-      return yield* new GrowRejected({ status: 502, message: `preparing the attempt: ${ran.error.message}` });
-    }
+    if (!response.ok) {
+      const text = yield* attempt(
+        () => response.text(),
+        () => new GrowRejected({ status: 502, message: `preparing the attempt: ${response.status}` }),
+      );
 
-    if (ran.value.exitCode !== 0) {
-      return yield* new GrowRejected({ status: 502, message: `preparing the attempt: exit ${ran.value.exitCode}` });
+      return yield* new GrowRejected({ status: 502, message: `preparing the attempt (${response.status}): ${text}` });
     }
   });
 
@@ -473,7 +506,7 @@ export class AgentActor extends DurableObject<Bindings> {
   });
 
   /** Freeze this attempt and queue it for the root's checks, via its tree, once Clef has seen the diff. */
-  readonly #submit = Effect.fn("Agent.submitLeaf")(function* (this: AgentActor) {
+  readonly #submit = Effect.fn("Agent.submit")(function* (this: AgentActor) {
     const assignment = yield* this.#assignment();
 
     const plan = yield* attempt(
@@ -491,11 +524,12 @@ export class AgentActor extends DurableObject<Bindings> {
       });
     }
 
-    const tree = this.env.TREES.get(this.env.TREES.idFromName(assignment.tree));
+    const tree = this.env.TREES.get(this.env.TREES.idFromName(`${assignment.tenant}-${assignment.tree}`));
     const url = `http://tree/trees/${assignment.tree}/attempts/${assignment.attempt}/submit`;
 
+    // The tree trusts the tenant header: this object is one of its own callers.
     const response = yield* attempt(
-      () => tree.fetch(url, { method: "POST" }),
+      () => tree.fetch(url, { method: "POST", headers: { [TENANT_HEADER]: assignment.tenant } }),
       (cause) => new SubmitFailed({ message: `the tree is unreachable: ${String(cause)}` }),
     );
 

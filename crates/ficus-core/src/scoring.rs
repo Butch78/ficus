@@ -210,7 +210,20 @@ pub struct ScoreRequest {
     pub intent: String,
     #[serde(default)]
     pub checks: Vec<CheckSpec>,
+    /// A container snapshot of this base, warmed: start from it instead of
+    /// the bare image. The sandbox falls back to the image if it is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<String>,
+    /// Warm a snapshot of this base while scoring (the root's devenv shell,
+    /// built from the base alone) and report its id.
+    #[serde(default)]
+    pub take_snapshot: bool,
 }
+
+/// Response headers the sandbox reports snapshots in, beside the report.
+pub const SNAPSHOT_TAKEN_HEADER: &str = "x-ficus-snapshot";
+/// Set when the requested snapshot could not be restored: forget it.
+pub const SNAPSHOT_STALE_HEADER: &str = "x-ficus-snapshot-stale";
 
 impl ScoreRequest {
     pub fn attempt(&self) -> AttemptRef {
