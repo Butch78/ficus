@@ -38,6 +38,8 @@
  *                                     `ficus-scorer fs <op>` / `exec` with the
  *                                     request on stdin; the answer is pi's
  *                                     Result, as JSON
+ *   DELETE /workspace                 the agent is done: destroy the container
+ *                                     and forget the workspace
  */
 import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
@@ -140,8 +142,29 @@ const Prepared = Schema.Struct({ workdir: Schema.String });
 /** crates/ficus-core `RebaseReport`. */
 const RebaseReport = Schema.Struct({ commit: Oid, replayed: Schema.Number });
 
-/** What an agent's workspace starts from: its attempt's remote and write token. */
-const Workspace = Schema.Struct({ remote: Schema.String, token: Schema.String });
+/**
+ * What an agent's workspace starts from: its attempt's remote and write token,
+ * where to check it out, and who commits there.
+ */
+const Workspace = Schema.Struct({
+  remote: Schema.String,
+  token: Schema.String,
+  checkout: Schema.String.check(Schema.isPattern(/^\/work\/[A-Za-z0-9._-]+$/)),
+  author: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._-]{1,64}$/)),
+});
+
+/** Where the background devenv build of a workspace writes its output. */
+const DEVENV_WARM_LOG = "/tmp/devenv-warm.log";
+
+/**
+ * A workspace's container outlives an agent's slowest think between
+ * operations. The agent closes it when it is done; this only catches one that
+ * never says so, and every idle container holds one of the class's instances.
+ */
+const WORKSPACE_IDLE_MS = 20 * 60 * 1000;
+
+/** One readiness probe: an exec into a container that cannot be placed can hang. */
+const PROBE_TIMEOUT = "15 seconds";
 
 type Workspace = typeof Workspace.Type;
 
@@ -203,6 +226,10 @@ export class Sandbox extends DurableObject<Bindings> {
 
     if (request.method === "POST" && pathname === "/workspace") {
       return respond(this.#workspace(request).pipe(Effect.as({ ready: true })));
+    }
+
+    if (request.method === "DELETE" && pathname === "/workspace") {
+      return this.#respond(this.#close().pipe(Effect.as(Response.json({ closed: true }))));
     }
 
     const workspaceOp = /^\/(?:fs\/([a-z]+)|exec)$/.exec(pathname);
@@ -267,16 +294,27 @@ export class Sandbox extends DurableObject<Bindings> {
     yield* this.#open(workspace);
   });
 
+  /** The agent is done: its container goes, and no later operation reopens it. */
+  readonly #close = Effect.fn("Sandbox.close")(function* (this: Sandbox) {
+    this.#opened = false;
+    yield* Effect.promise(() => this.ctx.storage.delete(WORKSPACE_KEY));
+
+    if (this.#container().running) {
+      yield* Effect.promise(() => this.#container().destroy());
+    }
+  });
+
   /**
    * Start the container if it is not running, route its egress, trust the
    * egress CA. The routes belong to this instance of the Durable Object, not
    * to the container: an agent's run outlives instances, so every new
    * instance opens the workspace again before its first operation.
    */
-  readonly #open = Effect.fn("Sandbox.open")(function* (this: Sandbox, { remote, token }: Workspace) {
+  readonly #open = Effect.fn("Sandbox.open")(function* (this: Sandbox, { remote, token, checkout, author }: Workspace) {
     const repo = repoOf(remote);
 
     yield* this.#ready();
+    yield* Effect.promise(() => this.#container().setInactivityTimeout(WORKSPACE_IDLE_MS));
     yield* this.#route(repo.host, { mode: "artifacts", repos: [{ repoPath: repo.repoPath, token }] });
 
     for (const host of NIX_HOSTS) {
@@ -288,6 +326,34 @@ export class Sandbox extends DurableObject<Bindings> {
     if (trusted.exitCode !== 0) {
       return yield* failure(503, `trusting the egress CA: ${trusted.stderr.trim()}`);
     }
+
+    // The checkout, as last pushed, if this container does not have it: a
+    // container that was stopped comes back empty. The token stays with
+    // Egress; git here never sees it.
+    const cloned = yield* this.#exec([
+      "/bin/sh",
+      "-c",
+      `if [ -d '${checkout}/.git' ]; then exit 0; fi; ${[
+        `rm -rf '${checkout}'`,
+        `mkdir -p "$(dirname '${checkout}')"`,
+        `git clone --quiet '${remote}' '${checkout}'`,
+        `git -C '${checkout}' config user.name '${author}'`,
+        `git -C '${checkout}' config user.email '${author}@agents.ficus.dev'`,
+      ].join(" && ")}`,
+    ]);
+
+    if (cloned.exitCode !== 0) {
+      return yield* failure(502, `checking out the attempt: exit ${cloned.exitCode}: ${cloned.stderr.trim()}`);
+    }
+
+    // Warm the root's devenv shell in the background: built cold it takes
+    // minutes, and an agent's first `devenv shell` then waits for this one
+    // rather than starting its own. Once per container.
+    yield* this.#exec([
+      "/bin/sh",
+      "-c",
+      `cd '${checkout}' && [ -f devenv.nix ] && [ ! -e ${DEVENV_WARM_LOG} ] && (nohup devenv shell -- true > ${DEVENV_WARM_LOG} 2>&1 &) ; true`,
+    ]);
 
     this.#opened = true;
   });
@@ -513,12 +579,14 @@ export class Sandbox extends DurableObject<Bindings> {
   readonly #ready = Effect.fn("Sandbox.ready")(function* (this: Sandbox) {
     const container = this.#container();
 
-    if (!container.running) {
-      container.start({ enableInternet: false });
-    }
-
     yield* Effect.tryPromise({
       try: async () => {
+        // Started here, and again if it stopped while booting: several cold
+        // containers starting at once can take minutes.
+        if (!container.running) {
+          container.start({ enableInternet: false });
+        }
+
         const probe = await container.exec(["/bin/sh", "-c", "test -f /run/ficus-ready"], { env: { ...EXEC_ENV } });
 
         if ((await probe.exitCode) !== 0) {
@@ -526,7 +594,13 @@ export class Sandbox extends DurableObject<Bindings> {
         }
       },
       catch: (cause) => failure(503, `the sandbox did not become ready: ${String(cause)}`),
-    }).pipe(Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 120 }));
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: PROBE_TIMEOUT,
+        orElse: () => Effect.fail(failure(503, `the sandbox did not become ready: no answer within ${PROBE_TIMEOUT}`)),
+      }),
+      Effect.retry({ schedule: Schedule.spaced("1 second"), times: 240 }),
+    );
   });
 
   /** Route `host`'s HTTPS through `Egress` with `props`. Replaces any earlier route. */

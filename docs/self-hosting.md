@@ -37,9 +37,10 @@ Two consequences shape the plan:
 - Leaves over plain git (`http.extraHeader` bearer token), scoring with the root's own checks in
   containers with the internet off, cost-ranked harvest, regrow, compost.
 - Accounts, organizations, and API keys (Better Auth), one tenant per organization.
-- The web UI (`infra/src/web`): sign in, organizations and trees, buds → leaves → fruit, each leaf's
-  state and report, and browsing any leaf's or node's repo (history, directories, files) through
-  Artifacts' read methods.
+- The web UI (`infra/src/web`): plant, write buds, grow leaves with agents (pi on Workers AI, each in
+  its own sandbox) or by hand, watch each race live (agents' tool calls, scoring steps as they run),
+  review a leaf's diff, harvest with the reason shown, regrow and wither; browse any leaf's or node's
+  repo through Artifacts; replay any change's Cloudflare trace.
 - A `pr-<n>` stage per pull request, Api and UI, with an end-to-end smoke test of each.
 
 ## What is missing
@@ -58,14 +59,12 @@ Roughly in the order they block self-hosting:
 3. **Following an outside `main`.** A tree is planted once. While GitHub stays the source of truth,
    its `main` moves without a harvest. Ficus needs a graft: import an outside commit as a new head
    node, marking open leaves stale like a harvest would.
-4. **Review.** The UI can show a leaf, but there is no diff of a leaf against its base (Artifacts
-   has no diff method; the scorer already computes the diff to cost it and could ship it, truncated,
-   in the report). There are no comments, and no approval gate on harvest. Org roles exist in Better
-   Auth (owner, admin, member), but the Api does not check them, so any member can harvest.
-5. **Acting from the UI and from a CLI.** The UI only plants trees and creates organizations.
-   Sprouting a leaf, submitting it, harvesting, and regrowing all need the API with an API key.
-   People need buttons, and a `ficus` CLI (`sprout`, `push`, `ripe`) that wraps the curl and git
-   steps `scripts/e2e` does by hand.
+4. **Review.** Leaf and node diffs, the harvest's reason and every leaf's standing are in the UI
+   now. There are no comments, and no approval gate on harvest. Org roles exist in Better Auth
+   (owner, admin, member), but the Api does not check them, so any member can harvest.
+5. **A CLI.** Every action is in the UI now (bud, grow with agents or by hand, submit, harvest,
+   regrow, wither). People who live in a terminal need a `ficus` CLI (`sprout`, `push`, `ripe`)
+   that wraps the curl and git steps `scripts/e2e` does by hand.
 6. **CI on push.** Scoring runs on `ripe`, which freezes the leaf. That suits agents, but people
    expect feedback while they are still working. Two parts: an event when a leaf repo is pushed
    (the Artifacts binding exposes no push notification, so polling `log` is the stopgap), and a preview
@@ -121,9 +120,10 @@ One per gap above, so each can be picked up alone:
       caches, and measured scorer timeouts and instance type.
 - [ ] Trunk repo: fast-forward a stable Artifacts repo per tree on harvest, from a sandbox.
 - [ ] `POST /trees/<t>/graft {source, branch}`: import an outside commit as the new head node.
-- [ ] Leaf diff in the scoring report (truncated), rendered on the leaf page.
+- [x] Leaf and node diffs, rendered on their pages.
 - [ ] Comments on leaves and buds; approval-gated harvest that checks Better Auth org roles in the Api.
-- [ ] UI actions (bud, sprout, ripe, harvest, regrow, wither) and a `ficus` CLI.
+- [x] UI actions (bud, grow with agents, sprout, ripe, harvest, regrow, wither).
+- [ ] A `ficus` CLI.
 - [ ] Push detection for leaf repos (poll `log` until Artifacts has events) and non-freezing preview scores.
 - [ ] Tree events to a Queue; signed webhook deliveries with retries.
 - [ ] Deploy phase in `ficus.toml`; per-tree secrets; per-leaf preview stages.

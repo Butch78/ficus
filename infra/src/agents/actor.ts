@@ -2,15 +2,20 @@
  * `AgentActor`: one Durable Object per attempt, running one pi agent that grows
  * that attempt. The tree is the only thing that talks to it.
  *
- * - `POST /grow` (from `TreeObject`): the assignment. The actor opens a
- *   workspace for the attempt, clones it there, then hands pi the task's
- *   intent and the history of earlier attempts. pi's run is durable from
- *   there: every model turn and tool call is checkpointed in this object's
- *   SQLite, so an eviction resumes the run rather than losing it.
+ * - `POST /grow` (from `TreeObject`): the assignment, answered at once. Then
+ *   the actor opens a workspace for the attempt (a container can take minutes
+ *   to place), which checks it out, and hands pi the task's intent and the
+ *   history of earlier attempts. pi's run is durable from there: every model
+ *   turn and tool call is checkpointed in this object's SQLite, so an
+ *   eviction resumes the run rather than losing it.
  * - `GET /status` (from `TreeObject`, which polls it): `working` while the run
  *   goes on, `submitted` once the agent called `submit`, `stopped` if the run
- *   ended without it, `failed` if it could not start; with the phase, the
- *   agent's recent tool calls and last words (activity.ts), for the UI.
+ *   ended without it, `failed` if it could not start, `unassigned` if no
+ *   assignment ever arrived; with the phase, the agent's recent tool calls and
+ *   last words (activity.ts), for the UI.
+ * - `POST /stop` (from `TreeObject`, once the attempt is no longer working:
+ *   submitted, abandoned, retried): abort the run and close the workspace, so
+ *   its container goes back to the pool.
  *
  * The agent works in a sandbox container (src/sandbox: the scorer's image,
  * nix, devenv, git) through pi's read/write/edit/bash tools, so it can run the
@@ -104,6 +109,9 @@ export const Assignment = Schema.Struct({
 export interface Assignment extends Schema.Schema.Type<typeof Assignment> {}
 
 const ASSIGNMENT_KEY = "assignment";
+
+/** Set once the tree stopped this agent: a late start must not reopen anything. */
+const STOPPED_KEY = "stopped";
 
 /** The plan `plan_change` accepted, for the diff gate. */
 const PLAN_KEY = "plan";
@@ -217,7 +225,7 @@ export const prompt = (assignment: Assignment): string => {
     "",
     "Your environment:",
     "- The network reaches only your attempt's git remote (pushing is already authorised: just `git push origin HEAD:main`) and the nix/devenv binary caches. Everything else is closed, so do not install packages from the internet.",
-    "- The first `devenv shell -- <command>` builds the environment from the caches and can take several minutes: give it a long timeout (10 minutes). Later runs are fast.",
+    "- The root's devenv environment is already being built in the background (its log: /tmp/devenv-warm.log). A `devenv shell -- <command>` waits for that build, which can take several minutes from cold: give it a long timeout (10 minutes) and do not kill it. Later runs are fast.",
     "",
     "Earlier attempts at this task (the history):",
     history,
@@ -316,6 +324,10 @@ export class AgentActor extends DurableObject<Bindings> {
       return Response.json(await this.#status());
     }
 
+    if (request.method === "POST" && url.pathname === "/stop") {
+      return Effect.runPromise(this.#stop().pipe(Effect.as(Response.json({ state: "stopped" }))));
+    }
+
     return new Response("not found", { status: 404 });
   }
 
@@ -339,8 +351,30 @@ export class AgentActor extends DurableObject<Bindings> {
       return;
     }
 
-    yield* this.#prepare(assignment);
     yield* attempt(() => this.ctx.storage.put(ASSIGNMENT_KEY, assignment), failed("storing the assignment"));
+
+    // The tree's alarm is waiting on this answer: start without it. A start
+    // that fails is the outcome, and the tree reads it from `/status`.
+    yield* Effect.forkDetach(
+      this.#start(assignment).pipe(
+        Effect.catchTag("Agent.GrowRejected", (error) =>
+          Effect.promise(() => this.ctx.storage.put(OUTCOME_KEY, { state: "failed", reason: error.message } satisfies Outcome)),
+        ),
+      ),
+    );
+  });
+
+  /** Open the workspace, then hand pi the assignment, in the scout phase. */
+  readonly #start = Effect.fn("Agent.start")(function* (this: AgentActor, assignment: Assignment) {
+    const failed = (step: string) => (cause: unknown) =>
+      new GrowRejected({ status: 500, message: `${step}: ${String(cause)}` });
+
+    yield* this.#prepare(assignment);
+
+    // Stopped while the container was being placed: give it straight back.
+    if ((yield* attempt(() => this.ctx.storage.get(STOPPED_KEY), failed("reading the stop"))) !== undefined) {
+      return yield* this.#closeWorkspace();
+    }
 
     const pi = yield* attempt(() => this.harness.pi(), failed("opening pi"));
     const root = yield* attempt(() => pi.root(BACKGROUND), failed("opening the conversation"));
@@ -356,10 +390,11 @@ export class AgentActor extends DurableObject<Bindings> {
   });
 
   /**
-   * Open the attempt's workspace and clone the attempt into it, as the
-   * identity it commits as. The token goes to the sandbox, whose egress adds
-   * it to requests for this attempt's repo: git in the container clones and
-   * pushes without ever holding it.
+   * Open the attempt's workspace: the sandbox checks the attempt out (and
+   * checks it out again if its container is ever replaced), as the identity
+   * it commits as. The token goes to the sandbox, whose egress adds it to
+   * requests for this attempt's repo: git in the container clones and pushes
+   * without ever holding it.
    */
   readonly #prepare = Effect.fn("Agent.prepare")(function* (this: AgentActor, assignment: Assignment) {
     const opened = yield* attempt(
@@ -368,7 +403,12 @@ export class AgentActor extends DurableObject<Bindings> {
           new Request("http://sandbox/workspace", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ remote: assignment.remote, token: assignment.token }),
+            body: JSON.stringify({
+              remote: assignment.remote,
+              token: assignment.token,
+              checkout: ATTEMPT_DIR,
+              author: assignment.agent,
+            }),
           }),
         ),
       (cause) => new GrowRejected({ status: 502, message: `opening the workspace: ${String(cause)}` }),
@@ -382,26 +422,23 @@ export class AgentActor extends DurableObject<Bindings> {
 
       return yield* new GrowRejected({ status: 502, message: `opening the workspace: ${why}` });
     }
+  });
 
-    const script = [
-      `rm -rf ${ATTEMPT_DIR} && mkdir -p /work`,
-      `git clone --quiet '${assignment.remote}' ${ATTEMPT_DIR}`,
-      `cd ${ATTEMPT_DIR}`,
-      `git config user.name '${assignment.agent}'`,
-      `git config user.email '${assignment.agent}@agents.ficus.dev'`,
-    ].join(" && ");
+  /** The attempt is no longer working: end the run, and hand the container back. */
+  readonly #stop = Effect.fn("Agent.stop")(function* (this: AgentActor) {
+    yield* Effect.promise(() => this.ctx.storage.put(STOPPED_KEY, true));
+    yield* Effect.tryPromise(() => this.harness.session().abort()).pipe(Effect.ignore);
+    yield* this.#closeWorkspace();
+  });
 
-    const ran = yield* attempt(
-      () => this.#workspace.exec(script, { cwd: "/", timeout: 300_000 }, BACKGROUND),
-      (cause) => new GrowRejected({ status: 502, message: `preparing the attempt: ${String(cause)}` }),
+  readonly #closeWorkspace = Effect.fn("Agent.closeWorkspace")(function* (this: AgentActor) {
+    const closed = yield* Effect.tryPromise(() => this.#sandbox.fetch(new Request("http://sandbox/workspace", { method: "DELETE" }))).pipe(
+      Effect.map((answer) => answer.ok),
+      Effect.orElseSucceed(() => false),
     );
 
-    if (!ran.ok) {
-      return yield* new GrowRejected({ status: 502, message: `preparing the attempt: ${ran.error.message}` });
-    }
-
-    if (ran.value.exitCode !== 0) {
-      return yield* new GrowRejected({ status: 502, message: `preparing the attempt: exit ${ran.value.exitCode}` });
+    if (!closed) {
+      yield* Effect.logWarning("closing the workspace failed; its container idles out instead");
     }
   });
 
@@ -494,7 +531,7 @@ export class AgentActor extends DurableObject<Bindings> {
       () =>
         this.#workspace.exec(
           `git diff --no-color ${assignment.base_commit} HEAD -- . ${excludes}`,
-          { cwd: ATTEMPT_DIR, timeout: 60_000, onOutput: (text) => (output += text) },
+          { cwd: ATTEMPT_DIR, timeout: 60, onOutput: (text) => (output += text) },
           BACKGROUND,
         ),
       (cause) => new GateFailed({ message: `diffing the attempt: ${String(cause)}` }),
@@ -543,18 +580,25 @@ export class AgentActor extends DurableObject<Bindings> {
     const session = this.harness.session();
     const pi = await this.harness.pi();
 
-    const [stored, busy, entries, agent] = await Promise.all([
+    const [stored, busy, entries, agent, assignment] = await Promise.all([
       this.ctx.storage.get(OUTCOME_KEY),
       session.busy(),
       session.messages(),
       pi.root(BACKGROUND).then((root) => root.agent(BACKGROUND)),
+      this.ctx.storage.get(ASSIGNMENT_KEY),
     ]);
 
     const outcome = Schema.decodeUnknownOption(Outcome)(stored);
 
     const state = Option.match(outcome, {
       onSome: (ended) => ended.state,
-      onNone: () => (busy || entries.length === 0 ? "working" : "stopped"),
+      onNone: () => {
+        if (assignment === undefined) {
+          return "unassigned";
+        }
+
+        return busy || entries.length === 0 ? "working" : "stopped";
+      },
     });
 
     return {

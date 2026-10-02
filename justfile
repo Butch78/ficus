@@ -54,6 +54,10 @@ e2e:
 e2e-web:
     scripts/e2e-web
 
+# Agents end to end on a deployed stage (FICUS_API; opt-in: spends Workers AI, takes minutes)
+e2e-agents:
+    scripts/e2e-agents
+
 # Deploy the web UI stack (after `just deploy`, same STAGE)
 deploy-web:
     cd infra && bun run deploy:web

@@ -122,6 +122,9 @@ const request = Effect.fn("Sandbox.request")(function* <A>(
   return { ok: true as const, value: decoded };
 });
 
+/** pi's shell timeouts are seconds (its own env does `timeout * 1000`); the sandbox's are milliseconds. */
+export const timeoutMs = (seconds: number | undefined) => (seconds === undefined ? undefined : seconds * 1000);
+
 const fileError = (failure: Failure, path?: string): FileError =>
   new FileError(isFileCode(failure.code) ? failure.code : "unknown", failure.message, path);
 
@@ -354,7 +357,7 @@ export class ContainerEnv implements ExecutionEnv {
       cwd: options?.cwd ?? this.cwd,
       env: options?.env,
       inherit_env: options?.inheritEnv,
-      timeout_ms: options?.timeout,
+      timeout_ms: timeoutMs(options?.timeout),
       spill_after_bytes: options?.spill?.afterBytes,
       spill_after_lines: options?.spill?.afterLines,
     };

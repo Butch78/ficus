@@ -55,6 +55,21 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   `border-kumo-*`), no palette colors, no `dark:` (`src/web/kumo-styling.test.ts` enforces it). Server
   components take compound parts (`Table.Row`, `LayerCard.Primary`, ...) from `components/kumo.ts`: on a
   client reference, `Table.Row` is undefined (React error #130).
+- Agents: `infra/src/agents` (Worker `ficus-agents-<stage>`), one `AgentActor` (pi-durable on Workers AI,
+  default `@cf/moonshotai/kimi-k2.7-code`) per agent leaf. `POST /trees/<t>/buds/<b>/grow {agents, model}`
+  sprouts + forks and keeps each assignment; the TreeObject alarm (`tree_object/agents.rs`) hands them to the
+  `AGENTS` binding, then polls `GET /status`: submitted → the tree submits the leaf; stopped/failed → withers it
+  with the agent's last words. Nothing calls the tree back (cross-Worker DO bindings both ways can't deploy on
+  a fresh stage). The agent's workspace is a Sandbox: `POST /workspace` (egress: leaf repo with Egress-added
+  token + nix caches), `/fs/<op>` and `/exec` run `ficus-scorer fs|exec` (request on stdin). Egress routes
+  belong to the Sandbox DO instance: `#open` reopens them from storage on each new instance.
+  `/grow` answers at once and opens the workspace in a detached fiber (placing a container can take
+  minutes; the tree's alarm must not wait). Once a leaf leaves Growing the tree `POST /stop`s its agent,
+  which aborts pi and `DELETE /workspace`s: an idle workspace holds one of the Sandbox class's instances,
+  and when they run out new ones fail with "There is no container instance that can be provided".
+- UI pages: tree = garden (head, open buds' races, New bud, harvests); bud = the race (standings from
+  `ficus-core` `Tree::standings`, which shares `winner()` with `harvest`; harvest case; Grow with agents; grow
+  it yourself); leaf = timeline, actions, diff (`GET .../{leaves,nodes}/<id>/diff`), scoring ledger, agent at work.
 - Tracing is Effect's: `infra/src/observability/tracer.ts` is an Effect `Tracer` layer that records every
   `Effect.fn`/`withSpan` as a Cloudflare span (scalar annotations → attributes), nested with the platform's own.
   The Api and the UI provide it per request; name spans with `Effect.fn("Area.what")`, annotate with

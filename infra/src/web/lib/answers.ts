@@ -259,7 +259,7 @@ export type Growing = typeof Growing.Type;
 
 /** `GET .../leaves/<leaf>/agent`: the agent growing it (src/agents/actor.ts `#status`). */
 export const AgentStatus = Schema.Struct({
-  state: Schema.Literals(["working", "submitted", "stopped", "failed"]),
+  state: Schema.Literals(["working", "submitted", "stopped", "failed", "unassigned"]),
   reason: Schema.optional(Schema.String),
   model: Schema.String,
   calls: Schema.Array(

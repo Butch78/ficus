@@ -12,6 +12,7 @@ const STATE_WORDS = {
   submitted: "submitted",
   stopped: "stopped without submitting",
   failed: "failed",
+  unassigned: "never started",
 } as const satisfies Record<AgentStatus["state"], string>;
 
 const STATE_BADGE = {
@@ -19,6 +20,7 @@ const STATE_BADGE = {
   submitted: "success",
   stopped: "warning",
   failed: "error",
+  unassigned: "warning",
 } as const satisfies Record<AgentStatus["state"], string>;
 
 const STEP = { running: "active", ok: "complete", error: "error" } as const;

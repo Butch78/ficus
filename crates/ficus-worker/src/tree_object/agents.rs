@@ -191,7 +191,7 @@ impl TreeObject {
     /// On every alarm: hand waiting attempts to their agents, ask the others how
     /// they are doing, and act on what they say.
     pub(super) async fn tend_agents(&self) -> Result<()> {
-        let tending = self.tending().await?;
+        let mut tending = self.tending().await?;
         if tending.is_empty() {
             return Ok(());
         }
@@ -199,17 +199,24 @@ impl TreeObject {
             return Ok(());
         };
         let mut still = Vec::new();
-        for mut tended in tending {
+        for (at, mut tended) in tending.clone().into_iter().enumerate() {
             // Abandoned, retried or submitted by someone else meanwhile: done.
             if !matches!(
                 tree.attempt(tended.attempt).map(|attempt| &attempt.state),
                 Some(AttemptState::Working)
             ) {
+                if tended.dispatched {
+                    self.stop(&tended).await;
+                }
                 continue;
             }
             if !tended.dispatched {
                 match self.dispatch(&tended).await? {
                     None => {
+                        // Recorded at once, not with the rest at the end: an
+                        // alarm cut short and retried must not hand it out twice.
+                        tending[at].dispatched = true;
+                        self.state.storage().put(TENDING_KEY, &tending).await?;
                         tended.dispatched = true;
                         still.push(tended);
                     }
@@ -240,6 +247,7 @@ impl TreeObject {
                         self.give_up(tended.attempt, format!("the agent submitted, but: {why}"))
                             .await?;
                     }
+                    self.stop(&tended).await;
                 }
                 "stopped" => {
                     let words = status.last_words.unwrap_or_else(|| "nothing".to_owned());
@@ -248,11 +256,18 @@ impl TreeObject {
                         format!("the agent stopped without submitting; its last words: {words}"),
                     )
                     .await?;
+                    self.stop(&tended).await;
+                }
+                "unassigned" => {
+                    self.give_up(tended.attempt, "the agent never got its assignment".to_owned())
+                        .await?;
+                    self.stop(&tended).await;
                 }
                 "failed" => {
                     let reason = status.reason.unwrap_or_else(|| "unknown".to_owned());
                     self.give_up(tended.attempt, format!("the agent failed: {reason}"))
                         .await?;
+                    self.stop(&tended).await;
                 }
                 _ => still.push(tended),
             }
@@ -267,8 +282,9 @@ impl TreeObject {
     /// Hand an attempt's assignment to its agent; `Some(reason)` if it refused.
     async fn dispatch(&self, tended: &Tended) -> Result<Option<String>> {
         let key = assignment_key(tended.attempt);
+        // Gone once handed out. Its agent has it, or says `unassigned` when asked.
         let Some(assignment) = self.state.storage().get::<String>(&key).await? else {
-            return Ok(Some("its assignment was lost".to_owned()));
+            return Ok(None);
         };
         let headers = Headers::new();
         headers.set("content-type", "application/json")?;
@@ -286,6 +302,23 @@ impl TreeObject {
             return Ok(Some(answer.text().await?));
         }
         Ok(None)
+    }
+
+    /// The attempt is done: end its agent's run and free its container.
+    /// Best effort: a container the agent fails to close idles out instead.
+    async fn stop(&self, tended: &Tended) {
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post);
+        let stopped = match (
+            self.agent(&tended.repo),
+            Request::new_with_init("http://agent/stop", &init),
+        ) {
+            (Ok(agent), Ok(request)) => agent.fetch_with_request(request).await.map(|_| ()),
+            (Err(error), _) | (_, Err(error)) => Err(error),
+        };
+        if let Err(error) = stopped {
+            worker::console_error!("stopping the agent of attempt {}: {error}", tended.attempt);
+        }
     }
 
     async fn give_up(&self, attempt: AttemptId, note: String) -> Result<()> {
