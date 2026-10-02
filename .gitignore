@@ -9,3 +9,6 @@ devenv.local.nix
 node_modules
 .alchemy/
 infra/src/sandbox/context/ficus-scorer
+infra/src/web/dist/
+infra/src/web/.next/
+infra/src/web/next-env.d.ts

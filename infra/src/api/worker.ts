@@ -3,6 +3,7 @@
  *
  *   /api/auth/*                         Better Auth: sign-up, sign-in,
  *                                       organizations, API keys
+ *   GET /v1/orgs/<org>/trees            the organization's trees
  *   /v1/orgs/<org>/trees/<tree>[/...]   the tree API, for members of <org>
  *
  * A request to /v1 is authenticated (session cookie or `x-api-key`; a key's
@@ -14,6 +15,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { API_KEY_HEADER, AUTH_BASE_PATH, Auth, layer as authLayer } from "./auth.ts";
+import * as Directory from "./directory.ts";
 import { TENANT_HEADER, tenantKey } from "./tenant.ts";
 
 interface Bindings {
@@ -54,11 +56,11 @@ export const treeRoute = (pathname: string) => {
   return org === undefined || tree === undefined ? undefined : { org, tree, rest: rest ?? "" };
 };
 
-const forwardToTree = Effect.fn("Api.forwardToTree")(function* (
-  env: Bindings,
-  request: Request,
-  route: { readonly org: string; readonly tree: string; readonly rest: string },
-) {
+/** `/v1/orgs/<org>/trees`: the organization's slug; undefined otherwise. */
+export const treesRoute = (pathname: string) => /^\/v1\/orgs\/([^/]+)\/trees\/?$/.exec(pathname)?.[1];
+
+/** The organization `slug` names, if the caller is signed in and a member. */
+const membership = Effect.fn("Api.membership")(function* (request: Request, slug: string) {
   const auth = yield* Auth;
 
   const session = yield* Effect.tryPromise({
@@ -73,14 +75,33 @@ const forwardToTree = Effect.fn("Api.forwardToTree")(function* (
   // Answers only to members: a non-member and a missing organization are the
   // same 404, so membership of an organization does not leak its existence.
   const organization = yield* Effect.tryPromise({
-    try: () => auth.api.getFullOrganization({ query: { organizationSlug: route.org }, headers: request.headers }),
-    catch: () => fail(404, `no organization ${route.org} that you belong to`),
+    try: () => auth.api.getFullOrganization({ query: { organizationSlug: slug }, headers: request.headers }),
+    catch: () => fail(404, `no organization ${slug} that you belong to`),
   });
 
   if (organization === null) {
-    return yield* fail(404, `no organization ${route.org} that you belong to`);
+    return yield* fail(404, `no organization ${slug} that you belong to`);
   }
 
+  return organization;
+});
+
+const listTrees = Effect.fn("Api.listTrees")(function* (env: Bindings, request: Request, slug: string) {
+  const organization = yield* membership(request, slug);
+
+  const trees = yield* Directory.list(env.AUTH_DB, organization.id).pipe(
+    Effect.mapError((error) => fail(503, error.message)),
+  );
+
+  return Response.json({ trees });
+});
+
+const forwardToTree = Effect.fn("Api.forwardToTree")(function* (
+  env: Bindings,
+  request: Request,
+  route: { readonly org: string; readonly tree: string; readonly rest: string },
+) {
+  const organization = yield* membership(request, route.org);
   const tenant = yield* tenantKey(organization.id);
   const headers = new Headers(request.headers);
 
@@ -100,10 +121,21 @@ const forwardToTree = Effect.fn("Api.forwardToTree")(function* (
     init.body = request.body;
   }
 
-  return yield* Effect.tryPromise({
+  const response = yield* Effect.tryPromise({
     try: () => env.TREE.fetch(new Request(url, init)),
     catch: (cause) => fail(502, `the tree service is unreachable: ${String(cause)}`),
   });
+
+  // A plant the tree service accepted puts the tree in the directory. The
+  // plant itself has happened either way, so a failure to record it is
+  // logged rather than turned into a failed plant.
+  if (request.method === "POST" && route.rest === "/plant" && response.ok) {
+    yield* Directory.record(env.AUTH_DB, organization.id, route.tree, Date.now()).pipe(
+      Effect.catchTag("Directory.Failure", (error) => Effect.logError(error.message)),
+    );
+  }
+
+  return response;
 });
 
 const handle = Effect.fn("Api.handle")(function* (env: Bindings, request: Request) {
@@ -120,6 +152,12 @@ const handle = Effect.fn("Api.handle")(function* (env: Bindings, request: Reques
       try: () => auth.handler(request),
       catch: (cause) => fail(500, `auth failed: ${String(cause)}`),
     });
+  }
+
+  const trees = treesRoute(pathname);
+
+  if (trees !== undefined && request.method === "GET") {
+    return yield* listTrees(env, request, trees);
   }
 
   const route = treeRoute(pathname);

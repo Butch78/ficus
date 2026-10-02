@@ -53,10 +53,25 @@ jobs:
           devenv shell -- bun run deploy | tee "$RUNNER_TEMP/deploy.log"
           api=$(grep -oE "api: '[^']+'" "$RUNNER_TEMP/deploy.log" | tail -1 | cut -d"'" -f2)
           echo "api=$api" >> "$GITHUB_OUTPUT"
+      # Its own stack (web.run.ts), after the one whose Api it binds; it also
+      # writes the pull request's preview comment.
+      - name: Deploy the web UI
+        id: web
+        working-directory: infra
+        run: |
+          set -euo pipefail
+          devenv shell -- bun run deploy:web | tee "$RUNNER_TEMP/web.log"
+          web=$(grep -oE "web: '[^']+'" "$RUNNER_TEMP/web.log" | tail -1 | cut -d"'" -f2)
+          echo "web=$web" >> "$GITHUB_OUTPUT"
       - name: Smoke (the full tree cycle through the Api)
         env:
           FICUS_API: ${{ steps.deploy.outputs.api }}
         run: devenv shell -- just e2e
+      - name: Smoke (the web UI, reading a tree through Artifacts)
+        env:
+          FICUS_API: ${{ steps.deploy.outputs.api }}
+          FICUS_WEB: ${{ steps.web.outputs.web }}
+        run: devenv shell -- just e2e-web
 
   destroy:
     name: Destroy pr-${{ github.event.number }}
@@ -84,4 +99,6 @@ jobs:
           set -euo pipefail
           case "$STAGE" in pr-[0-9]*) ;; *) echo "refusing to destroy $STAGE" >&2; exit 1 ;; esac
           devenv shell -- bun install --frozen-lockfile
+          # The UI first: it holds a reference to the Api the second removes.
+          devenv shell -- bun run destroy:web:ci
           devenv shell -- bun run destroy:ci

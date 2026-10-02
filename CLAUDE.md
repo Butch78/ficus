@@ -39,9 +39,18 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   `GET /trees/<t>/attempts/<id>` (state + report) · `POST /trees/<t>/tasks/<id>/accept` ·
   `POST /trees/<t>/accept` (oldest ready task; both set the alarm that rebases the behind attempts) ·
   `GET /trees/<t>/behind` · `POST /trees/<t>/attempts/<id>/{retry,abandon}` ·
-  `POST /trees/<t>/release {node?}` · `GET /trees/<t>/release` · `GET /trees/<t>`.
+  `POST /trees/<t>/release {node?}` · `GET /trees/<t>/release` · `GET /trees/<t>` ·
+  `GET /trees/<t>/{attempts,nodes}/<id>/{log,tree,file}?ref=&path=` (reads through Artifacts; the tree picks
+  the repo, `ficus-core::browse`; files leave as text/plain or octet-stream, never HTML).
+  The Api lists an org's trees (`GET /v1/orgs/<org>/trees`) from D1 (`ficus_tree`), recorded on each 2xx init.
   Every attempt/node is its own Artifacts repo (`<t>-a<id>`); git auth is `http.extraHeader="Authorization: Bearer <token>"`.
 - `POST /trees/<t>/init {}` with no `source` creates an empty root and returns a write token; push, init again.
+- Web UI: `infra/src/web`, vinext 1.x (Next.js App Router API on Vite) via `Cloudflare.Website.Vinext`,
+  its own stack `infra/web.run.ts` (stage = the Ficus stack's; binds `Api` by `Cloudflare.Worker.ref`).
+  The browser only talks to the UI's origin: `app/api/auth/*` proxies Better Auth, server components call
+  the Api over the binding with the UI's origin, and the Api builds one Better Auth per origin.
+  Pages run Effects through `lib/run.ts` (`load`: 401 → /sign-in, 404 → notFound). `just e2e-web` smokes it.
+  vinext's build needs cwd = `src/web` (alchemy's build child does that).
 - Scoring: TreeObject's alarm first rebases every behind submitted attempt (one `Sandbox` per attempt,
   `POST /rebase`: Egress grants the behind repo read and the fresh repo write; a conflict is 422
   and final, a sandbox failure retries up to 5 times), then scores every Checking attempt in parallel, one `Sandbox` per attempt

@@ -8,6 +8,7 @@
 
 use std::time::Duration;
 
+use ficus_core::browse::{FilePath, GitRef, Subject};
 use ficus_core::scoring::{CheckSpec, RebaseReport, RebaseRequest, ScoreReport, ScoreRequest};
 use ficus_core::tree::{AttemptId, HistoryEntry, NodeId, Oid, RepoName, TaskId, Tree, TreeError};
 use futures_util::future::join_all;
@@ -17,7 +18,7 @@ use worker::{
     durable_object,
 };
 
-use crate::artifacts::{ArtifactsError, Namespace, Scope};
+use crate::artifacts::{ArtifactsError, CommitMetadata, Namespace, Repo, Scope};
 
 const TREE_KEY: &str = "tree";
 /// How long `init` waits for an import before giving up: 30 polls, 2s apart.
@@ -25,6 +26,10 @@ const IMPORT_POLLS: u32 = 30;
 const IMPORT_POLL_MS: u64 = 2000;
 /// Deep enough to find a attempt's base under any sensible amount of work.
 const HISTORY_DEPTH: u32 = 1000;
+/// What a reader may page through, and the largest file it may read.
+const LOG_PAGE_DEFAULT: u32 = 30;
+const LOG_PAGE_MAX: u32 = 100;
+const FILE_MAX_BYTES: u32 = 1024 * 1024;
 /// The scorer's read token outlives any scoring run, including a cold devenv.
 const SCORER_TOKEN_TTL_SECS: u32 = 3600;
 /// A attempt whose scoring fails this many times for the scorer's own reasons
@@ -125,6 +130,14 @@ impl DurableObject for TreeObject {
             (Method::Get, ["attempts", attempt]) => match attempt.parse() {
                 Ok(attempt) => self.show_attempt(attempt).await,
                 Err(_) => Response::error("attempt id must be a number", 400),
+            },
+            (Method::Get, ["attempts", attempt, read]) => match attempt.parse() {
+                Ok(attempt) => self.read(Subject::Attempt(attempt), read, &req).await,
+                Err(_) => Response::error("attempt id must be a number", 400),
+            },
+            (Method::Get, ["nodes", node, read]) => match node.parse() {
+                Ok(node) => self.read(Subject::Node(node), read, &req).await,
+                Err(_) => Response::error("node id must be a number", 400),
             },
             (Method::Post, ["init"]) => self.init(name, req.json().await?).await,
             (Method::Post, ["tasks"]) => self.task(req.json().await?).await,
@@ -533,6 +546,69 @@ impl TreeObject {
         Response::from_json(&serde_json::json!({ "attempt": entry, "report": report }))
     }
 
+    /// Read the repo behind an attempt or node through Artifacts: `log`, `tree`
+    /// or `file`, at `?ref=` (default: the commit the subject is pinned to,
+    /// else its repo's HEAD) and, for `tree` and `file`, `?path=`.
+    async fn read(&self, subject: Subject, what: &str, req: &Request) -> Result<Response> {
+        let Some(tree) = self.load().await? else {
+            return Response::error("no such tree", 404);
+        };
+        let view = match tree.view(subject) {
+            Ok(view) => view,
+            Err(error) => return tree_error(&error),
+        };
+        let query = Query::of(req)?;
+        let git_ref = match query.get("ref").map(GitRef::parse).transpose() {
+            Ok(Some(git_ref)) => Some(git_ref.as_str().to_owned()),
+            Ok(None) => view.pinned.map(String::from),
+            Err(error) => return Response::error(error.to_string(), 400),
+        };
+        let path = match FilePath::parse(query.get("path").unwrap_or_default()) {
+            Ok(path) => path,
+            Err(error) => return Response::error(error.to_string(), 400),
+        };
+        let repo = match self.artifacts()?.repo(&view.repo).await {
+            Ok(repo) => repo,
+            Err(error) => return artifacts_error(&error),
+        };
+        let at = git_ref.as_deref();
+        let label = at.unwrap_or("HEAD");
+        match what {
+            "log" => {
+                let limit = query
+                    .number("limit")
+                    .unwrap_or(LOG_PAGE_DEFAULT)
+                    .clamp(1, LOG_PAGE_MAX);
+                let offset = query.number("offset").unwrap_or(0);
+                match repo.log(at, limit, offset).await {
+                    Ok(commits) => Response::from_json(&serde_json::json!({
+                        "repo": view.repo,
+                        "ref": label,
+                        "commits": commits,
+                    })),
+                    Err(error) => artifacts_error(&error),
+                }
+            }
+            "tree" | "file" => {
+                // Resolve the ref once, so the listing and every file read
+                // from it describe the same commit.
+                let commit = match repo.log(at, 1, 0).await {
+                    Ok(commits) => match commits.into_iter().next() {
+                        Some(commit) => commit,
+                        None => return Response::error(format!("no commit at {label}"), 404),
+                    },
+                    Err(error) => return artifacts_error(&error),
+                };
+                if what == "tree" {
+                    list_dir(&repo, &view.repo, commit, &path).await
+                } else {
+                    read_file(&repo, &commit.hash, &path).await
+                }
+            }
+            _ => Response::error("not found", 404),
+        }
+    }
+
     fn artifacts(&self) -> Result<Namespace> {
         self.env.get_binding::<Namespace>("ARTIFACTS")
     }
@@ -931,6 +1007,95 @@ async fn settled_head(artifacts: &Namespace, name: &RepoName) -> Result<Option<O
     Ok(None)
 }
 
+/// A request's query string, by name.
+struct Query(Vec<(String, String)>);
+
+impl Query {
+    fn of(req: &Request) -> Result<Self> {
+        Ok(Self(req.url()?.query_pairs().into_owned().collect()))
+    }
+
+    fn get(&self, name: &str) -> Option<&str> {
+        self.0
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    }
+
+    fn number(&self, name: &str) -> Option<u32> {
+        self.get(name).and_then(|value| value.parse().ok())
+    }
+}
+
+/// The directory at `path` in `commit`, walking down from its root tree.
+async fn list_dir(
+    repo: &Repo,
+    name: &RepoName,
+    commit: CommitMetadata,
+    path: &FilePath,
+) -> Result<Response> {
+    let mut hash = commit.tree_hash.clone();
+    for segment in path.names() {
+        let entries = match repo.read_tree(&hash).await {
+            Ok(Some(entries)) => entries,
+            Ok(None) => return Response::error(format!("no tree {hash}"), 404),
+            Err(error) => return artifacts_error(&error),
+        };
+        match entries
+            .into_iter()
+            .find(|entry| entry.name == *segment && entry.is_tree())
+        {
+            Some(entry) => hash = entry.hash,
+            None => return Response::error(format!("no directory {}", path.joined()), 404),
+        }
+    }
+    let mut entries = match repo.read_tree(&hash).await {
+        Ok(Some(entries)) => entries,
+        Ok(None) => return Response::error(format!("no tree {hash}"), 404),
+        Err(error) => return artifacts_error(&error),
+    };
+    // Directories first, then by name: how a reader expects a listing.
+    entries.sort_by(|a, b| b.is_tree().cmp(&a.is_tree()).then(a.name.cmp(&b.name)));
+    Response::from_json(&serde_json::json!({
+        "repo": name,
+        "commit": commit,
+        "path": path.joined(),
+        "entries": entries,
+    }))
+}
+
+/// The file at `path` in `commit`, as bytes. Never served as anything a
+/// browser would run: these are untrusted bytes leaving through the
+/// origin that holds the session cookie.
+async fn read_file(repo: &Repo, commit: &str, path: &FilePath) -> Result<Response> {
+    if path.is_root() {
+        return Response::error("a file read needs a path", 400);
+    }
+    let file = match repo.read_file(commit, &path.joined(), FILE_MAX_BYTES).await {
+        Ok(Some(file)) => file,
+        Ok(None) => return Response::error(format!("no file {}", path.joined()), 404),
+        Err(error) => return artifacts_error(&error),
+    };
+    let is_text = file.content_type.starts_with("text/")
+        || ["json", "xml", "javascript", "toml", "yaml"]
+            .iter()
+            .any(|kind| file.content_type.contains(kind));
+    let headers = Headers::new();
+    headers.set(
+        "content-type",
+        if is_text {
+            "text/plain; charset=utf-8"
+        } else {
+            "application/octet-stream"
+        },
+    )?;
+    headers.set("x-ficus-content-type", &file.content_type)?;
+    headers.set("x-ficus-commit", commit)?;
+    headers.set("x-content-type-options", "nosniff")?;
+    headers.set("content-security-policy", "sandbox; default-src 'none'")?;
+    Ok(Response::from_bytes(file.bytes)?.with_headers(headers))
+}
+
 fn tree_error(error: &TreeError) -> Result<Response> {
     let status = match error {
         TreeError::MalformedOid(_)
@@ -961,6 +1126,7 @@ fn artifacts_error(error: &ArtifactsError) -> Result<Response> {
         "ALREADY_EXISTS" | "CREATE_IN_PROGRESS" | "IMPORT_IN_PROGRESS" | "FORK_IN_PROGRESS" => 409,
         "INVALID_INPUT" | "INVALID_REPO_NAME" | "INVALID_URL" | "INVALID_TTL" => 400,
         "REMOTE_AUTH_REQUIRED" => 403,
+        "MEMORY_LIMIT" => 413,
         _ => 502,
     };
     Response::error(error.to_string(), status)

@@ -1,0 +1,13 @@
+{
+  // The UI's server components run on workerd, its client components in the
+  // browser; vinext supplies the next/* types.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": ["@cloudflare/workers-types", "vinext/types", "bun"]
+  },
+  "include": ["."],
+  // Build output and vinext's generated route types (gitignored, so CI never has them).
+  "exclude": ["dist", ".next"]
+}

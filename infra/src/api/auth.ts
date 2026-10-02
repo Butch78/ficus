@@ -46,12 +46,28 @@ export type AuthInstance = ReturnType<typeof build>;
 /** The Better Auth instance, as a service handlers yield. */
 export class Auth extends Context.Service<Auth, AuthInstance>()("@ficus/Auth") {}
 
-/** One instance per isolate: its database and secret are fixed for its life. */
-let isolateInstance: AuthInstance | undefined;
+/**
+ * One instance per origin, per isolate. The database and secret are fixed for
+ * the isolate's life; the origin is not. Better Auth trusts (CSRF) and names
+ * its cookies for the origin it was built for, and the Api is reached on two:
+ * its own URL, and the web UI's (src/web), which forwards the browser's
+ * requests over a service binding with the browser's origin. A public request
+ * can only carry one of this Worker's own hostnames, and only bound Workers
+ * can choose another, so the map stays as small as the set of front doors.
+ */
+const instances = new Map<string, AuthInstance>();
 
 export const layer = (database: BetterAuthOptions["database"], secret: string, baseURL: string) =>
   Layer.sync(Auth, () => {
-    isolateInstance ??= build(database, secret, baseURL);
+    const existing = instances.get(baseURL);
 
-    return isolateInstance;
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    const built = build(database, secret, baseURL);
+
+    instances.set(baseURL, built);
+
+    return built;
   });
