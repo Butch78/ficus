@@ -7,7 +7,7 @@
 import { Banner, Button, Input, LayerCard } from "@cloudflare/kumo";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 
 type Mode = "sign-in" | "sign-up";
 
@@ -30,6 +30,11 @@ export function SignInForm() {
   const [mode, setMode] = useState<Mode>("sign-in");
   const [failure, setFailure] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
+  // Until React has hydrated, a submit would be the browser's own: a GET
+  // with the password in the URL. The button waits for `submit` to exist.
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => setHydrated(true), []);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -60,7 +65,7 @@ export function SignInForm() {
     <LayerCard className="mx-auto w-full max-w-md">
       <LayerCard.Secondary>{mode === "sign-in" ? "Sign in" : "Create an account"}</LayerCard.Secondary>
       <LayerCard.Primary>
-        <form onSubmit={submit} className="flex flex-col gap-4">
+        <form method="post" onSubmit={submit} className="flex flex-col gap-4">
           <Input name="email" type="email" label="Email" autoComplete="email" required />
           <Input
             name="password"
@@ -73,7 +78,7 @@ export function SignInForm() {
           />
           {failure === undefined ? null : <Banner variant="error" size="sm" description={failure} />}
           <div className="flex items-center justify-between gap-2">
-            <Button type="submit" variant="primary" loading={busy}>
+            <Button type="submit" variant="primary" loading={busy} disabled={!hydrated}>
               {mode === "sign-in" ? "Sign in" : "Sign up"}
             </Button>
             <Button type="button" variant="ghost" onClick={() => setMode(mode === "sign-in" ? "sign-up" : "sign-in")}>
