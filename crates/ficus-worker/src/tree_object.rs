@@ -8,10 +8,8 @@
 
 use std::time::Duration;
 
-use ficus_core::scoring::{
-    CheckSpec, ScoreReport, ScoreRequest, TransplantReport, TransplantRequest,
-};
-use ficus_core::tree::{BudId, Compost, LeafId, NodeId, Oid, RepoName, Tree, TreeError};
+use ficus_core::scoring::{CheckSpec, RebaseReport, RebaseRequest, ScoreReport, ScoreRequest};
+use ficus_core::tree::{AttemptId, HistoryEntry, NodeId, Oid, RepoName, TaskId, Tree, TreeError};
 use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use worker::{
@@ -22,16 +20,16 @@ use worker::{
 use crate::artifacts::{ArtifactsError, Namespace, Scope};
 
 const TREE_KEY: &str = "tree";
-/// How long `plant` waits for an import before giving up: 30 polls, 2s apart.
+/// How long `init` waits for an import before giving up: 30 polls, 2s apart.
 const IMPORT_POLLS: u32 = 30;
 const IMPORT_POLL_MS: u64 = 2000;
-/// Deep enough to find a leaf's base under any sensible amount of work.
+/// Deep enough to find a attempt's base under any sensible amount of work.
 const HISTORY_DEPTH: u32 = 1000;
 /// The scorer's read token outlives any scoring run, including a cold devenv.
 const SCORER_TOKEN_TTL_SECS: u32 = 3600;
-/// A leaf whose scoring fails this many times for the scorer's own reasons
-/// is withered rather than retried forever. The same goes for a stale leaf
-/// whose transplant keeps failing for the sandbox's reasons.
+/// A attempt whose scoring fails this many times for the scorer's own reasons
+/// is abandoned rather than retried forever. The same goes for a behind attempt
+/// whose rebase keeps failing for the sandbox's reasons.
 const SCORING_ATTEMPTS: u32 = 5;
 const SCORING_RETRY: Duration = Duration::from_secs(60);
 
@@ -43,29 +41,29 @@ pub struct TreeObject {
 
 /// `source` imports an HTTPS git remote as the root. Without it, the first
 /// call creates an empty root repo and returns a write token to push the root
-/// with; the next call plants the tree on whatever was pushed.
+/// with; the next call initializes the tree on whatever was pushed.
 #[derive(Deserialize)]
-struct PlantBody {
+struct InitBody {
     source: Option<String>,
     branch: Option<String>,
 }
 
-/// `intent` says what the bud is for; `checks` say when it is done, on top
+/// `intent` says what the task is for; `checks` say when it is done, on top
 /// of the root's. They run in the scorer, never from the repo.
 #[derive(Deserialize)]
-struct BudBody {
+struct TaskBody {
     intent: String,
     #[serde(default)]
     checks: Vec<CheckSpec>,
 }
 
 #[derive(Deserialize)]
-struct SproutBody {
+struct StartBody {
     agent: String,
 }
 
 #[derive(Deserialize)]
-struct WitherBody {
+struct AbandonBody {
     note: String,
 }
 
@@ -75,11 +73,11 @@ struct ReleaseBody {
     node: Option<NodeId>,
 }
 
-/// Everything an agent needs to start growing a leaf.
+/// Everything an agent needs to start working a attempt.
 #[derive(Serialize)]
-struct Growing {
-    leaf: LeafId,
-    bud: BudId,
+struct Started {
+    attempt: AttemptId,
+    task: TaskId,
     intent: String,
     checks: Vec<CheckSpec>,
     agent: String,
@@ -87,7 +85,7 @@ struct Growing {
     remote: String,
     token: String,
     base_commit: String,
-    compost: Vec<Compost>,
+    history: Vec<HistoryEntry>,
 }
 
 impl DurableObject for TreeObject {
@@ -95,11 +93,11 @@ impl DurableObject for TreeObject {
         Self { state, env }
     }
 
-    /// Transplants first: they turn stale leaves into ripening ones, which
+    /// Rebases first: they turn behind attempts into checking ones, which
     /// the scoring that follows picks up in the same alarm.
     async fn alarm(&self) -> Result<Response> {
-        self.transplant_stale().await?;
-        self.score_ripening().await
+        self.rebase_behind().await?;
+        self.score_checking().await
     }
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
@@ -121,32 +119,32 @@ impl DurableObject for TreeObject {
         };
         match (req.method(), route) {
             (Method::Get, []) => self.show().await,
-            (Method::Get, ["stale"]) => self.show_stale().await,
+            (Method::Get, ["behind"]) => self.show_behind().await,
             (Method::Get, ["release"]) => self.show_release().await,
             (Method::Post, ["release"]) => self.release(req.json().await?).await,
-            (Method::Get, ["leaves", leaf]) => match leaf.parse() {
-                Ok(leaf) => self.show_leaf(leaf).await,
-                Err(_) => Response::error("leaf id must be a number", 400),
+            (Method::Get, ["attempts", attempt]) => match attempt.parse() {
+                Ok(attempt) => self.show_attempt(attempt).await,
+                Err(_) => Response::error("attempt id must be a number", 400),
             },
-            (Method::Post, ["plant"]) => self.plant(name, req.json().await?).await,
-            (Method::Post, ["buds"]) => self.bud(req.json().await?).await,
-            (Method::Post, ["buds", bud, "leaves"]) => match bud.parse() {
-                Ok(bud) => self.sprout(bud, req.json().await?).await,
-                Err(_) => Response::error("bud id must be a number", 400),
+            (Method::Post, ["init"]) => self.init(name, req.json().await?).await,
+            (Method::Post, ["tasks"]) => self.task(req.json().await?).await,
+            (Method::Post, ["tasks", task, "attempts"]) => match task.parse() {
+                Ok(task) => self.start(task, req.json().await?).await,
+                Err(_) => Response::error("task id must be a number", 400),
             },
-            (Method::Post, ["harvest"]) => self.harvest(None).await,
-            (Method::Post, ["buds", bud, "harvest"]) => match bud.parse() {
-                Ok(bud) => self.harvest(Some(bud)).await,
-                Err(_) => Response::error("bud id must be a number", 400),
+            (Method::Post, ["accept"]) => self.accept(None).await,
+            (Method::Post, ["tasks", task, "accept"]) => match task.parse() {
+                Ok(task) => self.accept(Some(task)).await,
+                Err(_) => Response::error("task id must be a number", 400),
             },
-            (Method::Post, ["leaves", leaf, action]) => match leaf.parse() {
-                Ok(leaf) => match *action {
-                    "ripe" => self.submit(leaf).await,
-                    "wither" => self.wither(leaf, req.json().await?).await,
-                    "regrow" => self.regrow(leaf).await,
+            (Method::Post, ["attempts", attempt, action]) => match attempt.parse() {
+                Ok(attempt) => match *action {
+                    "submit" => self.submit(attempt).await,
+                    "abandon" => self.abandon(attempt, req.json().await?).await,
+                    "retry" => self.retry(attempt).await,
                     _ => Response::error("not found", 404),
                 },
-                Err(_) => Response::error("leaf id must be a number", 400),
+                Err(_) => Response::error("attempt id must be a number", 400),
             },
             _ => Response::error("not found", 404),
         }
@@ -154,31 +152,31 @@ impl DurableObject for TreeObject {
 }
 
 impl TreeObject {
-    /// Score every leaf waiting for its checks, in parallel, one scorer
-    /// container per leaf. Runs from the alarm `submit` sets.
-    async fn score_ripening(&self) -> Result<Response> {
+    /// Score every attempt waiting for its checks, in parallel, one scorer
+    /// container per attempt. Runs from the alarm `submit` sets.
+    async fn score_checking(&self) -> Result<Response> {
         let Some(tree) = self.load().await? else {
             return Response::ok("no tree");
         };
         let pending: Vec<Pending> = tree
-            .ripening()
-            .map(|(leaf, head)| Pending {
-                leaf: leaf.id,
-                repo: leaf.repo.clone(),
+            .checking()
+            .map(|(attempt, head)| Pending {
+                attempt: attempt.id,
+                repo: attempt.repo.clone(),
                 intent: tree
-                    .bud(leaf.bud)
-                    .expect("a leaf's bud is in its tree")
+                    .task(attempt.task)
+                    .expect("a attempt's task is in its tree")
                     .intent
                     .clone(),
                 base: tree
-                    .node(leaf.base)
-                    .expect("a leaf's base is a node of its tree")
+                    .node(attempt.base)
+                    .expect("a attempt's base is a node of its tree")
                     .commit
                     .clone(),
                 head: head.clone(),
                 checks: tree
-                    .bud(leaf.bud)
-                    .expect("a leaf's bud is in its tree")
+                    .task(attempt.task)
+                    .expect("a attempt's task is in its tree")
                     .checks
                     .clone(),
             })
@@ -194,32 +192,32 @@ impl TreeObject {
         };
         let mut retry = false;
         for (job, outcome) in pending.iter().zip(outcomes) {
-            let attempts_key = format!("attempts:{}", job.leaf);
+            let attempts_key = format!("attempts:{}", job.attempt);
             match outcome {
-                Scored::Report(report) => {
+                SandboxOutcome::Report(report) => {
                     self.state
                         .storage()
                         .put(
-                            &format!("report:{}", job.leaf),
+                            &format!("report:{}", job.attempt),
                             serde_json::to_string(&report)?,
                         )
                         .await?;
                     match report.score() {
                         Ok(score) => settle(
-                            job.leaf,
-                            tree.ripen(job.leaf, score, report.touched.clone()),
+                            job.attempt,
+                            tree.scored(job.attempt, score, report.touched.clone()),
                         ),
                         Err(error) => settle(
-                            job.leaf,
-                            tree.wither(job.leaf, format!("unscorable report: {error}")),
+                            job.attempt,
+                            tree.abandon(job.attempt, format!("unscorable report: {error}")),
                         ),
                     }
                 }
-                Scored::Unscorable(reason) => settle(
-                    job.leaf,
-                    tree.wither(job.leaf, format!("unscorable: {reason}")),
+                SandboxOutcome::Unscorable(reason) => settle(
+                    job.attempt,
+                    tree.abandon(job.attempt, format!("unscorable: {reason}")),
                 ),
-                Scored::Failed(reason) => {
+                SandboxOutcome::Failed(reason) => {
                     let attempts = self
                         .state
                         .storage()
@@ -229,9 +227,9 @@ impl TreeObject {
                         + 1;
                     if attempts >= SCORING_ATTEMPTS {
                         settle(
-                            job.leaf,
-                            tree.wither(
-                                job.leaf,
+                            job.attempt,
+                            tree.abandon(
+                                job.attempt,
                                 format!("scorer failed {attempts} times; last: {reason}"),
                             ),
                         );
@@ -250,21 +248,21 @@ impl TreeObject {
     }
 
     /// Mint a short-lived read token, ask a scorer container, revoke the token.
-    async fn score_one(&self, job: &Pending) -> Scored {
+    async fn score_one(&self, job: &Pending) -> SandboxOutcome {
         let artifacts = match self.artifacts() {
             Ok(artifacts) => artifacts,
-            Err(error) => return Scored::Failed(error.to_string()),
+            Err(error) => return SandboxOutcome::Failed(error.to_string()),
         };
         let repo = match artifacts.repo(&job.repo).await {
             Ok(repo) => repo,
-            Err(error) => return Scored::Failed(error.to_string()),
+            Err(error) => return SandboxOutcome::Failed(error.to_string()),
         };
         let (info, token) = match (
             repo.info().await,
             repo.create_token(Scope::Read, SCORER_TOKEN_TTL_SECS).await,
         ) {
             (Ok(info), Ok(token)) => (info, token),
-            (Err(error), _) | (_, Err(error)) => return Scored::Failed(error.to_string()),
+            (Err(error), _) | (_, Err(error)) => return SandboxOutcome::Failed(error.to_string()),
         };
         let request = ScoreRequest {
             remote: info.remote,
@@ -284,65 +282,67 @@ impl TreeObject {
         scored
     }
 
-    /// Replay every stale submitted leaf onto the head, in parallel, one
-    /// sandbox per leaf. A leaf that applies cleanly ripens on the head
+    /// Replay every behind submitted attempt onto the head, in parallel, one
+    /// sandbox per attempt. A attempt that applies cleanly is scored on the head
     /// without its agent; one that conflicts is left for its agent to
-    /// regrow, with the conflict in the compost.
-    async fn transplant_stale(&self) -> Result<()> {
+    /// retry, with the conflict in the history.
+    async fn rebase_behind(&self) -> Result<()> {
         let Some(mut tree) = self.load().await? else {
             return Ok(());
         };
-        let stale: Vec<LeafId> = tree.transplantable().map(|leaf| leaf.id).collect();
-        if stale.is_empty() {
+        let behind: Vec<AttemptId> = tree.rebaseable().map(|attempt| attempt.id).collect();
+        if behind.is_empty() {
             return Ok(());
         }
-        let mut jobs = Vec::with_capacity(stale.len());
-        for leaf in stale {
-            match tree.transplant_start(leaf) {
+        let mut jobs = Vec::with_capacity(behind.len());
+        for attempt in behind {
+            match tree.rebase_start(attempt) {
                 Ok((fresh, commit)) => {
-                    let old = tree.leaf(leaf).expect("transplant_start found it");
-                    jobs.push(Transplant {
-                        stale: leaf,
+                    let old = tree.attempt(attempt).expect("rebase_start found it");
+                    jobs.push(Rebase {
+                        behind: attempt,
                         fresh,
                         from_repo: old.repo.clone(),
                         from_base: tree
                             .node(old.base)
-                            .expect("a leaf's base is a node of its tree")
+                            .expect("a attempt's base is a node of its tree")
                             .commit
                             .clone(),
                         from_head: commit,
                         onto_head: tree.head().commit.clone(),
                     });
                 }
-                Err(error) => worker::console_error!("starting transplant of leaf {leaf}: {error}"),
+                Err(error) => {
+                    worker::console_error!("starting rebase of attempt {attempt}: {error}")
+                }
             }
         }
         self.save(&tree).await?;
 
-        let outcomes = join_all(jobs.iter().map(|job| self.transplant_one(&tree, job))).await;
+        let outcomes = join_all(jobs.iter().map(|job| self.rebase_one(&tree, job))).await;
 
-        // Transplants awaited; other requests may have changed the tree since.
+        // Rebases awaited; other requests may have changed the tree since.
         let Some(mut tree) = self.load().await? else {
             return Ok(());
         };
         let mut retry = false;
         for (job, outcome) in jobs.iter().zip(outcomes) {
-            let attempts_key = format!("transplant-attempts:{}", job.stale);
+            let attempts_key = format!("rebase-attempts:{}", job.behind);
             match outcome {
-                Transplanted::Report(report) => {
-                    settle(job.fresh, tree.transplant_done(job.fresh, report.commit));
+                RebaseOutcome::Report(report) => {
+                    settle(job.fresh, tree.rebase_done(job.fresh, report.commit));
                     self.state.storage().delete(&attempts_key).await?;
                 }
-                Transplanted::Conflict(reason) => {
-                    // The agent's turn: the stale leaf stays, pointing at
-                    // the withered transplant, and the alarm leaves it be.
+                RebaseOutcome::Conflict(reason) => {
+                    // The agent's turn: the behind attempt stays, pointing at
+                    // the abandoned rebase, and the alarm attempts it be.
                     settle(
                         job.fresh,
-                        tree.transplant_failed(job.fresh, format!("transplant: {reason}")),
+                        tree.rebase_failed(job.fresh, format!("rebase: {reason}")),
                     );
                     self.state.storage().delete(&attempts_key).await?;
                 }
-                Transplanted::Failed(reason) => {
+                RebaseOutcome::Failed(reason) => {
                     let attempts = self
                         .state
                         .storage()
@@ -350,12 +350,12 @@ impl TreeObject {
                         .await?
                         .unwrap_or(0)
                         + 1;
-                    let note = format!("transplant attempt {attempts} failed: {reason}");
+                    let note = format!("rebase attempt {attempts} failed: {reason}");
                     if attempts >= SCORING_ATTEMPTS {
-                        settle(job.fresh, tree.transplant_failed(job.fresh, note));
+                        settle(job.fresh, tree.rebase_failed(job.fresh, note));
                         self.state.storage().delete(&attempts_key).await?;
                     } else {
-                        settle(job.fresh, tree.transplant_retry(job.fresh, note));
+                        settle(job.fresh, tree.rebase_retry(job.fresh, note));
                         self.state.storage().put(&attempts_key, attempts).await?;
                         retry = true;
                     }
@@ -369,25 +369,25 @@ impl TreeObject {
         Ok(())
     }
 
-    /// Fork the head's repo for the fresh leaf, lend the sandbox a read
-    /// token on the stale one, replay, then revoke both.
-    async fn transplant_one(&self, tree: &Tree, job: &Transplant) -> Transplanted {
-        let fresh = tree.leaf(job.fresh).expect("transplant_start created it");
+    /// Fork the head's repo for the fresh attempt, lend the sandbox a read
+    /// token on the behind one, replay, then revoke both.
+    async fn rebase_one(&self, tree: &Tree, job: &Rebase) -> RebaseOutcome {
+        let fresh = tree.attempt(job.fresh).expect("rebase_start created it");
         let artifacts = match self.artifacts() {
             Ok(artifacts) => artifacts,
-            Err(error) => return Transplanted::Failed(error.to_string()),
+            Err(error) => return RebaseOutcome::Failed(error.to_string()),
         };
         let forked = match artifacts.repo(&tree.head().repo).await {
-            Ok(head_repo) => head_repo.fork(&fresh.repo, "ficus transplant").await,
+            Ok(head_repo) => head_repo.fork(&fresh.repo, "ficus rebase").await,
             Err(error) => Err(error),
         };
         let onto = match forked {
             Ok(created) => created,
-            Err(error) => return Transplanted::Failed(format!("fork: {error}")),
+            Err(error) => return RebaseOutcome::Failed(format!("fork: {error}")),
         };
         let from_repo = match artifacts.repo(&job.from_repo).await {
             Ok(repo) => repo,
-            Err(error) => return Transplanted::Failed(error.to_string()),
+            Err(error) => return RebaseOutcome::Failed(error.to_string()),
         };
         let (from_info, from_token) = match (
             from_repo.info().await,
@@ -396,9 +396,9 @@ impl TreeObject {
                 .await,
         ) {
             (Ok(info), Ok(token)) => (info, token),
-            (Err(error), _) | (_, Err(error)) => return Transplanted::Failed(error.to_string()),
+            (Err(error), _) | (_, Err(error)) => return RebaseOutcome::Failed(error.to_string()),
         };
-        let request = TransplantRequest {
+        let request = RebaseRequest {
             from: from_info.remote,
             from_token: from_token.plaintext,
             from_base: job.from_base.clone(),
@@ -408,23 +408,23 @@ impl TreeObject {
             onto_head: job.onto_head.clone(),
             onto_branch: onto.default_branch,
         };
-        let outcome = match self.ask_sandbox(&fresh.repo, "transplant", &request).await {
-            Scored::Report(report) => Transplanted::Report(report),
-            Scored::Unscorable(reason) => Transplanted::Conflict(reason),
-            Scored::Failed(reason) => Transplanted::Failed(reason),
+        let outcome = match self.ask_sandbox(&fresh.repo, "rebase", &request).await {
+            SandboxOutcome::Report(report) => RebaseOutcome::Report(report),
+            SandboxOutcome::Unscorable(reason) => RebaseOutcome::Conflict(reason),
+            SandboxOutcome::Failed(reason) => RebaseOutcome::Failed(reason),
         };
         if let Err(error) = from_repo.revoke_token(&from_token.id).await {
             worker::console_error!(
-                "revoking the transplant's token on {}: {error}",
+                "revoking the rebase's token on {}: {error}",
                 job.from_repo.as_str()
             );
         }
-        // The fresh leaf is frozen from the start: nobody pushes to it.
+        // The fresh attempt is frozen from the start: nobody pushes to it.
         match artifacts.repo(&fresh.repo).await {
             Ok(repo) => {
                 if let Err(error) = repo.revoke_active_tokens().await {
                     worker::console_error!(
-                        "revoking the fresh leaf's tokens on {}: {error}",
+                        "revoking the fresh attempt's tokens on {}: {error}",
                         fresh.repo.as_str()
                     );
                 }
@@ -441,7 +441,7 @@ impl TreeObject {
         repo: &RepoName,
         action: &str,
         request: &Req,
-    ) -> Scored<Rep> {
+    ) -> SandboxOutcome<Rep> {
         let attempt = async {
             let stub = self
                 .env
@@ -464,22 +464,24 @@ impl TreeObject {
         };
         match attempt.await {
             Ok((200, body)) => match serde_json::from_str::<Rep>(&body) {
-                Ok(report) => Scored::Report(report),
-                Err(error) => Scored::Failed(format!(
+                Ok(report) => SandboxOutcome::Report(report),
+                Err(error) => SandboxOutcome::Failed(format!(
                     "sandbox answered {action} with an unreadable report: {error}"
                 )),
             },
-            Ok((422, reason)) => Scored::Unscorable(reason),
-            Ok((status, body)) => Scored::Failed(format!("sandbox answered {status}: {body}")),
-            Err(error) => Scored::Failed(error.to_string()),
+            Ok((422, reason)) => SandboxOutcome::Unscorable(reason),
+            Ok((status, body)) => {
+                SandboxOutcome::Failed(format!("sandbox answered {status}: {body}"))
+            }
+            Err(error) => SandboxOutcome::Failed(error.to_string()),
         }
     }
 
-    async fn show_stale(&self) -> Result<Response> {
+    async fn show_behind(&self) -> Result<Response> {
         let Some(tree) = self.load().await? else {
             return Response::error("no such tree", 404);
         };
-        Response::from_json(&tree.stale().collect::<Vec<_>>())
+        Response::from_json(&tree.all_behind().collect::<Vec<_>>())
     }
 
     async fn show_release(&self) -> Result<Response> {
@@ -512,23 +514,23 @@ impl TreeObject {
         }))
     }
 
-    async fn show_leaf(&self, leaf: LeafId) -> Result<Response> {
+    async fn show_attempt(&self, attempt: AttemptId) -> Result<Response> {
         let Some(tree) = self.load().await? else {
             return Response::error("no such tree", 404);
         };
-        let Some(entry) = tree.leaf(leaf) else {
-            return tree_error(&TreeError::UnknownLeaf(leaf));
+        let Some(entry) = tree.attempt(attempt) else {
+            return tree_error(&TreeError::UnknownAttempt(attempt));
         };
         let report = match self
             .state
             .storage()
-            .get::<String>(&format!("report:{leaf}"))
+            .get::<String>(&format!("report:{attempt}"))
             .await?
         {
             Some(json) => Some(serde_json::from_str::<ScoreReport>(&json)?),
             None => None,
         };
-        Response::from_json(&serde_json::json!({ "leaf": entry, "report": report }))
+        Response::from_json(&serde_json::json!({ "attempt": entry, "report": report }))
     }
 
     fn artifacts(&self) -> Result<Namespace> {
@@ -556,15 +558,15 @@ impl TreeObject {
         }
     }
 
-    /// Import `source` as the tree's root repo and plant the tree on its head.
-    async fn plant(&self, name: RepoName, body: PlantBody) -> Result<Response> {
+    /// Import `source` as the tree's root repo and init the tree on its head.
+    async fn init(&self, name: RepoName, body: InitBody) -> Result<Response> {
         if self.load().await?.is_some() {
-            return Response::error("tree already planted", 409);
+            return Response::error("tree already initialized", 409);
         }
         let artifacts = self.artifacts()?;
         let head = match body.source {
             Some(source) => {
-                // ALREADY_EXISTS means an earlier plant got this far and then
+                // ALREADY_EXISTS means an earlier init got this far and then
                 // timed out; carry on and pick up the repo it imported.
                 match artifacts
                     .import(&source, body.branch.as_deref(), &name)
@@ -578,7 +580,7 @@ impl TreeObject {
                     Some(head) => head,
                     None => {
                         return Response::error(
-                            "import has not finished; plant again to pick it up",
+                            "import has not finished; init again to pick it up",
                             504,
                         );
                     }
@@ -593,7 +595,7 @@ impl TreeObject {
                         },
                         None => {
                             return Response::error(
-                                "the root repo is empty: push the root, then plant again",
+                                "the root repo is empty: push the root, then init again",
                                 409,
                             );
                         }
@@ -607,7 +609,7 @@ impl TreeObject {
                                 "state": "awaiting root",
                                 "remote": created.remote,
                                 "token": created.token,
-                                "next": "push the root to `remote` (http.extraHeader=\"Authorization: Bearer <token>\"), then POST plant again",
+                                "next": "push the root to `remote` (http.extraHeader=\"Authorization: Bearer <token>\"), then POST init again",
                             }))?;
                             response = response.with_status(202);
                             Ok(response)
@@ -627,9 +629,9 @@ impl TreeObject {
             return artifacts_error(&error);
         }
         if self.load().await?.is_some() {
-            return Response::error("tree already planted", 409);
+            return Response::error("tree already initialized", 409);
         }
-        let tree = match Tree::plant(name, head) {
+        let tree = match Tree::init(name, head) {
             Ok(tree) => tree,
             Err(error) => return tree_error(&error),
         };
@@ -637,50 +639,54 @@ impl TreeObject {
         Response::from_json(&tree)
     }
 
-    async fn bud(&self, body: BudBody) -> Result<Response> {
+    async fn task(&self, body: TaskBody) -> Result<Response> {
         let Some(mut tree) = self.load().await? else {
             return Response::error("no such tree", 404);
         };
-        match tree.bud_new(body.intent, body.checks) {
-            Ok(bud) => {
+        match tree.task_new(body.intent, body.checks) {
+            Ok(task) => {
                 self.save(&tree).await?;
-                Response::from_json(&serde_json::json!({ "bud": bud }))
+                Response::from_json(&serde_json::json!({ "task": task }))
             }
             Err(error) => tree_error(&error),
         }
     }
 
-    /// Record a new leaf, then fork its base node's repo for it.
-    async fn sprout(&self, bud: BudId, body: SproutBody) -> Result<Response> {
+    /// Record a new attempt, then fork its base node's repo for it.
+    async fn start(&self, task: TaskId, body: StartBody) -> Result<Response> {
         let Some(mut tree) = self.load().await? else {
             return Response::error("no such tree", 404);
         };
-        let leaf = match tree.sprout(bud, body.agent) {
-            Ok(leaf) => leaf,
+        let attempt = match tree.start(task, body.agent) {
+            Ok(attempt) => attempt,
             Err(error) => return tree_error(&error),
         };
         self.save(&tree).await?;
-        self.grow(&tree, leaf).await
+        self.provision(&tree, attempt).await
     }
 
-    /// Fork the base node's repo into `leaf`'s repo and hand out its token.
-    /// A failed fork withers the leaf so it does not sit growing forever.
-    async fn grow(&self, tree: &Tree, leaf: LeafId) -> Result<Response> {
-        let entry = tree.leaf(leaf).expect("the caller just created this leaf");
+    /// Fork the base node's repo into `attempt`'s repo and hand out its token.
+    /// A failed fork abandons the attempt so it does not sit working forever.
+    async fn provision(&self, tree: &Tree, attempt: AttemptId) -> Result<Response> {
+        let entry = tree
+            .attempt(attempt)
+            .expect("the caller just created this attempt");
         let base = tree
             .node(entry.base)
-            .expect("a leaf's base is a node of its tree");
-        let bud = tree.bud(entry.bud).expect("a leaf's bud is in its tree");
-        let (intent, checks) = (bud.intent.clone(), bud.checks.clone());
+            .expect("a attempt's base is a node of its tree");
+        let task = tree
+            .task(entry.task)
+            .expect("a attempt's task is in its tree");
+        let (intent, checks) = (task.intent.clone(), task.checks.clone());
         let artifacts = self.artifacts()?;
         let forked = match artifacts.repo(&base.repo).await {
             Ok(base_repo) => base_repo.fork(&entry.repo, &intent).await,
             Err(error) => Err(error),
         };
         match forked {
-            Ok(created) => Response::from_json(&Growing {
-                leaf,
-                bud: entry.bud,
+            Ok(created) => Response::from_json(&Started {
+                attempt,
+                task: entry.task,
                 intent,
                 checks,
                 agent: entry.agent.clone(),
@@ -688,11 +694,13 @@ impl TreeObject {
                 remote: created.remote,
                 token: created.token,
                 base_commit: base.commit.as_str().to_owned(),
-                compost: tree.compost_of(entry.bud).cloned().collect(),
+                history: tree.history_of(entry.task).cloned().collect(),
             }),
             Err(error) => {
                 if let Some(mut tree) = self.load().await?
-                    && tree.wither(leaf, format!("fork failed: {error}")).is_ok()
+                    && tree
+                        .abandon(attempt, format!("fork failed: {error}"))
+                        .is_ok()
                 {
                     self.save(&tree).await?;
                 }
@@ -701,20 +709,20 @@ impl TreeObject {
         }
     }
 
-    /// Freeze the leaf (revoke its tokens), read its head commit from
+    /// Freeze the attempt (revoke its tokens), read its head commit from
     /// Artifacts, and queue it for the root's checks. The commit is never
-    /// taken from the caller, and must descend from the leaf's base. Scoring
-    /// runs from the alarm; poll `GET /trees/<t>/leaves/<leaf>` for the result.
-    async fn submit(&self, leaf: LeafId) -> Result<Response> {
+    /// taken from the caller, and must descend from the attempt's base. Scoring
+    /// runs from the alarm; poll `GET /trees/<t>/attempts/<attempt>` for the result.
+    async fn submit(&self, attempt: AttemptId) -> Result<Response> {
         let Some(tree) = self.load().await? else {
             return Response::error("no such tree", 404);
         };
-        let Some(entry) = tree.leaf(leaf) else {
-            return tree_error(&TreeError::UnknownLeaf(leaf));
+        let Some(entry) = tree.attempt(attempt) else {
+            return tree_error(&TreeError::UnknownAttempt(attempt));
         };
         let base_commit = tree
             .node(entry.base)
-            .expect("a leaf's base is a node of its tree")
+            .expect("a attempt's base is a node of its tree")
             .commit
             .clone();
         let artifacts = self.artifacts()?;
@@ -730,16 +738,16 @@ impl TreeObject {
             Err(error) => return artifacts_error(&error),
         };
         let Some(head) = history.first() else {
-            return Response::error("leaf repo has no commits", 409);
+            return Response::error("attempt repo has no commits", 409);
         };
         if head.hash == base_commit.as_str() {
-            return Response::error("leaf has no commits beyond its base", 409);
+            return Response::error("attempt has no commits beyond its base", 409);
         }
         if !history
             .iter()
             .any(|commit| commit.hash == base_commit.as_str())
         {
-            return Response::error("leaf head does not descend from its base commit", 409);
+            return Response::error("attempt head does not descend from its base commit", 409);
         }
         let head = match Oid::try_from(head.hash.clone()) {
             Ok(head) => head,
@@ -748,101 +756,101 @@ impl TreeObject {
         let Some(mut tree) = self.load().await? else {
             return Response::error("no such tree", 404);
         };
-        if let Err(error) = tree.submit(leaf, head.clone()) {
+        if let Err(error) = tree.submit(attempt, head.clone()) {
             return tree_error(&error);
         }
         self.save(&tree).await?;
         self.state.storage().set_alarm(Duration::ZERO).await?;
         let mut response = Response::from_json(
-            &serde_json::json!({ "leaf": leaf, "commit": head.as_str(), "state": "ripening" }),
+            &serde_json::json!({ "attempt": attempt, "commit": head.as_str(), "state": "checking" }),
         )?;
         response = response.with_status(202);
         Ok(response)
     }
 
-    /// Harvest `bud`, or with `None` the oldest bud that is ready. The head
-    /// moves, so every other submitted leaf is stale: the alarm set here
-    /// transplants them onto the new head.
-    async fn harvest(&self, bud: Option<BudId>) -> Result<Response> {
+    /// Acceptance `task`, or with `None` the oldest task that is ready. The head
+    /// moves, so every other submitted attempt is behind: the alarm set here
+    /// rebases them onto the new head.
+    async fn accept(&self, task: Option<TaskId>) -> Result<Response> {
         let Some(mut tree) = self.load().await? else {
             return Response::error("no such tree", 404);
         };
-        let harvested = match bud {
-            Some(bud) => tree.harvest(bud),
-            None => tree.harvest_next(),
+        let accepted = match task {
+            Some(task) => tree.accept(task),
+            None => tree.accept_next(),
         };
-        let harvest = match harvested {
-            Ok(harvest) => harvest,
+        let acceptance = match accepted {
+            Ok(accept) => accept,
             Err(error) => return tree_error(&error),
         };
         self.save(&tree).await?;
-        if !harvest.stale.is_empty() {
+        if !acceptance.behind.is_empty() {
             self.state.storage().set_alarm(Duration::ZERO).await?;
         }
-        let revoke_failures = self.revoke_all(&tree, &harvest.pruned).await?;
+        let revoke_failures = self.revoke_all(&tree, &acceptance.closed).await?;
         let head = tree.head();
-        let fruit = tree
-            .leaf(harvest.fruit)
-            .expect("the fruit is a leaf of this tree");
+        let accepted = tree
+            .attempt(acceptance.accepted)
+            .expect("the accepted is a attempt of this tree");
         Response::from_json(&serde_json::json!({
-            "bud": fruit.bud,
-            "node": harvest.node,
-            "fruit": harvest.fruit,
+            "task": accepted.task,
+            "node": acceptance.node,
+            "accepted": acceptance.accepted,
             "commit": head.commit.as_str(),
             "repo": head.repo.as_str(),
-            "pruned": harvest.pruned,
-            "stale": tree.stale().collect::<Vec<_>>(),
+            "closed": acceptance.closed,
+            "behind": tree.all_behind().collect::<Vec<_>>(),
             "revoke_failures": revoke_failures,
         }))
     }
 
-    async fn wither(&self, leaf: LeafId, body: WitherBody) -> Result<Response> {
+    async fn abandon(&self, attempt: AttemptId, body: AbandonBody) -> Result<Response> {
         let Some(mut tree) = self.load().await? else {
             return Response::error("no such tree", 404);
         };
-        if let Err(error) = tree.wither(leaf, body.note) {
+        if let Err(error) = tree.abandon(attempt, body.note) {
             return tree_error(&error);
         }
         self.save(&tree).await?;
-        let revoke_failures = self.revoke_all(&tree, &[leaf]).await?;
+        let revoke_failures = self.revoke_all(&tree, &[attempt]).await?;
         Response::from_json(
-            &serde_json::json!({ "leaf": leaf, "revoke_failures": revoke_failures }),
+            &serde_json::json!({ "attempt": attempt, "revoke_failures": revoke_failures }),
         )
     }
 
-    /// Start a stale leaf again from the head, in a fresh repo.
-    async fn regrow(&self, stale: LeafId) -> Result<Response> {
+    /// Start a behind attempt again from the head, in a fresh repo.
+    async fn retry(&self, behind: AttemptId) -> Result<Response> {
         let Some(mut tree) = self.load().await? else {
             return Response::error("no such tree", 404);
         };
-        let fresh = match tree.regrow(stale) {
+        let fresh = match tree.retry(behind) {
             Ok(fresh) => fresh,
             Err(error) => return tree_error(&error),
         };
         self.save(&tree).await?;
-        let revoke_failures = self.revoke_all(&tree, &[stale]).await?;
+        let revoke_failures = self.revoke_all(&tree, &[behind]).await?;
         if !revoke_failures.is_empty() {
             return Response::error(
-                format!("could not revoke the stale leaf's tokens: {revoke_failures:?}"),
+                format!("could not revoke the behind attempt's tokens: {revoke_failures:?}"),
                 502,
             );
         }
-        self.grow(&tree, fresh).await
+        self.provision(&tree, fresh).await
     }
 
-    /// Revoke the tokens of each leaf's repo. Failures are returned, not
+    /// Revoke the tokens of each attempt's repo. Failures are returned, not
     /// dropped: the tree has already moved on, so the caller decides.
-    async fn revoke_all(&self, tree: &Tree, leaves: &[LeafId]) -> Result<Vec<String>> {
+    async fn revoke_all(&self, tree: &Tree, attempts: &[AttemptId]) -> Result<Vec<String>> {
         let artifacts = self.artifacts()?;
         let mut failures = Vec::new();
-        for &leaf in leaves {
+        for &attempt in attempts {
             let repo = &tree
-                .leaf(leaf)
-                .expect("callers pass leaves of this tree")
+                .attempt(attempt)
+                .expect("callers pass attempts of this tree")
                 .repo;
             let revoked = match artifacts.repo(repo).await {
                 Ok(handle) => handle.revoke_active_tokens().await.map(|_| ()),
-                // A leaf whose fork never happened has nothing to revoke.
+                // A attempt whose fork never happened has nothing to revoke.
                 Err(error) if error.is("NOT_FOUND") => Ok(()),
                 Err(error) => Err(error),
             };
@@ -854,37 +862,37 @@ impl TreeObject {
     }
 }
 
-/// Apply a scoring result to a leaf that may have moved on while its checks
-/// ran: withered or pruned meanwhile is expected and the result is moot;
+/// Apply a scoring result to a attempt that may have moved on while its checks
+/// ran: abandoned or closed meanwhile is expected and the result is moot;
 /// anything else is a bug worth seeing in the logs.
-fn settle(leaf: LeafId, applied: std::result::Result<(), TreeError>) {
+fn settle(attempt: AttemptId, applied: std::result::Result<(), TreeError>) {
     match applied {
-        Ok(()) | Err(TreeError::NotRipening(_) | TreeError::NotLive(_)) => {}
-        Err(error) => worker::console_error!("applying the score of leaf {leaf}: {error}"),
+        Ok(()) | Err(TreeError::NotChecking(_) | TreeError::NotOpen(_)) => {}
+        Err(error) => worker::console_error!("applying the score of attempt {attempt}: {error}"),
     }
 }
 
 struct Pending {
-    leaf: LeafId,
+    attempt: AttemptId,
     repo: RepoName,
-    /// The bud's intent, for the root's judges.
+    /// The task's intent, for the root's judges.
     intent: String,
     base: Oid,
     head: Oid,
     checks: Vec<CheckSpec>,
 }
 
-/// A stale leaf being replayed onto the head in a fresh one.
-struct Transplant {
-    stale: LeafId,
-    fresh: LeafId,
+/// A behind attempt being replayed onto the head in a fresh one.
+struct Rebase {
+    behind: AttemptId,
+    fresh: AttemptId,
     from_repo: RepoName,
     from_base: Oid,
     from_head: Oid,
     onto_head: Oid,
 }
 
-enum Scored<Report = ScoreReport> {
+enum SandboxOutcome<Report = ScoreReport> {
     Report(Report),
     /// The sandbox says the input cannot be handled (no ficus.toml, head
     /// not descending from base, a conflict): retrying will not help.
@@ -893,8 +901,8 @@ enum Scored<Report = ScoreReport> {
     Failed(String),
 }
 
-enum Transplanted {
-    Report(TransplantReport),
+enum RebaseOutcome {
+    Report(RebaseReport),
     /// The commits do not apply on the head: the agent's turn.
     Conflict(String),
     Failed(String),
@@ -929,19 +937,19 @@ fn tree_error(error: &TreeError) -> Result<Response> {
         | TreeError::MalformedRepoName(_)
         | TreeError::ImpossibleScore { .. }
         | TreeError::EmptyIntent
-        | TreeError::BudChecks(_) => 400,
-        TreeError::UnknownBud(_) | TreeError::UnknownLeaf(_) | TreeError::UnknownNode(_) => 404,
-        TreeError::BudFruited(_)
+        | TreeError::TaskChecks(_) => 400,
+        TreeError::UnknownTask(_) | TreeError::UnknownAttempt(_) | TreeError::UnknownNode(_) => 404,
+        TreeError::TaskDone(_)
         | TreeError::NotGrowing(_)
-        | TreeError::NotRipening(_)
-        | TreeError::NotLive(_)
-        | TreeError::NotStale(_)
-        | TreeError::NothingToTransplant(_)
-        | TreeError::Transplanting(_, _)
-        | TreeError::NotTransplant(_)
-        | TreeError::NothingToHarvest(_)
-        | TreeError::NothingRipe
-        | TreeError::BudExhausted(_, _) => 409,
+        | TreeError::NotChecking(_)
+        | TreeError::NotOpen(_)
+        | TreeError::NotBehind(_)
+        | TreeError::NothingToRebase(_)
+        | TreeError::Rebaseing(_, _)
+        | TreeError::NotRebase(_)
+        | TreeError::NothingToAccept(_)
+        | TreeError::NothingScored
+        | TreeError::TaskExhausted(_, _) => 409,
         TreeError::Full => 507,
     };
     Response::error(error.to_string(), status)

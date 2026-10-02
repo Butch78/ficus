@@ -12,13 +12,13 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
 - nixpkgs' wrangler/workerd caps `compatibility_date` at 2026-09-10.
 - On expanse-5950x the shared sccache daemon runs as gh-runner and cannot write a
   root-owned target/: build as root with `RUSTC_WRAPPER=""`.
-- `ficus-core::tree`: the tree model (bud → leaves → harvest → fruit node; pruned leaves go to
-  compost; never a merge). A stale submitted leaf is **transplanted** first: the alarm replays its
-  commits onto the head in a fresh leaf (`transplant_start/done/failed/retry`) and scores it there;
-  only a conflict sends it back to its agent to **regrow** (`MAX_REGROWTHS` per bud, then the
-  planter decides). Leaves and nodes record `touched` paths, so `staleness` can say what overlaps.
-  Buds carry their own `checks` (run after the root's, never in the repo). `harvest_next` takes the
-  oldest ready bud. `release` is a pointer at a node (older node = rollback). Keep matches exhaustive.
+- `ficus-core::tree`: the tree model (task → attempts → accept → node; closed attempts go to
+  history; never a merge). A submitted attempt left behind is **rebased** first: the alarm replays its
+  commits onto the head in a fresh attempt (`rebase_start/done/failed/retry`) and scores it there;
+  only a conflict sends it back to its agent to **retry** (`MAX_RETRIES` per task, then the
+  owner decides). Attempts and nodes record `touched` paths, so `behind` can say what overlaps.
+  Tasks carry their own `checks` (run after the root's, never in the repo). `accept_next` takes the
+  oldest ready task. `release` is a pointer at a node (older node = rollback). Keep matches exhaustive.
 - `infra/`: alchemy 2.0.0-beta.80 + Effect 4.0.0 + bun 1.4.2 (nix pin). `just infra-check`
   after TS changes. Unstable Effect modules (effect/http, …) are allowed: deps track the
   latest release, so bump them rather than avoid an API (`effecttsgo/unstable-api-usage` is off).
@@ -33,27 +33,27 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   It forwards `/v1/orgs/<org>/trees/<t>/...` over a service binding to the internal tree Worker
   (no workers.dev) with `x-ficus-tenant` = tenant key (first 50 bits of SHA-256(org id), base32).
   Tree DO name and root repo are `<tenant>-<tree>`. Tree Worker routes, one `TreeObject` DO per tree:
-  `POST /trees/<t>/plant {source}` · `POST /trees/<t>/buds {intent, checks?}` ·
-  `POST /trees/<t>/buds/<b>/leaves {agent}` → fork + write token (+ the bud's checks) ·
-  `POST /trees/<t>/leaves/<l>/ripe` (revokes tokens, reads head from Artifacts, queues scoring; 202) ·
-  `GET /trees/<t>/leaves/<l>` (state + report) · `POST /trees/<t>/buds/<b>/harvest` ·
-  `POST /trees/<t>/harvest` (oldest ready bud; both set the alarm that transplants the stale leaves) ·
-  `GET /trees/<t>/stale` · `POST /trees/<t>/leaves/<l>/{regrow,wither}` ·
+  `POST /trees/<t>/init {source}` · `POST /trees/<t>/tasks {intent, checks?}` ·
+  `POST /trees/<t>/tasks/<id>/attempts {agent}` → fork + write token (+ the task's checks) ·
+  `POST /trees/<t>/attempts/<id>/submit` (revokes tokens, reads head from Artifacts, queues scoring; 202) ·
+  `GET /trees/<t>/attempts/<id>` (state + report) · `POST /trees/<t>/tasks/<id>/accept` ·
+  `POST /trees/<t>/accept` (oldest ready task; both set the alarm that rebases the behind attempts) ·
+  `GET /trees/<t>/behind` · `POST /trees/<t>/attempts/<id>/{retry,abandon}` ·
   `POST /trees/<t>/release {node?}` · `GET /trees/<t>/release` · `GET /trees/<t>`.
-  Every leaf/node is its own Artifacts repo (`<t>-l<id>`); git auth is `http.extraHeader="Authorization: Bearer <token>"`.
-- `POST /trees/<t>/plant {}` with no `source` creates an empty root and returns a write token; push, plant again.
-- Scoring: TreeObject's alarm first transplants every stale submitted leaf (one `Sandbox` per leaf,
-  `POST /transplant`: Egress grants the stale repo read and the fresh repo write; a conflict is 422
-  and final, a sandbox failure retries up to 5 times), then scores every Ripening leaf in parallel, one `Sandbox` per leaf
+  Every attempt/node is its own Artifacts repo (`<t>-a<id>`); git auth is `http.extraHeader="Authorization: Bearer <token>"`.
+- `POST /trees/<t>/init {}` with no `source` creates an empty root and returns a write token; push, init again.
+- Scoring: TreeObject's alarm first rebases every behind submitted attempt (one `Sandbox` per attempt,
+  `POST /rebase`: Egress grants the behind repo read and the fresh repo write; a conflict is 422
+  and final, a sandbox failure retries up to 5 times), then scores every Checking attempt in parallel, one `Sandbox` per attempt
   (infra/src/sandbox: TS Durable Object on native `ctx.container`, Sandbox SDK 1.0 style; NOT the
   legacy @cloudflare/containers class, which ends 2026-12-31). Internet is off; `Egress` (a
-  WorkerEntrypoint via ctx.exports with props) is the only way out: prepare phase = leaf repo (token
+  WorkerEntrypoint via ctx.exports with props) is the only way out: prepare phase = attempt repo (token
   added by Egress, never in the container) + nix/devenv caches; check phase = nothing.
   `ficus-scorer prepare|check` is a CLI run by native exec. The root's `ficus.toml` and devenv files
-  come from the base commit (LOCKED_PATHS), so a leaf cannot change its own checks; the bud's checks
+  come from the base commit (LOCKED_PATHS), so a attempt cannot change its own checks; the task's checks
   travel in the request and run after the root's. Cost = diff lines; the report also lists `touched` paths.
   `[[judge]]` in ficus.toml = a yes/no question on `{task, diff}` the Sandbox asks Clef (Workers AI binding)
-  after the container is gone; counts as a check, and its mean confidence breaks cost ties at harvest.
+  after the container is gone; counts as a check, and its mean confidence breaks cost ties at acceptance.
   Image: `infra/src/sandbox/context` (nix + devenv; binary from `scripts/build-scorer`).
 - The deploy token needs Containers: Edit (registry credentials) on top of Workers, Workers AI, Artifacts.
 - `just e2e` (FICUS_API=https://ficus-dev.fruitcards.workers.dev) runs the full cycle live.

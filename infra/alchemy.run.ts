@@ -130,7 +130,7 @@ export default Alchemy.Stack(
         ARTIFACTS: artifacts,
         // `TreeObject` is the #[durable_object] struct in crates/ficus-worker.
         TREES: Cloudflare.DurableObject("TREES", { className: "TreeObject" }),
-        // Sandboxes that score leaves: the `Sandbox` class in the sandbox Worker.
+        // Sandboxes that score attempts: the `Sandbox` class in the sandbox Worker.
         // By literal name: `alchemy dev` cannot coerce a deploy-time Output
         // into a class's scriptName. The env value below keeps the edge that
         // deploys the sandbox Worker (and its class) before this one.

@@ -1,4 +1,4 @@
-# The root's checks. A leaf becomes fruit only if every one passes; among
+# The root's checks. A attempt becomes accepted only if every one passes; among
 # those, the smallest diff wins.
 
 [[check]]
@@ -11,10 +11,10 @@ name = "compiles"
 run = "python -m compileall -q slug.py"
 timeout_secs = 60
 
-# A judge: a yes/no question about the leaf's diff, put to Clef (Cloudflare's
-# decision model) with the bud's intent as `task`. "Yes" passes when Clef
+# A judge: a yes/no question about the attempt's diff, put to Clef (Cloudflare's
+# decision model) with the task's intent as `task`. "Yes" passes when Clef
 # gives it at least `pass_at` (default 0.5); a judge counts as a check. On
-# equal cost, the leaf the judges were surest of wins.
+# equal cost, the attempt the judges were surest of wins.
 [[judge]]
 name = "does_the_task"
 ask = "Does `diff` do everything `task` asks, without changing anything the task does not need?"
