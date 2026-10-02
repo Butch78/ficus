@@ -20,6 +20,9 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
 - Lint layers: oxlint with @effect/tsgo (type-aware) + vendored anti-slop at
   `infra/tools/oxlint/anti-slop` (ours to edit; UPSTREAM-COMMIT records the source).
   Judgement-call slop rules go to Clef (`@cf/cloudflare/clef`): `just clef-review`.
+- Clef is an `effect/ai` DecisionModel provider (`infra/src/clef/clef.ts`: `layerBinding` in Workers,
+  `layerRest` elsewhere). Write questions as `Decision.make` definitions, ask with `DecisionModel.decide`;
+  `@effect/ai-typesafe` (Jev) would be a drop-in layer behind the same definitions.
 - Secrets: secretspec, `~/.config/ficus/.env`. Agents must set SECRETSPEC_REASON to enter the shell.
 - Public entry is the Api Worker (`infra/src/api`): Better Auth on D1 (orgs, API keys via `x-api-key`).
   It forwards `/v1/orgs/<org>/trees/<t>/...` over a service binding to the internal tree Worker
