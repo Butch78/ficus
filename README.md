@@ -25,6 +25,55 @@ Work grows outward from an accepted commit and never merges back.
 - A **release** is a pointer at a node. History is linear and every node passed the same
   checks, so a rollback is the pointer moving back.
 
+### A leaf's life
+
+```mermaid
+flowchart TD
+    plant["plant: the root commit"] --> head(("head node"))
+    head -- "POST /buds {intent, checks}" --> bud["bud: a task and what done means"]
+    bud -- "POST /buds/b/leaves {agent}: fork the head" --> growing["leaf growing: own repo, write token"]
+    growing -- "POST /leaves/l/ripe: freeze, revoke token" --> ripening["ripening"]
+    ripening -- "sandbox: root checks, bud checks, cost, touched paths" --> ripe["ripe: scored"]
+    ripe -- "POST /harvest: oldest ready bud, cheapest passing leaf" --> fruit["fruit: the new head"]
+    fruit --> head
+    ripe -- "lost the harvest" --> compost[("compost: who, why, score")]
+    fruit -. "every other submitted leaf is now stale" .-> stale["stale leaf"]
+    stale -- "alarm: transplant onto the head in a fresh leaf" --> ripening
+    stale -- "conflict: paths to the compost" --> regrow["POST /leaves/l/regrow: the agent starts from the head"]
+    regrow --> growing
+    head -- "POST /release {node?}" --> release["release pointer: a deploy follows it, an older node is a rollback"]
+```
+
+### What runs where
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant T as TreeObject (one per tree)
+    participant R as Artifacts (one repo per leaf)
+    participant S as Sandbox (internet off)
+    participant E as Egress (holds the tokens)
+
+    A->>T: sprout a leaf
+    T->>R: fork the head's repo
+    T-->>A: remote + write token
+    A->>R: push commits
+    A->>T: ripe
+    T->>R: revoke the leaf's tokens, read its head
+    T->>S: score {remote, base, head, bud checks}
+    S->>E: git clone (read token added here)
+    E->>R: authorized fetch
+    Note over S: restore locked files from base,<br/>root checks, bud checks, diff cost + touched paths
+    S-->>T: ScoreReport
+    T->>T: harvest: cheapest passing leaf is the new head
+    T->>R: fork the head for each stale leaf
+    T->>S: transplant {from (read), onto (write), heads}
+    S->>E: fetch stale commits, rebase onto head, push
+    E->>R: each repo with its own token
+    S-->>T: commit, or 422 on conflict
+    T->>T: ripening on the head, or left for its agent to regrow
+```
+
 ## Develop
 
 Needs [nix](https://nixos.org) + [devenv](https://devenv.sh).
