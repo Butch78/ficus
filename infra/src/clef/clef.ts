@@ -11,10 +11,9 @@ import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Predicate from "effect/Predicate";
-import * as Redacted from "effect/Redacted";
-import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
+import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientRequest from "effect/http/HttpClientRequest";
 
 export const NoulQuestion = Schema.Struct({
   type: Schema.Literal("noul"),
@@ -43,22 +42,11 @@ export class ClefError extends Schema.TaggedError<ClefError>()("Clef.ClefError",
   cause: Schema.Defect(),
 }) {}
 
-/** A 429 or 5xx: the request was fine and is worth sending again. */
-export class ClefUnavailable extends Schema.TaggedError<ClefUnavailable>()("Clef.ClefUnavailable", {
-  status: Schema.Number,
-}) {}
-
-/** Any other non-2xx: retrying the same request will not help. */
-export class ClefRejected extends Schema.TaggedError<ClefRejected>()("Clef.ClefRejected", {
-  status: Schema.Number,
-  body: Schema.String,
-}) {}
-
 export interface Interface {
   readonly ask: (
     file: SourceFile,
     questions: Readonly<Record<string, NoulQuestion>>,
-  ) => Effect.Effect<Answers, ClefError | ClefUnavailable | ClefRejected>;
+  ) => Effect.Effect<Answers, ClefError>;
 }
 
 export class Service extends Context.Service<Service, Interface>()("@ficus/Clef") {}
@@ -69,10 +57,6 @@ const MODEL = "@cf/cloudflare/clef";
  * Clef over the Workers AI REST API. Needs `CLOUDFLARE_ACCOUNT_ID` and a
  * `CLOUDFLARE_API_TOKEN` with Workers AI read access; neither has a default,
  * so a missing one fails at layer construction rather than mid-review.
- *
- * Raw `fetch` rather than Effect's HttpClient, which is still an unstable
- * API that the lint gate rejects; the boundary discipline is the same:
- * classify the status, then decode the body with a schema.
  */
 export const layer = Layer.effect(
   Service,
@@ -80,65 +64,33 @@ export const layer = Layer.effect(
     const accountId = yield* Config.String("CLOUDFLARE_ACCOUNT_ID");
     const token = yield* Config.Redacted("CLOUDFLARE_API_TOKEN");
 
+    const client = (yield* HttpClient.HttpClient).pipe(
+      HttpClient.mapRequest(HttpClientRequest.bearerToken(token)),
+      HttpClient.filterStatusOk,
+      // 429, 5xx, timeouts and transport errors; a 4xx is the request's fault.
+      HttpClient.retryTransient({ times: 3 }),
+    );
+
     const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${MODEL}`;
 
-    const send = Effect.fn("Clef.send")(function* (body: string) {
-      const response = yield* Effect.tryPromise({
-        try: (signal) =>
-          fetch(url, {
-            method: "POST",
-            signal,
-            headers: { authorization: `Bearer ${Redacted.value(token)}`, "content-type": "application/json" },
-            body,
-          }),
-        catch: (cause) => new ClefError({ operation: "Clef.send", cause }),
-      });
+    const ask = Effect.fn("Clef.ask")(
+      function* (file: SourceFile, questions: Readonly<Record<string, NoulQuestion>>) {
+        const request = yield* HttpClientRequest.post(url).pipe(
+          HttpClientRequest.bodyJson({ model: "clef", state: file, questions }),
+        );
 
-      if (response.status === 429 || response.status >= 500) {
-        return yield* new ClefUnavailable({ status: response.status });
-      }
+        const response = yield* client.execute(request);
+        const decoded = yield* Schema.decodeUnknownEffect(RunResponse)(yield* response.json);
+        const answers: Record<string, number> = {};
 
-      if (!response.ok) {
-        const text = yield* Effect.tryPromise({
-          try: () => response.text(),
-          catch: (cause) => new ClefError({ operation: "Clef.readRejection", cause }),
-        });
+        for (const [id, answer] of Object.entries(decoded.result.answers)) {
+          answers[id] = answer.noul;
+        }
 
-        return yield* new ClefRejected({ status: response.status, body: text });
-      }
-
-      return yield* Effect.tryPromise({
-        try: () => response.json(),
-        catch: (cause) => new ClefError({ operation: "Clef.readJson", cause }),
-      });
-    });
-
-    const ask = Effect.fn("Clef.ask")(function* (
-      file: SourceFile,
-      questions: Readonly<Record<string, NoulQuestion>>,
-    ) {
-      const body = JSON.stringify({ model: "clef", state: file, questions });
-
-      const json = yield* send(body).pipe(
-        Effect.retry({
-          while: Predicate.isTagged("Clef.ClefUnavailable"),
-          schedule: Schedule.exponential("500 millis"),
-          times: 3,
-        }),
-      );
-
-      const decoded = yield* Schema.decodeUnknownEffect(RunResponse)(json).pipe(
-        Effect.mapError((cause) => new ClefError({ operation: "Clef.decode", cause })),
-      );
-
-      const answers: Record<string, number> = {};
-
-      for (const [id, answer] of Object.entries(decoded.result.answers)) {
-        answers[id] = answer.noul;
-      }
-
-      return answers;
-    });
+        return answers;
+      },
+      (effect) => effect.pipe(Effect.mapError((cause) => new ClefError({ operation: "Clef.ask", cause }))),
+    );
 
     return Service.of({ ask });
   }),

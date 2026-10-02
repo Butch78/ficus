@@ -15,7 +15,8 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
 - `ficus-core::tree`: the tree model (bud → leaves → harvest → fruit node; stale leaves
   regrow, never merge; pruned leaves go to compost). Keep its matches exhaustive.
 - `infra/`: alchemy 2.0.0-beta.80 + Effect 4.0.0 + bun 1.4.2 (nix pin). `just infra-check`
-  after TS changes. Effect's HttpClient is unstable and lint-rejected — use fetch at the boundary.
+  after TS changes. Unstable Effect modules (effect/http, …) are allowed: deps track the
+  latest release, so bump them rather than avoid an API (`effecttsgo/unstable-api-usage` is off).
 - Lint layers: oxlint with @effect/tsgo (type-aware) + vendored anti-slop at
   `infra/tools/oxlint/anti-slop` (ours to edit; UPSTREAM-COMMIT records the source).
   Judgement-call slop rules go to Clef (`@cf/cloudflare/clef`): `just clef-review`.

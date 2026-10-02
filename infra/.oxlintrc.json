@@ -25,6 +25,10 @@
     // Effect.gen / Effect.fn take a generator even when nothing is yielded.
     "eslint/require-yield": "off",
     "eslint/complexity": ["error", { "max": 20 }],
+    // Unstable Effect modules (effect/http, effect/ai, ...) are fine here:
+    // dependencies track the latest release, so a breaking change is met
+    // when it lands rather than avoided by staying off the API.
+    "effecttsgo/unstable-api-usage": "off",
     "effecttsgo/any-unknown-in-error-context": "error",
     "effecttsgo/class-self-mismatch": "error",
     "effecttsgo/duplicate-package": "error",

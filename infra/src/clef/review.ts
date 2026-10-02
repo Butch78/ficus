@@ -13,6 +13,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import { Clef } from "./clef.ts";
 import { type Finding, RULES, findingsOf } from "./rules.ts";
 
@@ -68,5 +69,5 @@ const main = Effect.gen(function* () {
 
 if (import.meta.main) {
   // oxlint-disable-next-line effecttsgo/strict-effect-provide -- the program's entry point
-  BunRuntime.runMain(main.pipe(Effect.provide(Layer.mergeAll(Clef.layer, BunServices.layer))));
+  BunRuntime.runMain(main.pipe(Effect.provide(Layer.mergeAll(Clef.layer.pipe(Layer.provide(FetchHttpClient.layer)), BunServices.layer))));
 }
