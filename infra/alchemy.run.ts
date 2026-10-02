@@ -1,12 +1,18 @@
-// The Ficus stack: the main Worker (crates/ficus-worker), Rust compiled to
-// wasm32 and packaged by worker-build.
+// The Ficus stack:
+//
+//   Api      src/api/worker.ts     the one public entry: Better Auth on D1
+//                                  (users, organizations, API keys); forwards
+//                                  /v1/orgs/<org>/trees/... to Tree
+//   Worker   crates/ficus-worker   the tree service (TreeObject, scorer
+//                                  containers, Artifacts); internal only, no
+//                                  public URL: reached through Api's service
+//                                  binding, which vouches for the tenant
 //
 //   bun run plan | deploy | destroy        STAGE defaults to dev
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
 import * as Output from "alchemy/Output";
-import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -87,12 +93,11 @@ export default Alchemy.Stack(
       // re-export that only resolves the wasm under one bundling mode.
       main: "../crates/ficus-worker/build/index.js",
       compatibility: COMPATIBILITY,
+      // Internal: trusts the tenant header, so only Api may reach it.
+      workersDev: false,
       env: {
         // The edge that orders the build before the upload.
         FICUS_BUNDLE_HASH: Output.map(bundle.hash.output, (hash) => hash ?? "unhashed"),
-        // Required, no default: a deploy without it fails here rather than
-        // standing up a Worker that refuses every request.
-        FICUS_ADMIN_TOKEN: Config.Redacted("FICUS_ADMIN_TOKEN"),
         ARTIFACTS: artifacts,
         // `TreeObject` is the #[durable_object] struct in crates/ficus-worker.
         TREES: Cloudflare.DurableObject("TREES", { className: "TreeObject" }),
@@ -101,6 +106,28 @@ export default Alchemy.Stack(
       },
     });
 
-    return { url: worker.url.as<string>() };
+    // Accounts. The schema is Better Auth's for src/api/auth.ts's plugins,
+    // compiled by `bun run auth:schema`; applied in order on deploy.
+    const authDb = yield* Cloudflare.D1.Database("AuthDb", {
+      name: `ficus-auth-${stage}`,
+      migrations: "./src/api/migrations",
+    });
+
+    // Signs sessions. Generated once per stage and kept in state.
+    const authSecret = yield* Alchemy.Random("BetterAuthSecret");
+
+    const api = yield* Cloudflare.Worker("Api", {
+      name: `ficus-api-${stage}`,
+      main: "./src/api/worker.ts",
+      compatibility: COMPATIBILITY,
+      env: {
+        AUTH_DB: authDb,
+        BETTER_AUTH_SECRET: authSecret.text,
+        // A service binding: the only way into the tree Worker.
+        TREE: worker,
+      },
+    });
+
+    return { api: api.url.as<string>() };
   }),
 );

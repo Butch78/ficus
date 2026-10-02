@@ -46,7 +46,7 @@ clef-review base="HEAD":
 deploy:
     cd infra && bun run deploy
 
-# Run the full tree cycle against a deployed Worker (FICUS_API, FICUS_ADMIN_TOKEN)
+# Run the full tree cycle through a deployed Api (FICUS_API: its URL)
 e2e:
     scripts/e2e
 

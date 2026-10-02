@@ -2,6 +2,7 @@
 //! builds and tests natively under `cargo nextest run`.
 
 pub mod scoring;
+pub mod tenant;
 pub mod tree;
 
 /// A repository's `owner/name` path.

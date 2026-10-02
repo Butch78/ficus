@@ -21,7 +21,10 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   `infra/tools/oxlint/anti-slop` (ours to edit; UPSTREAM-COMMIT records the source).
   Judgement-call slop rules go to Clef (`@cf/cloudflare/clef`): `just clef-review`.
 - Secrets: secretspec, `~/.config/ficus/.env`. Agents must set SECRETSPEC_REASON to enter the shell.
-- Worker API (all under `Authorization: Bearer $FICUS_ADMIN_TOKEN`), one `TreeObject` DO per tree:
+- Public entry is the Api Worker (`infra/src/api`): Better Auth on D1 (orgs, API keys via `x-api-key`).
+  It forwards `/v1/orgs/<org>/trees/<t>/...` over a service binding to the internal tree Worker
+  (no workers.dev) with `x-ficus-tenant` = tenant key (first 50 bits of SHA-256(org id), base32).
+  Tree DO name and root repo are `<tenant>-<tree>`. Tree Worker routes, one `TreeObject` DO per tree:
   `POST /trees/<t>/plant {source}` · `POST /trees/<t>/buds {intent}` ·
   `POST /trees/<t>/buds/<b>/leaves {agent}` → fork + write token · `POST /trees/<t>/leaves/<l>/ripe`
   (revokes tokens, reads head from Artifacts, queues scoring; 202) · `GET /trees/<t>/leaves/<l>` (state + report) ·

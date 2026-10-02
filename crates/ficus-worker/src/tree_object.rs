@@ -94,7 +94,11 @@ impl DurableObject for TreeObject {
         let Some((&tree_name, route)) = rest.split_first() else {
             return Response::error("not found", 404);
         };
-        let name = match RepoName::try_from(tree_name.to_owned()) {
+        let tenant = match crate::tenant_of(&req)? {
+            Ok(tenant) => tenant,
+            Err(response) => return Ok(response),
+        };
+        let name = match RepoName::try_from(tenant.scope(tree_name)) {
             Ok(name) => name,
             Err(error) => return Response::error(error.to_string(), 400),
         };

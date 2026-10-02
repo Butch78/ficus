@@ -8,16 +8,30 @@
 #   submit all -> containers score them -> harvest A (smallest passing diff)
 #   B's leaf is stale -> regrow on A's fruit -> submit -> harvest B
 #
-# Needs FICUS_API and FICUS_ADMIN_TOKEN. Creates repos in the stage's
-# Artifacts namespace.
+# Needs FICUS_API, the Api Worker's URL. Signs up a fresh user, creates an
+# organization and an API key, and drives everything through the public API.
+# Creates repos in the stage's Artifacts namespace.
 set -euo pipefail
-API=${FICUS_API:?set FICUS_API to the Worker URL, e.g. https://ficus-dev.<account>.workers.dev}
+API=${FICUS_API:?set FICUS_API to the Api Worker URL, e.g. https://ficus-api-dev.<account>.workers.dev}
 ROOT_DIR=$(cd "$(dirname "$0")/../examples/demo-root" && pwd)
 T="e2e-$(date +%s)"
 W=$(mktemp -d)
-auth=(-H "Authorization: Bearer $FICUS_ADMIN_TOKEN" -H "content-type: application/json")
-call() { local m=$1 p=$2 d=${3:-}; if [ -n "$d" ]; then curl -s -X "$m" "${auth[@]}" "$API/trees/$T$p" -d "$d"; else curl -s -X "$m" "${auth[@]}" "$API/trees/$T$p"; fi; }
+ORG="e2e-org-$(date +%s)"
+JAR="$W/cookies"
+json=(-H "content-type: application/json")
+
 step() { echo; echo "== $*"; }
+
+step "sign up, create organization $ORG, mint an API key"
+EMAIL="e2e-$(date +%s)-$RANDOM@example.com"
+curl -sf -c "$JAR" "${json[@]}" "$API/api/auth/sign-up/email" \
+  -d "{\"email\":\"$EMAIL\",\"password\":\"$(openssl rand -hex 16)\",\"name\":\"e2e\"}" | jq -c '{user: .user.email}'
+curl -sf -b "$JAR" "${json[@]}" "$API/api/auth/organization/create" -d "{\"name\":\"$ORG\",\"slug\":\"$ORG\"}" | jq -c '{org: .slug}'
+KEY=$(curl -sf -b "$JAR" "${json[@]}" "$API/api/auth/api-key/create" -d '{"name":"e2e"}' | jq -r .key)
+[ -n "$KEY" ] && [ "$KEY" != null ] || { echo "FAIL: no API key" >&2; exit 1; }
+
+auth=(-H "x-api-key: $KEY" "${json[@]}")
+call() { local m=$1 p=$2 d=${3:-}; if [ -n "$d" ]; then curl -s -X "$m" "${auth[@]}" "$API/v1/orgs/$ORG/trees/$T$p" -d "$d"; else curl -s -X "$m" "${auth[@]}" "$API/v1/orgs/$ORG/trees/$T$p"; fi; }
 gitc() { git -c user.name="$1" -c user.email="$1@ficus.dev" -c commit.gpgsign=false "${@:2}"; }
 
 clone() { # remote token dir
@@ -55,8 +69,9 @@ report() { # leaf
   call GET "/leaves/$1" | jq -c '{cost: .report.cost, checks: [.report.checks[]? | {name, passed}]}'
 }
 
-step "unauthenticated request is refused"
-curl -s -o /dev/null -w "%{http_code}\n" "$API/trees/$T"
+step "no key is refused; another organization's trees are invisible"
+curl -s -o /dev/null -w "%{http_code}\n" "$API/v1/orgs/$ORG/trees/$T"
+curl -s -o /dev/null -w "%{http_code}\n" -H "x-api-key: $KEY" "$API/v1/orgs/somebody-else/trees/$T"
 
 step "plant an empty root, push the demo root into it, plant again"
 out=$(call POST /plant '{}'); jq -c '{state}' <<<"$out"
