@@ -1,0 +1,7 @@
+name = "ficus"
+main = "crates/ficus-worker/build/worker/shim.mjs"
+compatibility_date = "2026-09-10"
+
+[build]
+command = "cd crates/ficus-worker && worker-build --release"
+watch_dir = ["crates/ficus-core/src", "crates/ficus-worker/src"]

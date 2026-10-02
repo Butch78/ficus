@@ -1,0 +1,19 @@
+[workspace]
+resolver = "3"
+members = ["crates/ficus-core", "crates/ficus-worker"]
+# Standalone: its own lockfile, emscripten target and patches.
+exclude = ["crates/ficus-git"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/Butch78/ficus"
+
+[workspace.dependencies]
+ficus-core = { path = "crates/ficus-core" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1

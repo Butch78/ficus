@@ -1,0 +1,6 @@
+[build]
+rustc-wrapper = "sccache"
+
+# getrandom 0.3+ refuses to guess an entropy source on wasm.
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']

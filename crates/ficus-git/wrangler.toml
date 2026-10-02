@@ -1,0 +1,9 @@
+name = "ficus-git"
+main = "build/index.js"
+compatibility_date = "2026-09-10"
+# new_module_registry gives the Emscripten glue `import.meta.url`.
+compatibility_flags = ["new_module_registry"]
+
+[build]
+command = "worker-build --emscripten --release"
+watch_dir = "src"

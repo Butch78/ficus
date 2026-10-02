@@ -1,0 +1,9 @@
+target/
+build/
+/.devenv
+/.direnv
+.wrangler/
+/.claude-scratch
+devenv.local.nix
+.dev.vars
+node_modules

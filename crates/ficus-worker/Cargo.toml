@@ -1,0 +1,13 @@
+[package]
+name = "ficus-worker"
+description = "The Ficus Cloudflare Worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ficus-core.workspace = true
+worker = "0.8.7"

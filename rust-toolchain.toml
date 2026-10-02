@@ -1,0 +1,7 @@
+# Pinned to an exact release: sccache keys on the rustc hash, so a floating
+# channel would silently cold-bust the cache on every update.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown", "wasm32-unknown-emscripten"]
+profile = "minimal"
