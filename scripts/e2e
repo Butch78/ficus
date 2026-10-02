@@ -118,8 +118,8 @@ for leaf in "$alpha" "$beta" "$cheater" "$gamma"; do
 done
 
 step "harvest A: the smallest diff that passes every check"
-H=$(call POST "/buds/$A/harvest"); jq -c . <<<"$H"
-[ "$(jq -r .fruit <<<"$H")" = "$beta" ] || { echo "FAIL: expected beta ($beta) to be fruit" >&2; exit 1; }
+H=$(call POST "/buds/$A/harvest"); echo "$H"
+[ "$(jq -r .fruit 2>/dev/null <<<"$H")" = "$beta" ] || { echo "FAIL: expected beta ($beta) to be fruit" >&2; exit 1; }
 
 step "B cannot harvest: gamma grew from the old head"
 call POST "/buds/$B/harvest"; echo

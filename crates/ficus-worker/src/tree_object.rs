@@ -13,7 +13,8 @@ use ficus_core::tree::{BudId, Compost, LeafId, Oid, RepoName, Tree, TreeError};
 use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use worker::{
-    DurableObject, Env, Method, Request, RequestInit, Response, Result, State, durable_object,
+    DurableObject, Env, Headers, Method, Request, RequestInit, Response, Result, State,
+    durable_object,
 };
 
 use crate::artifacts::{ArtifactsError, Namespace, Scope};
@@ -249,8 +250,12 @@ impl TreeObject {
                 .env
                 .durable_object("SCORER")?
                 .get_by_name(repo.as_str())?;
+            // axum's Json extractor refuses a body without this (415).
+            let headers = Headers::new();
+            headers.set("content-type", "application/json")?;
             let mut init = RequestInit::new();
             init.with_method(Method::Post)
+                .with_headers(headers)
                 .with_body(Some(serde_json::to_string(request)?.into()));
             let mut response = stub
                 .fetch_with_request(Request::new_with_init("http://scorer/score", &init)?)
