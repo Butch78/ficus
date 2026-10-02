@@ -29,6 +29,28 @@ pub struct BudId(u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct LeafId(u32);
 
+macro_rules! id_text {
+    ($($id:ident),*) => {$(
+        impl std::fmt::Display for $id {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                self.0.fmt(f)
+            }
+        }
+
+        /// Ids appear in URLs; an id that names nothing is caught by the
+        /// lookup that uses it, not here.
+        impl std::str::FromStr for $id {
+            type Err = std::num::ParseIntError;
+
+            fn from_str(text: &str) -> Result<Self, Self::Err> {
+                text.parse().map(Self)
+            }
+        }
+    )*};
+}
+
+id_text!(NodeId, BudId, LeafId);
+
 /// A git object id: 40 hex digits (SHA-1) or 64 (SHA-256), lowercase.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -59,6 +81,44 @@ impl TryFrom<String> for Oid {
 impl From<Oid> for String {
     fn from(oid: Oid) -> Self {
         oid.0
+    }
+}
+
+/// An Artifacts repository name: ASCII letters, digits, `.`, `-` and `_`,
+/// at most 63 characters.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct RepoName(String);
+
+/// Room left after the longest tree name for a leaf suffix (`-l` + a u32).
+const REPO_NAME_MAX: usize = 63;
+
+impl RepoName {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for RepoName {
+    type Error = TreeError;
+
+    fn try_from(name: String) -> Result<Self, Self::Error> {
+        let well_formed = !name.is_empty()
+            && name.len() <= REPO_NAME_MAX
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'));
+        if well_formed {
+            Ok(Self(name))
+        } else {
+            Err(TreeError::MalformedRepoName(name))
+        }
+    }
+}
+
+impl From<RepoName> for String {
+    fn from(name: RepoName) -> Self {
+        name.0
     }
 }
 
@@ -112,6 +172,9 @@ pub struct Node {
     /// `None` only for the root, which was planted rather than grown.
     pub parent: Option<NodeId>,
     pub commit: Oid,
+    /// The repo holding `commit`: the tree's own repo for the root, the
+    /// fruit's leaf repo for every node after it.
+    pub repo: RepoName,
     /// The leaf this node was harvested from; `None` only for the root.
     pub fruit_of: Option<LeafId>,
 }
@@ -154,6 +217,8 @@ pub struct Leaf {
     pub agent: String,
     /// The node this leaf started from.
     pub base: NodeId,
+    /// The leaf's own repo, forked from the base node's repo.
+    pub repo: RepoName,
     pub state: LeafState,
 }
 
@@ -183,6 +248,8 @@ pub struct Harvest {
 pub enum TreeError {
     #[error("not a git object id: {0:?}")]
     MalformedOid(String),
+    #[error("not an Artifacts repo name: {0:?}")]
+    MalformedRepoName(String),
     #[error("{checks_passed} of {checks_total} checks passed is not a score")]
     ImpossibleScore {
         checks_passed: u32,
@@ -210,6 +277,7 @@ pub enum TreeError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tree {
+    name: RepoName,
     head: NodeId,
     next_id: u32,
     nodes: BTreeMap<NodeId, Node>,
@@ -221,22 +289,33 @@ pub struct Tree {
 impl Tree {
     /// A tree whose root is `commit`: the strict starting point every leaf
     /// grows from until the first harvest.
-    pub fn plant(commit: Oid) -> Self {
+    /// A tree is named by its root repo; leaf repos are named after it, so
+    /// the name must leave room for the longest leaf suffix.
+    pub fn plant(name: RepoName, commit: Oid) -> Result<Self, TreeError> {
+        let longest_leaf = format!("{}-l{}", name.as_str(), u32::MAX);
+        RepoName::try_from(longest_leaf)
+            .map_err(|_| TreeError::MalformedRepoName(name.as_str().to_owned()))?;
         let root = NodeId(0);
         let node = Node {
             id: root,
             parent: None,
             commit,
+            repo: name.clone(),
             fruit_of: None,
         };
-        Self {
+        Ok(Self {
+            name,
             head: root,
             next_id: 1,
             nodes: BTreeMap::from([(root, node)]),
             buds: BTreeMap::new(),
             leaves: BTreeMap::new(),
             compost: Vec::new(),
-        }
+        })
+    }
+
+    pub fn name(&self) -> &RepoName {
+        &self.name
     }
 
     pub fn head(&self) -> &Node {
@@ -292,11 +371,14 @@ impl Tree {
     pub fn sprout(&mut self, bud: BudId, agent: impl Into<String>) -> Result<LeafId, TreeError> {
         self.open_bud(bud)?;
         let id = LeafId(self.take_id()?);
+        let repo = RepoName::try_from(format!("{}-l{}", self.name.as_str(), id.0))
+            .expect("plant checked that the tree name leaves room for any leaf suffix");
         let leaf = Leaf {
             id,
             bud,
             agent: agent.into(),
             base: self.head,
+            repo,
             state: LeafState::Growing,
         };
         self.leaves.insert(id, leaf);
@@ -351,20 +433,20 @@ impl Tree {
     /// check and has the lowest cost; on equal cost the earliest leaf wins.
     pub fn harvest(&mut self, bud: BudId) -> Result<Harvest, TreeError> {
         self.open_bud(bud)?;
-        let (fruit, commit) = self
+        let (fruit, commit, repo) = self
             .leaves_of(bud)
             .filter(|leaf| leaf.base == self.head)
             .filter_map(|leaf| match &leaf.state {
                 LeafState::Ripe { commit, score } if score.passes() => {
-                    Some((leaf.id, commit, score.cost()))
+                    Some((leaf.id, commit, &leaf.repo, score.cost()))
                 }
                 LeafState::Ripe { .. }
                 | LeafState::Growing
                 | LeafState::Fruit { .. }
                 | LeafState::Pruned { .. } => None,
             })
-            .min_by_key(|&(id, _, cost)| (cost, id))
-            .map(|(id, commit, _)| (id, commit.clone()))
+            .min_by_key(|&(id, _, _, cost)| (cost, id))
+            .map(|(id, commit, repo, _)| (id, commit.clone(), repo.clone()))
             .ok_or(TreeError::NothingToHarvest(bud))?;
 
         let node = NodeId(self.take_id()?);
@@ -374,6 +456,7 @@ impl Tree {
                 id: node,
                 parent: Some(self.head),
                 commit,
+                repo,
                 fruit_of: Some(fruit),
             },
         );
@@ -468,6 +551,10 @@ mod tests {
             .expect("40 copies of a hex digit is a SHA-1 oid")
     }
 
+    fn repo(name: &str) -> RepoName {
+        RepoName::try_from(name.to_owned()).expect("test repo names are well formed")
+    }
+
     fn passing(cost: u64) -> Score {
         Score::new(3, 3, cost).expect("3 of 3 is a valid score")
     }
@@ -499,7 +586,7 @@ mod tests {
 
     #[test]
     fn harvest_takes_the_cheapest_passing_leaf_and_prunes_the_rest() {
-        let mut tree = Tree::plant(oid('0'));
+        let mut tree = Tree::plant(repo("t"), oid('0')).unwrap();
         let root = tree.head().id;
         let bud = tree.bud_new("add a /health route").unwrap();
         let costly = tree.sprout(bud, "agent-a").unwrap();
@@ -528,6 +615,7 @@ mod tests {
                 node: harvest.node
             }
         );
+        assert_eq!(head.repo, repo(&format!("t-l{}", cheap.0)));
         assert_eq!(
             tree.leaf(cheap).unwrap().state,
             LeafState::Fruit { node: harvest.node }
@@ -557,7 +645,7 @@ mod tests {
 
     #[test]
     fn equal_cost_goes_to_the_earliest_leaf() {
-        let mut tree = Tree::plant(oid('0'));
+        let mut tree = Tree::plant(repo("t"), oid('0')).unwrap();
         let bud = tree.bud_new("intent").unwrap();
         let first = tree.sprout(bud, "a").unwrap();
         let second = tree.sprout(bud, "b").unwrap();
@@ -568,7 +656,7 @@ mod tests {
 
     #[test]
     fn nothing_to_harvest_without_a_passing_ripe_leaf() {
-        let mut tree = Tree::plant(oid('0'));
+        let mut tree = Tree::plant(repo("t"), oid('0')).unwrap();
         let bud = tree.bud_new("intent").unwrap();
         let leaf = tree.sprout(bud, "a").unwrap();
         assert_eq!(tree.harvest(bud), Err(TreeError::NothingToHarvest(bud)));
@@ -580,7 +668,7 @@ mod tests {
 
     #[test]
     fn a_harvest_makes_other_buds_stale_and_they_regrow_instead_of_merging() {
-        let mut tree = Tree::plant(oid('0'));
+        let mut tree = Tree::plant(repo("t"), oid('0')).unwrap();
         let auth = tree.bud_new("add auth").unwrap();
         let search = tree.bud_new("add search").unwrap();
         let auth_leaf = tree.sprout(auth, "a").unwrap();
@@ -619,7 +707,7 @@ mod tests {
 
     #[test]
     fn regrow_refuses_a_leaf_that_is_on_the_head() {
-        let mut tree = Tree::plant(oid('0'));
+        let mut tree = Tree::plant(repo("t"), oid('0')).unwrap();
         let bud = tree.bud_new("intent").unwrap();
         let leaf = tree.sprout(bud, "a").unwrap();
         assert_eq!(tree.regrow(leaf), Err(TreeError::NotStale(leaf)));
@@ -627,7 +715,7 @@ mod tests {
 
     #[test]
     fn a_fruited_bud_takes_no_more_leaves() {
-        let mut tree = Tree::plant(oid('0'));
+        let mut tree = Tree::plant(repo("t"), oid('0')).unwrap();
         let bud = tree.bud_new("intent").unwrap();
         let leaf = tree.sprout(bud, "a").unwrap();
         tree.ripen(leaf, oid('a'), passing(1)).unwrap();
@@ -638,7 +726,7 @@ mod tests {
 
     #[test]
     fn a_leaf_ripens_once_and_withers_into_the_compost() {
-        let mut tree = Tree::plant(oid('0'));
+        let mut tree = Tree::plant(repo("t"), oid('0')).unwrap();
         let bud = tree.bud_new("intent").unwrap();
         let leaf = tree.sprout(bud, "a").unwrap();
         tree.ripen(leaf, oid('a'), passing(1)).unwrap();
@@ -662,13 +750,44 @@ mod tests {
 
     #[test]
     fn empty_intent_is_refused() {
-        let mut tree = Tree::plant(oid('0'));
+        let mut tree = Tree::plant(repo("t"), oid('0')).unwrap();
         assert_eq!(tree.bud_new("  "), Err(TreeError::EmptyIntent));
     }
 
     #[test]
+    fn leaves_get_their_own_repo_and_harvest_hands_it_to_the_node() {
+        let mut tree = Tree::plant(repo("site"), oid('0')).unwrap();
+        assert_eq!(tree.head().repo, repo("site"));
+        let bud = tree.bud_new("intent").unwrap();
+        let leaf = tree.sprout(bud, "a").unwrap();
+        assert_eq!(
+            tree.leaf(leaf).unwrap().repo,
+            repo(&format!("site-l{}", leaf.0))
+        );
+        tree.ripen(leaf, oid('a'), passing(1)).unwrap();
+        let harvest = tree.harvest(bud).unwrap();
+        assert_eq!(
+            tree.node(harvest.node).unwrap().repo,
+            tree.leaf(leaf).unwrap().repo
+        );
+    }
+
+    #[test]
+    fn repo_names_follow_artifacts_rules_and_leave_room_for_leaves() {
+        assert!(RepoName::try_from("my_repo-1.0".to_owned()).is_ok());
+        assert!(RepoName::try_from(String::new()).is_err());
+        assert!(RepoName::try_from("has space".to_owned()).is_err());
+        assert!(RepoName::try_from("a".repeat(64)).is_err());
+        let long = repo(&"a".repeat(60));
+        assert_eq!(
+            Tree::plant(long, oid('0')),
+            Err(TreeError::MalformedRepoName("a".repeat(60)))
+        );
+    }
+
+    #[test]
     fn the_tree_round_trips_through_json() {
-        let mut tree = Tree::plant(oid('0'));
+        let mut tree = Tree::plant(repo("t"), oid('0')).unwrap();
         let bud = tree.bud_new("intent").unwrap();
         let leaf = tree.sprout(bud, "a").unwrap();
         tree.ripen(leaf, oid('a'), passing(1)).unwrap();

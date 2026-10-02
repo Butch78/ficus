@@ -49,6 +49,7 @@ in
   env = lib.filterAttrs (_: v: v != null) {
     CLOUDFLARE_ACCOUNT_ID = config.secretspec.secrets.CLOUDFLARE_ACCOUNT_ID or null;
     CLOUDFLARE_API_TOKEN = config.secretspec.secrets.CLOUDFLARE_API_TOKEN or null;
+    FICUS_ADMIN_TOKEN = config.secretspec.secrets.FICUS_ADMIN_TOKEN or null;
   };
 
   enterTest = ''

@@ -46,6 +46,10 @@ clef-review base="HEAD":
 deploy:
     cd infra && bun run deploy
 
+# Run the full tree cycle against a deployed Worker (FICUS_API, FICUS_ADMIN_TOKEN)
+e2e:
+    scripts/e2e
+
 # Deploy the emscripten git engine Worker
 git-deploy:
     cd crates/ficus-git && wrangler deploy

@@ -6,6 +6,7 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
 import * as Output from "alchemy/Output";
+import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -41,14 +42,25 @@ export default Alchemy.Stack(
       },
     });
 
+    // One namespace per stage; Artifacts creates it with the first repo.
+    const artifacts = yield* Cloudflare.Artifacts.Namespace("Artifacts", { namespace: `ficus-${stage}` });
+
     const worker = yield* Cloudflare.Worker("Worker", {
       name: `ficus-${stage}`,
       // index.js, not build/worker/shim.mjs: the shim is a back-compat
       // re-export that only resolves the wasm under one bundling mode.
       main: "../crates/ficus-worker/build/index.js",
       compatibility: COMPATIBILITY,
-      // The edge that orders the build before the upload.
-      env: { FICUS_BUNDLE_HASH: Output.map(bundle.hash.output, (hash) => hash ?? "unhashed") },
+      env: {
+        // The edge that orders the build before the upload.
+        FICUS_BUNDLE_HASH: Output.map(bundle.hash.output, (hash) => hash ?? "unhashed"),
+        // Required, no default: a deploy without it fails here rather than
+        // standing up a Worker that refuses every request.
+        FICUS_ADMIN_TOKEN: Config.Redacted("FICUS_ADMIN_TOKEN"),
+        ARTIFACTS: artifacts,
+        // `TreeObject` is the #[durable_object] struct in crates/ficus-worker.
+        TREES: Cloudflare.DurableObject("TREES", { className: "TreeObject" }),
+      },
     });
 
     return { url: worker.url.as<string>() };

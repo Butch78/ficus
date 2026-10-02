@@ -21,3 +21,10 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   `infra/tools/oxlint/anti-slop` (ours to edit; UPSTREAM-COMMIT records the source).
   Judgement-call slop rules go to Clef (`@cf/cloudflare/clef`): `just clef-review`.
 - Secrets: secretspec, `~/.config/ficus/.env`. Agents must set SECRETSPEC_REASON to enter the shell.
+- Worker API (all under `Authorization: Bearer $FICUS_ADMIN_TOKEN`), one `TreeObject` DO per tree:
+  `POST /trees/<t>/plant {source}` · `POST /trees/<t>/buds {intent}` ·
+  `POST /trees/<t>/buds/<b>/leaves {agent}` → fork + write token · `POST /trees/<t>/leaves/<l>/ripe
+  {checks_passed,checks_total,cost}` (revokes tokens, reads head from Artifacts) ·
+  `POST /trees/<t>/buds/<b>/harvest` · `POST /trees/<t>/leaves/<l>/{regrow,wither}` · `GET /trees/<t>`.
+  Every leaf/node is its own Artifacts repo (`<t>-l<id>`); git auth is `http.extraHeader="Authorization: Bearer <token>"`.
+- `just e2e` (FICUS_API=https://ficus-dev.fruitcards.workers.dev) runs the full cycle live.

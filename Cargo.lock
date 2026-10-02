@@ -73,6 +73,13 @@ name = "ficus-worker"
 version = "0.1.0"
 dependencies = [
  "ficus-core",
+ "js-sys",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "thiserror",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
  "worker",
 ]
 

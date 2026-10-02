@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# End-to-end against a deployed Ficus Worker: plant -> bud -> three agents
+# push -> ripen -> harvest -> stale -> regrow -> harvest. Needs FICUS_API and
+# FICUS_ADMIN_TOKEN. Creates repos in the stage's Artifacts namespace.
+set -euo pipefail
+API=${FICUS_API:?set FICUS_API to the Worker URL, e.g. https://ficus-dev.<account>.workers.dev}
+T="e2e-$(date +%s)"
+W=$(mktemp -d)
+auth=(-H "Authorization: Bearer $FICUS_ADMIN_TOKEN" -H "content-type: application/json")
+call() { local m=$1 p=$2 d=${3:-}; if [ -n "$d" ]; then curl -s -X "$m" "${auth[@]}" "$API/trees/$T$p" -d "$d"; else curl -s -X "$m" "${auth[@]}" "$API/trees/$T$p"; fi; }
+step() { echo; echo "== $*"; }
+
+step "unauthenticated request is refused"
+curl -s -o /dev/null -w "%{http_code}\n" "$API/trees/$T"
+
+step "plant $T from octocat/Hello-World"
+call POST /plant '{"source":"https://github.com/octocat/Hello-World"}' | jq -c '{name, head}'
+
+step "two buds"
+A=$(call POST /buds '{"intent":"add a CONTRIBUTING file"}' | jq -r .bud)
+B=$(call POST /buds '{"intent":"add a LICENSE file"}' | jq -r .bud)
+echo "A=$A B=$B"
+
+grow() { # bud agent file content -> prints leaf id, pushes a commit
+  local bud=$1 agent=$2 file=$3 body=$4
+  local out; out=$(call POST "/buds/$bud/leaves" "{\"agent\":\"$agent\"}")
+  local leaf remote token; leaf=$(jq -r .leaf <<<"$out"); remote=$(jq -r .remote <<<"$out"); token=$(jq -r .token <<<"$out")
+  if [ "$leaf" = null ]; then echo "sprout failed: $out" >&2; return 1; fi
+  echo "$token" > "$W/token-$leaf"
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    git -c http.extraHeader="Authorization: Bearer $token" clone -q "$remote" "$W/$leaf" 2>/dev/null && break
+    rm -rf "$W/$leaf"; sleep 2
+  done
+  [ -d "$W/$leaf" ] || { echo "clone failed for leaf $leaf" >&2; return 1; }
+  ( cd "$W/$leaf" && echo "$body" > "$file" && git add "$file" && git -c user.name="$agent" -c user.email="$agent@ficus.dev" commit -qm "$agent: $file" \
+    && git -c http.extraHeader="Authorization: Bearer $token" push -q origin HEAD 2>&1 ) >&2
+  echo "$leaf"
+}
+
+step "three agents grow leaves (alpha, beta on A; gamma on B)"
+L1=$(grow "$A" alpha CONTRIBUTING.md "alpha's long contributing guide")
+L2=$(grow "$A" beta CONTRIBUTING.md "beta: short guide")
+L3=$(grow "$B" gamma LICENSE "MIT")
+echo "alpha=$L1 beta=$L2 gamma=$L3"
+
+step "ripen all three (beta cheapest on A)"
+call POST "/leaves/$L1/ripe" '{"checks_passed":3,"checks_total":3,"cost":50}' | jq -c .
+call POST "/leaves/$L2/ripe" '{"checks_passed":3,"checks_total":3,"cost":20}' | jq -c .
+call POST "/leaves/$L3/ripe" '{"checks_passed":3,"checks_total":3,"cost":10}' | jq -c .
+
+step "a ripe leaf's token is revoked: alpha can no longer push"
+( cd "$W/$L1" && echo more >> CONTRIBUTING.md && git commit -qam more -c user.name=a -c user.email=a@a 2>/dev/null; \
+  git -c user.name=a -c user.email=a@a commit -qam more 2>/dev/null; \
+  git -c http.extraHeader="Authorization: Bearer $(cat "$W/token-$L1")" push -q origin HEAD 2>&1 | head -2 ) || true
+
+step "harvest A"
+H=$(call POST "/buds/$A/harvest"); jq -c . <<<"$H"
+
+step "B cannot harvest: gamma grew from the old head"
+call POST "/buds/$B/harvest"; echo
+
+step "regrow gamma from the new head"
+R=$(call POST "/leaves/$L3/regrow"); jq -c '{leaf, base_commit, compost: [.compost[] | {leaf, agent, reason}]}' <<<"$R"
+L4=$(jq -r .leaf <<<"$R"); token=$(jq -r .token <<<"$R"); remote=$(jq -r .remote <<<"$R")
+for i in 1 2 3 4 5 6 7 8 9 10; do git -c http.extraHeader="Authorization: Bearer $token" clone -q "$remote" "$W/$L4" 2>/dev/null && break; rm -rf "$W/$L4"; sleep 2; done
+echo "regrown leaf has beta's fruit: $(cat "$W/$L4/CONTRIBUTING.md")"
+( cd "$W/$L4" && echo MIT > LICENSE && git add LICENSE && git -c user.name=gamma -c user.email=g@ficus.dev commit -qm "gamma: LICENSE" \
+  && git -c http.extraHeader="Authorization: Bearer $token" push -q origin HEAD )
+call POST "/leaves/$L4/ripe" '{"checks_passed":3,"checks_total":3,"cost":10}' | jq -c .
+
+step "harvest B on top of A"
+call POST "/buds/$B/harvest" | jq -c .
+
+step "final tree"
+call GET "" | jq -c '{name, head, nodes: [.nodes[] | {id, parent, commit: .commit[0:8], repo, fruit_of}], compost: [.compost[] | {leaf, agent, reason}]}'
+echo "tree=$T"
