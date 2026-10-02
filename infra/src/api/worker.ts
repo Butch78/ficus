@@ -32,6 +32,15 @@ export class ApiFailure extends Schema.TaggedError<ApiFailure>()("Api.Failure", 
 
 const fail = (status: number, message: string) => new ApiFailure({ status, message });
 
+/** Better Auth's `APIError`, the fields this Worker passes on. */
+const AuthRejection = Schema.Struct({ statusCode: Schema.Number, message: Schema.String });
+
+const isAuthRejection = Schema.is(AuthRejection);
+
+/** Better Auth's own status (401, 429, ...) when it rejected; 503 otherwise. */
+const authFailure = (step: string) => (cause: unknown) =>
+  isAuthRejection(cause) ? fail(cause.statusCode, cause.message) : fail(503, `${step}: ${String(cause)}`);
+
 /** `/v1/orgs/<org>/trees/<tree><rest>`, split; undefined for anything else. */
 export const treeRoute = (pathname: string) => {
   const match = /^\/v1\/orgs\/([^/]+)\/trees\/([^/]+)(\/.*)?$/.exec(pathname);
@@ -54,7 +63,7 @@ const forwardToTree = Effect.fn("Api.forwardToTree")(function* (
 
   const session = yield* Effect.tryPromise({
     try: () => auth.api.getSession({ headers: request.headers }),
-    catch: (cause) => fail(503, `could not check the session: ${String(cause)}`),
+    catch: authFailure("could not check the session"),
   });
 
   if (session === null) {

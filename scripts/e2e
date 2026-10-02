@@ -18,7 +18,9 @@ T="e2e-$(date +%s)"
 W=$(mktemp -d)
 ORG="e2e-org-$(date +%s)"
 JAR="$W/cookies"
-json=(-H "content-type: application/json")
+# Better Auth refuses cookie-authenticated POSTs without an Origin (CSRF);
+# a browser always sends one, curl has to be told.
+json=(-H "content-type: application/json" -H "Origin: $API")
 
 step() { echo; echo "== $*"; }
 

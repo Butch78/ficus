@@ -37,3 +37,6 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   Image: `infra/src/scorer/context` (nix + devenv; binary from `scripts/build-scorer`).
 - The deploy token needs Containers: Edit (registry credentials) on top of Workers, Workers AI, Artifacts.
 - `just e2e` (FICUS_API=https://ficus-dev.fruitcards.workers.dev) runs the full cycle live.
+- After a deploy, old isolates keep serving for a few seconds: wait before judging a change live
+  (an API key minted 7s after a deploy still got the old 10-requests-a-day limit).
+- Better Auth refuses cookie-authenticated POSTs without an `Origin` header (CSRF); scripts must send it.

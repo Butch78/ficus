@@ -28,7 +28,13 @@ export const authOptions = (database: BetterAuthOptions["database"], secret: str
       organization(),
       // A key's session is its owner's: one path (getSession) for browsers
       // and keys alike.
-      apiKey({ enableSessionForAPIKeys: true, apiKeyHeaders: [API_KEY_HEADER] }),
+      apiKey({
+        enableSessionForAPIKeys: true,
+        apiKeyHeaders: [API_KEY_HEADER],
+        // The plugin's default is 10 requests a day, which an agent spends in
+        // seconds. 600 a minute is 10 a second per key.
+        rateLimit: { enabled: true, timeWindow: 60_000, maxRequests: 600 },
+      }),
     ],
   }) satisfies BetterAuthOptions;
 
