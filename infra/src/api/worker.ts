@@ -18,6 +18,7 @@ import * as Schema from "effect/Schema";
 import * as CloudflareTracer from "../observability/tracer.ts";
 import { API_KEY_HEADER, AUTH_BASE_PATH, Auth, layer as authLayer } from "./auth.ts";
 import * as Directory from "./directory.ts";
+import * as Progress from "./progress.ts";
 import { TENANT_HEADER, tenantKey } from "./tenant.ts";
 
 interface Bindings {
@@ -130,14 +131,35 @@ const forwardToTree = Effect.fn("Api.forwardToTree")(function* (
     catch: (cause) => fail(502, `the tree service is unreachable: ${String(cause)}`),
   });
 
+  if (request.method !== "POST" || route.rest !== "/plant" || !response.ok) {
+    return response;
+  }
+
   // A plant the tree service accepted puts the tree in the directory. The
   // plant itself has happened either way, so a failure to record it is
   // logged rather than turned into a failed plant.
-  if (request.method === "POST" && route.rest === "/plant" && response.ok) {
-    yield* Directory.record(env.AUTH_DB, organization.id, route.tree, Date.now()).pipe(
-      Effect.catchTag("Directory.Failure", (error) => Effect.logError(error.message)),
+  const record = Directory.record(env.AUTH_DB, organization.id, route.tree, Date.now()).pipe(
+    Effect.as(Progress.stepLine("record", "complete")),
+    Effect.catchTag("Directory.Failure", (error) =>
+      Effect.logError(error.message).pipe(Effect.as(Progress.stepLine("record", "error"))),
+    ),
+  );
+
+  const streamed = response.headers.get("content-type")?.startsWith(Progress.CONTENT_TYPE) ?? false;
+
+  // A streamed plant answers 200 before it is done: record it once its
+  // outcome says it succeeded, as the stream's last step.
+  if (streamed && response.body !== null) {
+    // The request's services (the tracer among them), for after it returns.
+    const services = yield* Effect.context<never>();
+
+    return new Response(
+      Progress.afterSuccess(response.body, () => Effect.runPromiseWith(services)(record)),
+      response,
     );
   }
+
+  yield* record;
 
   return response;
 });

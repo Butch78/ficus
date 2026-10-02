@@ -59,6 +59,12 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   `Effect.fn`/`withSpan` as a Cloudflare span (scalar annotations → attributes), nested with the platform's own.
   The Api and the UI provide it per request; name spans with `Effect.fn("Area.what")`, annotate with
   `Effect.annotateCurrentSpan`. Never call `cloudflare:workers` `tracing` directly.
+- Live progress: `POST /trees/<t>/plant` with `Accept: application/x-ndjson` streams one JSON line per step
+  (`ficus-core::progress`: import → settle → lock → save, then the outcome, the answer the plain call gives);
+  without that header it answers as before. `TreeObject` holds `Rc<State>` so `plant_streaming` can spawn the
+  work while the response streams. The Api passes the stream through and appends `record` after a 2xx outcome.
+  The UI's `PlantForm` reads it via `/api/plant` and ticks steps off (`lib/plant-progress.ts`), shown with AI
+  Elements' Task and ChainOfThought ported to Kumo (`components/elements/`, Apache-2.0, LICENSE there).
 - "What happened" panel: the UI shows an operation's trace like an agent's tool call: one line
   (`✓ Plant site · 3.7 s`) → steps in words (`lib/activity.ts` `sentence()`/`narrate()`, keyed on span names;
   add a case when you add a span worth telling) → the raw spans. Same-account service bindings share one trace

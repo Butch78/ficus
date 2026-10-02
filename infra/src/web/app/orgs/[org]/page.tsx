@@ -1,30 +1,26 @@
-import { Empty, Input, LayerCard, Link, Table, Text } from "@cloudflare/kumo";
-import { ActivityPanel } from "../../../components/activity-panel.tsx";
+import { Empty, LayerCard, Link, Table, Text } from "@cloudflare/kumo";
 import { FailureBanner } from "../../../components/failure-banner.tsx";
 import { PageHeader } from "../../../components/page-header.tsx";
-import { SubmitButton } from "../../../components/submit-button.tsx";
+import { PlantForm } from "../../../components/plant-form.tsx";
 import * as Api from "../../../lib/api.ts";
 import { load } from "../../../lib/run.ts";
-import { plantTree } from "../../actions.ts";
 import { LayerCardPrimary, LayerCardSecondary, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../../components/kumo.ts";
 
 export const dynamic = "force-dynamic";
 
 interface Props {
   readonly params: Promise<{ org: string }>;
-  /** `trace`: the operation whose Cloudflare trace to show (a refused plant). */
-  readonly searchParams: Promise<{ error?: string; trace?: string }>;
+  readonly searchParams: Promise<{ error?: string }>;
 }
 
 export default async function Organization({ params, searchParams }: Props) {
-  const [{ org }, { error, trace }] = await Promise.all([params, searchParams]);
+  const [{ org }, { error }] = await Promise.all([params, searchParams]);
   const { trees } = await load(Api.trees(org));
 
   return (
     <>
       <PageHeader trail={[["Organizations", "/"]]} title={org} />
       <FailureBanner error={error} />
-      {trace === undefined ? null : <ActivityPanel org={org} operation={trace} title="Plant" refused />}
       {trees.length === 0 ? (
         <Empty title="No trees yet" description="Plant one from a public git remote below." />
       ) : (
@@ -60,22 +56,10 @@ export default async function Organization({ params, searchParams }: Props) {
         <LayerCardSecondary>Plant a tree</LayerCardSecondary>
         <LayerCardPrimary className="flex flex-col gap-3">
           <Text variant="secondary" size="sm">
-            From a public HTTPS git remote: its default branch becomes the root. Importing takes up to a minute. Buds
-            and leaves come from agents, through the Api.
+            From a public HTTPS git remote: its default branch becomes the root. You will see each step as it happens.
+            Buds and leaves come from agents, through the Api.
           </Text>
-          <form action={plantTree} className="flex flex-wrap items-end gap-2">
-            <input type="hidden" name="org" value={org} />
-            <Input name="tree" label="Name" placeholder="site" pattern="[A-Za-z0-9._\-]{1,40}" required />
-            <Input
-              name="source"
-              type="url"
-              label="Source"
-              placeholder="https://github.com/owner/repo"
-              className="min-w-80"
-              required
-            />
-            <SubmitButton pending="Planting…">Plant</SubmitButton>
-          </form>
+          <PlantForm org={org} />
         </LayerCardPrimary>
       </LayerCard>
     </>

@@ -2,6 +2,7 @@
 //! builds and tests natively under `cargo nextest run`.
 
 pub mod browse;
+pub mod progress;
 pub mod scoring;
 pub mod tenant;
 pub mod tree;

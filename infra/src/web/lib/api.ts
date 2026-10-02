@@ -98,15 +98,44 @@ export const createOrganization = (name: string, slug: string) =>
 
 export const trees = (org: string) => get(Answers.PlantedTrees, `/v1/orgs/${encodeURIComponent(org)}/trees`);
 
+/** Progress lines, one JSON object each (crates/ficus-core/src/progress.rs). */
+export const PROGRESS = "application/x-ndjson";
+
 /**
- * Plant, as the `ficus.plant` span: marked with `operation` and the
- * organization, which is how its Cloudflare trace is found again
+ * Plant, streaming its progress: the Api's response, unread, once it has
+ * accepted the plant. As the `ficus.plant` span, marked with `operation` and
+ * the organization, which is how its Cloudflare trace is found again
  * (lib/trace.ts) to show what happened.
  */
 export const plant = Effect.fn("ficus.plant")(function* (org: string, name: string, source: string, operation: string) {
   yield* Effect.annotateCurrentSpan({ [OPERATION_ATTRIBUTE]: operation, [ORG_ATTRIBUTE]: org, "ficus.tree": name });
 
-  return yield* send("POST", `${tree(org, name)}/plant`, JSON.stringify({ source }));
+  const upstream = yield* Upstream;
+  const headers = new Headers({ origin: upstream.origin, accept: PROGRESS, "content-type": "application/json" });
+
+  if (upstream.cookie !== undefined) {
+    headers.set("cookie", upstream.cookie);
+  }
+
+  const response = yield* Effect.tryPromise({
+    try: () =>
+      upstream.api.fetch(
+        new Request(new URL(`${tree(org, name)}/plant`, upstream.origin), {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ source }),
+        }),
+      ),
+    catch: (cause) => new ApiError({ status: 502, message: `the Api is unreachable: ${String(cause)}` }),
+  });
+
+  if (!response.ok) {
+    const text = yield* Effect.promise(() => response.text());
+
+    return yield* new ApiError({ status: response.status, message: reason(response.status, text) });
+  }
+
+  return response;
 });
 
 export const showTree = (org: string, name: string) => get(Answers.Tree, tree(org, name));

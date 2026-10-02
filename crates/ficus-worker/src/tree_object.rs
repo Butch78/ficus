@@ -6,11 +6,14 @@
 //! Where a handler needs Artifacts both before and after a change, it reloads
 //! the tree after the await rather than reusing the copy it read before.
 
+use std::rc::Rc;
 use std::time::Duration;
 
 use ficus_core::browse::{FilePath, GitRef, Subject};
+use ficus_core::progress::{CONTENT_TYPE as PROGRESS, InitStep, StepState};
 use ficus_core::scoring::{CheckSpec, RebaseReport, RebaseRequest, ScoreReport, ScoreRequest};
 use ficus_core::tree::{AttemptId, HistoryEntry, NodeId, Oid, RepoName, TaskId, Tree, TreeError};
+use futures_util::StreamExt;
 use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use worker::{
@@ -19,6 +22,7 @@ use worker::{
 };
 
 use crate::artifacts::{ArtifactsError, CommitMetadata, Namespace, Repo, Scope};
+use crate::progress::Progress;
 
 const TREE_KEY: &str = "tree";
 /// How long `init` waits for an import before giving up: 30 polls, 2s apart.
@@ -40,7 +44,8 @@ const SCORING_RETRY: Duration = Duration::from_secs(60);
 
 #[durable_object]
 pub struct TreeObject {
-    state: State,
+    /// Shared, so work that outlives a request (a streamed init) can hold it.
+    state: Rc<State>,
     env: Env,
 }
 
@@ -95,7 +100,10 @@ struct Started {
 
 impl DurableObject for TreeObject {
     fn new(state: State, env: Env) -> Self {
-        Self { state, env }
+        Self {
+            state: Rc::new(state),
+            env,
+        }
     }
 
     /// Rebases first: they turn behind attempts into checking ones, which
@@ -139,7 +147,14 @@ impl DurableObject for TreeObject {
                 Ok(node) => self.read(Subject::Node(node), read, &req).await,
                 Err(_) => Response::error("node id must be a number", 400),
             },
-            (Method::Post, ["init"]) => self.init(name, req.json().await?).await,
+            (Method::Post, ["init"]) => {
+                let body = req.json().await?;
+                if wants_progress(&req)? {
+                    self.init_streaming(name, body)
+                } else {
+                    self.init(name, body, &Progress::silent()).await
+                }
+            }
             (Method::Post, ["tasks"]) => self.task(req.json().await?).await,
             (Method::Post, ["tasks", task, "attempts"]) => match task.parse() {
                 Ok(task) => self.start(task, req.json().await?).await,
@@ -634,14 +649,55 @@ impl TreeObject {
         }
     }
 
-    /// Import `source` as the tree's root repo and init the tree on its head.
-    async fn init(&self, name: RepoName, body: InitBody) -> Result<Response> {
+    /// Another handle on this object, for work that outlives the request.
+    fn handle(&self) -> Self {
+        Self {
+            state: Rc::clone(&self.state),
+            env: self.env.clone(),
+        }
+    }
+
+    /// Init, answering at once with a stream of its steps as they happen
+    /// and, last, the answer `init` would have given.
+    fn init_streaming(&self, name: RepoName, body: InitBody) -> Result<Response> {
+        let (sender, receiver) = futures_channel::mpsc::unbounded::<Vec<u8>>();
+        let this = self.handle();
+        wasm_bindgen_futures::spawn_local(async move {
+            let progress = Progress::to(sender);
+            let answer = match this.init(name, body, &progress).await {
+                Ok(answer) => answer,
+                Err(error) => match Response::error(error.to_string(), 500) {
+                    Ok(answer) => answer,
+                    Err(_) => return,
+                },
+            };
+            progress.outcome(answer).await;
+        });
+        let headers = Headers::new();
+        headers.set("content-type", PROGRESS)?;
+        headers.set("cache-control", "no-store")?;
+        Ok(Response::from_stream(receiver.map(Ok::<_, worker::Error>))?.with_headers(headers))
+    }
+
+    /// Import `source` as the tree's root repo and init the tree on its head,
+    /// telling `progress` each step as it starts and ends.
+    async fn init(
+        &self,
+        name: RepoName,
+        body: InitBody,
+        progress: &Progress,
+    ) -> Result<Response> {
         if self.load().await?.is_some() {
             return Response::error("tree already initialized", 409);
         }
         let artifacts = self.artifacts()?;
+        let failed = |step: InitStep, error: &ArtifactsError| {
+            progress.step(step, StepState::Error, Some(&error.to_string()));
+            artifacts_error(error)
+        };
         let head = match body.source {
             Some(source) => {
+                progress.step(InitStep::Import, StepState::Active, Some(&source));
                 // ALREADY_EXISTS means an earlier init got this far and then
                 // timed out; carry on and pick up the repo it imported.
                 match artifacts
@@ -650,15 +706,19 @@ impl TreeObject {
                 {
                     Ok(_) => {}
                     Err(error) if error.is("ALREADY_EXISTS") => {}
-                    Err(error) => return artifacts_error(&error),
+                    Err(error) => return failed(InitStep::Import, &error),
                 }
-                match settled_head(&artifacts, &name).await? {
-                    Some(head) => head,
+                progress.step(InitStep::Import, StepState::Complete, None);
+                progress.step(InitStep::Settle, StepState::Active, None);
+                match settled_head(&artifacts, &name, progress).await? {
+                    Some(head) => {
+                        progress.step(InitStep::Settle, StepState::Complete, Some(head.as_str()));
+                        head
+                    }
                     None => {
-                        return Response::error(
-                            "import has not finished; init again to pick it up",
-                            504,
-                        );
+                        let late = "import has not finished; init again to pick it up";
+                        progress.step(InitStep::Settle, StepState::Error, Some(late));
+                        return Response::error(late, 504);
                     }
                 }
             }
@@ -666,7 +726,14 @@ impl TreeObject {
                 Ok(repo) => match repo.history(1).await {
                     Ok(history) => match history.first() {
                         Some(head) => match Oid::try_from(head.hash.clone()) {
-                            Ok(head) => head,
+                            Ok(head) => {
+                                progress.step(
+                                    InitStep::ReadHead,
+                                    StepState::Complete,
+                                    Some(head.as_str()),
+                                );
+                                head
+                            }
                             Err(error) => return tree_error(&error),
                         },
                         None => {
@@ -676,11 +743,17 @@ impl TreeObject {
                             );
                         }
                     },
-                    Err(error) => return artifacts_error(&error),
+                    Err(error) => return failed(InitStep::ReadHead, &error),
                 },
                 Err(error) if error.is("NOT_FOUND") => {
+                    progress.step(InitStep::Create, StepState::Active, None);
                     return match artifacts.create(&name, "ficus root").await {
                         Ok(created) => {
+                            progress.step(
+                                InitStep::Create,
+                                StepState::Complete,
+                                Some(&created.remote),
+                            );
                             let mut response = Response::from_json(&serde_json::json!({
                                 "state": "awaiting root",
                                 "remote": created.remote,
@@ -690,20 +763,22 @@ impl TreeObject {
                             response = response.with_status(202);
                             Ok(response)
                         }
-                        Err(error) => artifacts_error(&error),
+                        Err(error) => failed(InitStep::Create, &error),
                     };
                 }
-                Err(error) => return artifacts_error(&error),
+                Err(error) => return failed(InitStep::ReadHead, &error),
             },
         };
+        progress.step(InitStep::Lock, StepState::Active, None);
         let repo = match artifacts.repo(&name).await {
             Ok(repo) => repo,
-            Err(error) => return artifacts_error(&error),
+            Err(error) => return failed(InitStep::Lock, &error),
         };
         // The root repo is only ever read through forks; nobody pushes to it.
         if let Err(error) = repo.revoke_active_tokens().await {
-            return artifacts_error(&error);
+            return failed(InitStep::Lock, &error);
         }
+        progress.step(InitStep::Lock, StepState::Complete, None);
         if self.load().await?.is_some() {
             return Response::error("tree already initialized", 409);
         }
@@ -711,7 +786,9 @@ impl TreeObject {
             Ok(tree) => tree,
             Err(error) => return tree_error(&error),
         };
+        progress.step(InitStep::Save, StepState::Active, None);
         self.save(&tree).await?;
+        progress.step(InitStep::Save, StepState::Complete, None);
         Response::from_json(&tree)
     }
 
@@ -984,10 +1061,22 @@ enum RebaseOutcome {
     Failed(String),
 }
 
+/// Whether the caller asked to hear an operation's steps as they happen.
+fn wants_progress(req: &Request) -> Result<bool> {
+    Ok(req
+        .headers()
+        .get("accept")?
+        .is_some_and(|accept| accept.contains(PROGRESS)))
+}
+
 /// The head of `name` once its import has landed, or `None` if it has not
-/// within `IMPORT_POLLS`.
-async fn settled_head(artifacts: &Namespace, name: &RepoName) -> Result<Option<Oid>> {
-    for _ in 0..IMPORT_POLLS {
+/// within `IMPORT_POLLS`. Each wait is a `Settle` step with its attempt.
+async fn settled_head(
+    artifacts: &Namespace,
+    name: &RepoName,
+    progress: &Progress,
+) -> Result<Option<Oid>> {
+    for attempt in 1..=IMPORT_POLLS {
         match artifacts.repo(name).await {
             Ok(repo) => match repo.history(1).await {
                 Ok(history) => {
@@ -1002,6 +1091,13 @@ async fn settled_head(artifacts: &Namespace, name: &RepoName) -> Result<Option<O
             Err(error) if error.is("IMPORT_IN_PROGRESS") || error.is("CREATE_IN_PROGRESS") => {}
             Err(error) => return Err(worker::Error::RustError(error.to_string())),
         }
+        progress.step(
+            InitStep::Settle,
+            StepState::Active,
+            Some(&format!(
+                "still importing, check {attempt} of {IMPORT_POLLS}"
+            )),
+        );
         worker::Delay::from(std::time::Duration::from_millis(IMPORT_POLL_MS)).await;
     }
     Ok(None)

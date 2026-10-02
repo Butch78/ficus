@@ -102,7 +102,8 @@ reimplementation of the Next.js API) on Workers, styled with [Kumo](https://kumo
 design system), deployed as its own alchemy stack (`web.run.ts`)
 next to the Api it talks to over a service binding. Sign in, browse your organizations and trees
 (buds → leaves → fruit, each leaf's state and scoring report), and read any leaf's or node's repo
-(history, directories, files) through Artifacts. After an operation such as a plant, a "What happened"
+(history, directories, files) through Artifacts. A plant shows each step live as the tree streams it
+(`Accept: application/x-ndjson` on the Api gives agents the same), and afterwards a "What happened"
 panel replays its Cloudflare trace, one trace from the UI through the Api to the tree's Durable Object
 and Artifacts. Every pull request's preview comment links it.
 

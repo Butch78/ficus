@@ -6,6 +6,7 @@
 #   plant a tree through the Api with the key: empty root, push demo root, plant
 #   read it back as the UI shows it: the organization, its trees, the tree,
 #   and the root's repo (history, directory, a file) through Artifacts
+#   plant from a remote with progress streamed (application/x-ndjson)
 #
 # Needs FICUS_WEB (the UI's URL) and FICUS_API (the Api's URL).
 set -euo pipefail
@@ -64,6 +65,16 @@ expect "/orgs/$ORG/trees/$T/nodes/0" "demo root"
 expect "/orgs/$ORG/trees/$T/nodes/0" "slug.py"
 expect "/orgs/$ORG/trees/$T/nodes/0?path=tests" "test_slug.py"
 expect "/orgs/$ORG/trees/$T/nodes/0?file=slug.py" "def slugify"
+
+step "a plant streams its steps as they happen, then its outcome, then the Api's record"
+lines=$(curl -sN -X POST -H "x-api-key: $KEY" -H "content-type: application/json" -H "accept: application/x-ndjson" \
+  "$API/v1/orgs/$ORG/trees/$T-streamed/plant" -d '{"source":"https://github.com/Butch78/ficus"}')
+jq -c 'select(.kind == "step") | [.step, .state]' <<<"$lines" | uniq | tr '\n' ' '; echo
+for want in '"step":"import","state":"complete"' '"step":"lock","state":"complete"' '"step":"save","state":"complete"' '"kind":"outcome","status":200' '"step":"record","state":"complete"'; do
+  grep -qF "$want" <<<"$lines" || { echo "FAIL: the stream has no $want" >&2; exit 1; }
+done
+[ "$(tail -1 <<<"$lines" | jq -r .step)" = record ] || { echo "FAIL: the Api's record is not the last line" >&2; exit 1; }
+expect "/orgs/$ORG" "$T-streamed"
 
 step "another organization's tree is a 404"
 [ "$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$WEB/orgs/somebody-else/trees/$T")" = 404 ] || { echo "FAIL: expected 404" >&2; exit 1; }

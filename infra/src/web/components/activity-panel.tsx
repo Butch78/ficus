@@ -2,16 +2,18 @@
 
 /**
  * What an operation did, from its Cloudflare trace, shown like an agent's
- * tool call: one line, which opens to the steps in words, which open to the
- * raw spans. Traces arrive about 15-20 seconds after the work, so it waits,
+ * task (AI Elements' Task and ChainOfThought, ported to Kumo): one line,
+ * which opens to the steps in words, which open to the raw spans. Traces arrive about 15-20 seconds after the work, so it waits,
  * then fills in, then stops once the trace has stopped growing.
  */
-import { Badge, Collapsible, LayerCard, Loader, Text } from "@cloudflare/kumo";
-import { CheckCircleIcon, CheckIcon, WarningCircleIcon } from "@phosphor-icons/react";
+import { Badge, LayerCard, Loader, Text } from "@cloudflare/kumo";
+import { CheckCircleIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { useEffect, useState } from "react";
 import { narrate } from "../lib/activity.ts";
+import { ChainOfThought, ChainOfThoughtStep } from "./elements/chain-of-thought.tsx";
+import { Task, TaskContent, TaskTrigger } from "./elements/task.tsx";
 
 const Step = Schema.Struct({
   id: Schema.String,
@@ -82,94 +84,63 @@ const status = (view: View, total: number | undefined) => {
 export function ActivityPanel({ org, operation, title, refused }: Props) {
   const view = useTrace(org, operation);
   const found = view.kind === "steps" ? view.steps : [];
-  const total = found[0]?.duration;
+  // The whole trace's extent: a streamed operation's own span closes as soon
+  // as its response starts, long before the work under it is done.
+  const total = found.length === 0 ? undefined : Math.max(...found.map((step) => step.offset + step.duration));
 
   return (
     <LayerCard>
-      <LayerCard.Primary className="py-2">
-        <Collapsible.Root>
-          <Collapsible.DefaultTrigger>
-            <span className="inline-flex items-center gap-2">
-              {view.kind === "waiting" ? (
+      <LayerCard.Primary className="py-3">
+        <Task defaultOpen={false}>
+          <TaskTrigger
+            icon={
+              view.kind === "waiting" ? (
                 <Loader size={14} />
               ) : refused ? (
                 <WarningCircleIcon size={16} className="text-kumo-danger" />
               ) : (
                 <CheckCircleIcon size={16} className="text-kumo-success" />
-              )}
-              <Text as="span" size="sm" bold>
-                {title}
+              )
+            }
+            title={title}
+            detail={status(view, total)}
+          />
+          <TaskContent>
+            {view.kind === "waiting" ? (
+              <Text variant="secondary" size="sm">
+                Cloudflare makes a trace readable about 15-20 seconds after the work; this fills in when it does.
               </Text>
-              <Text variant="secondary" as="span" size="sm">
-                · {status(view, total)}
+            ) : null}
+            {view.kind === "unavailable" ? (
+              <Text variant="secondary" size="sm">
+                No trace to show: {view.reason}.
               </Text>
-            </span>
-          </Collapsible.DefaultTrigger>
-          <Collapsible.DefaultPanel>
-            <div className="flex flex-col gap-3 pt-2">
-              {view.kind === "waiting" ? (
-                <Text variant="secondary" size="sm">
-                  Cloudflare makes a trace readable about 15-20 seconds after the work; this fills in when it does.
-                </Text>
-              ) : null}
-              {view.kind === "unavailable" ? (
-                <Text variant="secondary" size="sm">
-                  No trace to show: {view.reason}.
-                </Text>
-              ) : null}
-              {view.kind === "steps" ? <Story steps={view.steps} settled={view.settled} /> : null}
-              {view.kind === "steps" ? (
-                <Collapsible.Root>
-                  <Collapsible.DefaultTrigger>
-                    <Text variant="secondary" as="span" size="xs">
-                      Spans ({view.steps.length}), as Cloudflare traced them
-                    </Text>
-                  </Collapsible.DefaultTrigger>
-                  <Collapsible.DefaultPanel>
+            ) : null}
+            {view.kind === "steps" ? (
+              <>
+                <ChainOfThought>
+                  {narrate(view.steps).map((sentence) => (
+                    <ChainOfThoughtStep
+                      key={`${sentence.offset}-${sentence.text}`}
+                      status={sentence.failed ? "error" : "complete"}
+                      label={sentence.text}
+                      aside={seconds(sentence.duration)}
+                    />
+                  ))}
+                  {view.settled ? null : <ChainOfThoughtStep status="active" label="More of the trace may still arrive" />}
+                </ChainOfThought>
+                <Task defaultOpen={false}>
+                  <TaskTrigger title={`Spans (${view.steps.length})`} detail="as Cloudflare traced them" />
+                  <TaskContent>
                     <Waterfall steps={view.steps} />
-                  </Collapsible.DefaultPanel>
-                </Collapsible.Root>
-              ) : null}
-            </div>
-          </Collapsible.DefaultPanel>
-        </Collapsible.Root>
+                  </TaskContent>
+                </Task>
+              </>
+            ) : null}
+          </TaskContent>
+        </Task>
       </LayerCard.Primary>
     </LayerCard>
-  );
-}
-
-/** The trace in words: one line per thing that happened to the person's tree. */
-function Story({ steps, settled }: { readonly steps: ReadonlyArray<Step>; readonly settled: boolean }) {
-  const told = narrate(steps);
-
-  return (
-    <ol className="flex flex-col gap-1">
-      {told.map((sentence) => (
-        <li key={`${sentence.offset}-${sentence.text}`} className="flex items-center justify-between gap-3">
-          <span className="inline-flex items-center gap-2">
-            {sentence.failed ? (
-              <WarningCircleIcon size={14} className="text-kumo-danger" />
-            ) : (
-              <CheckIcon size={14} className="text-kumo-success" />
-            )}
-            <Text as="span" size="sm">
-              {sentence.text}
-            </Text>
-          </span>
-          <Text variant="secondary" as="span" size="xs">
-            {seconds(sentence.duration)}
-          </Text>
-        </li>
-      ))}
-      {settled ? null : (
-        <li className="inline-flex items-center gap-2">
-          <Loader size={12} />
-          <Text variant="secondary" as="span" size="xs">
-            more of the trace may still arrive
-          </Text>
-        </li>
-      )}
-    </ol>
   );
 }
 

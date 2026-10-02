@@ -108,6 +108,7 @@ name = "ficus-worker"
 version = "0.1.0"
 dependencies = [
  "ficus-core",
+ "futures-channel",
  "futures-util",
  "js-sys",
  "serde",
