@@ -1,0 +1,75 @@
+{
+  "$schema": "./node_modules/@effect/tsgo/oxlint-schema.json",
+  // Two layers, both mechanical. Judgement calls that no AST rule can make
+  // (a comment that restates its code, a name that says the shape not the
+  // role) go to Clef instead: see src/clef/review.ts.
+  //
+  // 1. @effect/tsgo, type-aware: the correctness tier blocks, the antipattern
+  //    tier advises. Re-sync the list below when a new @effect/tsgo adds a
+  //    correctness rule; it arrives as "warn" until it is listed here.
+  // 2. anti-slop (vendored at tools/oxlint/anti-slop, ours to edit): rejects
+  //    constructs that claim evidence nobody established, plus its Effect
+  //    group, since this package is Effect throughout.
+  "extends": [
+    "./node_modules/@effect/tsgo/oxlint-presets/correctness.json",
+    "./node_modules/@effect/tsgo/oxlint-presets/antipattern.json"
+  ],
+  "options": { "typeAware": true },
+  "jsPlugins": [
+    { "name": "anti-slop", "specifier": "./tools/oxlint/anti-slop/index.ts" },
+    { "name": "anti-slop-effect", "specifier": "./tools/oxlint/anti-slop/effect/index.ts" }
+  ],
+  "ignorePatterns": ["node_modules", ".alchemy", ".claude/**", "tools/oxlint/anti-slop/**"],
+  "categories": { "correctness": "error" },
+  "rules": {
+    // Effect.gen / Effect.fn take a generator even when nothing is yielded.
+    "eslint/require-yield": "off",
+    "eslint/complexity": ["error", { "max": 20 }],
+    "effecttsgo/any-unknown-in-error-context": "error",
+    "effecttsgo/class-self-mismatch": "error",
+    "effecttsgo/duplicate-package": "error",
+    "effecttsgo/effect-fn-implicit-any": "error",
+    "effecttsgo/floating-effect": "error",
+    "effecttsgo/floating-effect-in-vitest": "error",
+    "effecttsgo/generic-effect-services": "error",
+    "effecttsgo/missing-effect-context": "error",
+    "effecttsgo/missing-effect-error": "error",
+    "effecttsgo/missing-layer-context": "error",
+    "effecttsgo/missing-return-yield-star": "error",
+    "effecttsgo/missing-star-in-yield-effect-gen": "error",
+    "effecttsgo/non-object-effect-service-type": "error",
+    "effecttsgo/obsolete-match-import": "error",
+    "effecttsgo/obsolete-schema-import": "error",
+    "effecttsgo/outdated-api": "error",
+    "effecttsgo/overridden-schema-constructor": "error",
+    "effecttsgo/promise-in-effect-success": "error",
+    "effecttsgo/schema-literal-non-finite": "error",
+    "effecttsgo/schema-opaque-instance-member": "error",
+    "effecttsgo/unsafe-effect-type-assertion": "error",
+
+    "oxc/no-accumulating-spread": "error",
+    "anti-slop/no-array-filter-map": "error",
+    "anti-slop/no-reduce-accumulator-copy": "error",
+    "anti-slop/no-chained-type-assertions": "error",
+    "anti-slop/no-conditional-empty-object-spread": "error",
+    "anti-slop/no-known-value-widening": "error",
+    "anti-slop/no-module-mocking": "error",
+    "anti-slop/no-object-parameters": "error",
+    "anti-slop/no-reflect-apply": "error",
+    "anti-slop/no-reflect-get": "error",
+    "anti-slop/no-runtime-typeof": "error",
+    "anti-slop/no-shape-in-symbol-names": "error",
+    "anti-slop/no-unknown-parameters": "error",
+    "anti-slop/no-unknown-returns": "error",
+    "anti-slop/no-unknown-type-aliases": "error",
+    "anti-slop/no-unsafe-dictionary-type": "error",
+    "anti-slop/no-widen-then-assert": "error",
+    "anti-slop/require-readable-spacing": "error",
+    "anti-slop/require-safety-comment-for-type-assertion": "error",
+    "anti-slop-effect/no-manual-effect-error-tag": "error",
+    "anti-slop-effect/no-manual-tag-comparison": "error",
+    "anti-slop-effect/no-manual-tagged-construction": "error",
+    "anti-slop-effect/no-service-constructor-imports": "error",
+    "anti-slop-effect/prefer-effect-match": "error"
+  }
+}

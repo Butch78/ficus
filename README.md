@@ -26,6 +26,17 @@ just fl               # fmt + clippy (native and wasm32)
   target: libc + an in-memory filesystem, so `std::fs` and C-backed crates work.
   Standalone crate (own lockfile) built with `worker-build --emscripten`.
 
+## Infra and lint
+
+- `infra/` deploys with [alchemy](https://alchemy.run) (`just deploy`) and is Effect throughout.
+- `just infra-check`: typecheck, then oxlint with `@effect/tsgo`'s type-aware rules and the
+  vendored [anti-slop](https://github.com/dmmulroy/anti-slop) rules (generic + Effect).
+- `just clef-review`: asks Cloudflare's [Clef](https://blog.cloudflare.com/clef-decision-models/)
+  decision model the judgement calls a linter cannot make (restating comments, swallowed
+  failures, unparsed boundaries, tests that cannot fail) about changed TypeScript.
+
+Credentials go in `~/.config/ficus/.env` (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`).
+
 ## License
 
 MIT

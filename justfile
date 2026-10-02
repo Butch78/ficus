@@ -29,6 +29,23 @@ fl:
     cargo clippy -p ficus-worker --target wasm32-unknown-unknown -- -D warnings
     cargo clippy --manifest-path crates/ficus-git/Cargo.toml --target wasm32-unknown-emscripten -- -D warnings
 
+# Typecheck + lint (effect-tsgo, anti-slop) + test infra/
+infra-check:
+    cd infra && bun install --frozen-lockfile && bun run typecheck && bun run lint && bun run test
+
+# Ask Clef the judgement-call anti-slop questions about changed infra/ TypeScript
+clef-review base="HEAD":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd infra
+    files=$(git diff --name-only --diff-filter=d --relative "{{base}}" -- '*.ts' | grep -v '^tools/' || true)
+    if [ -z "$files" ]; then echo "no changed .ts files"; exit 0; fi
+    bun run clef-review $files
+
+# Deploy the main Worker through alchemy (STAGE defaults to dev)
 deploy:
-    wrangler deploy
+    cd infra && bun run deploy
+
+# Deploy the emscripten git engine Worker
+git-deploy:
     cd crates/ficus-git && wrangler deploy

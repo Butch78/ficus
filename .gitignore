@@ -7,3 +7,4 @@ build/
 devenv.local.nix
 .dev.vars
 node_modules
+.alchemy/

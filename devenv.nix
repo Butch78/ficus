@@ -2,7 +2,7 @@
 #
 # Rust comes from rust-toolchain.toml (the one source of the version), via
 # rust-overlay. Everything else a recipe shells out to is declared below.
-{ pkgs, ... }:
+{ pkgs, lib, config, ... }:
 
 let
   ficus = import ./nix/packages.nix { inherit pkgs; };
@@ -36,14 +36,25 @@ in
     # starts a rival server instead of attaching to the warm cache.
     sccache
 
+    # infra/: alchemy stacks, Effect, oxlint.
+    ficus.bun
+
     git
     jq
     curl
   ];
 
+  # Filtered rather than defaulted to "": Effect's Config treats an empty
+  # string as a value, so a missing token must stay absent.
+  env = lib.filterAttrs (_: v: v != null) {
+    CLOUDFLARE_ACCOUNT_ID = config.secretspec.secrets.CLOUDFLARE_ACCOUNT_ID or null;
+    CLOUDFLARE_API_TOKEN = config.secretspec.secrets.CLOUDFLARE_API_TOKEN or null;
+  };
+
   enterTest = ''
     cargo --version
     worker-build --version
     wrangler --version
+    bun --version
   '';
 }

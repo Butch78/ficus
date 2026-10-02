@@ -1,0 +1,31 @@
+{
+  "name": "ficus-infra",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.2",
+  "scripts": {
+    "plan": "bun --bun alchemy plan alchemy.run.ts --stage ${STAGE:-dev}",
+    "deploy": "bun --bun alchemy deploy alchemy.run.ts --stage ${STAGE:-dev} --yes",
+    "destroy": "bun --bun alchemy destroy alchemy.run.ts --stage ${STAGE:-dev}",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "test": "bun test ./src/",
+    "clef-review": "bun --bun ./src/clef/review.ts",
+    "prepare": "effect-tsgo patch --typescript --oxlint"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "4.0.0",
+    "alchemy": "2.0.0-beta.80",
+    "effect": "4.0.0"
+  },
+  "devDependencies": {
+    "@effect/tsgo": "0.47.2",
+    "@oxlint/plugins": "1.86.0",
+    "@types/bun": "1.4.2",
+    "oxlint": "1.86.0",
+    "oxlint-tsgolint": "7.0.2003",
+    "typescript": "7.0.2"
+  }
+}

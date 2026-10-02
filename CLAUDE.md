@@ -12,3 +12,11 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
 - nixpkgs' wrangler/workerd caps `compatibility_date` at 2026-09-10.
 - On expanse-5950x the shared sccache daemon runs as gh-runner and cannot write a
   root-owned target/: build as root with `RUSTC_WRAPPER=""`.
+- `ficus-core::tree`: the tree model (bud → leaves → harvest → fruit node; stale leaves
+  regrow, never merge; pruned leaves go to compost). Keep its matches exhaustive.
+- `infra/`: alchemy 2.0.0-beta.80 + Effect 4.0.0 + bun 1.4.2 (nix pin). `just infra-check`
+  after TS changes. Effect's HttpClient is unstable and lint-rejected — use fetch at the boundary.
+- Lint layers: oxlint with @effect/tsgo (type-aware) + vendored anti-slop at
+  `infra/tools/oxlint/anti-slop` (ours to edit; UPSTREAM-COMMIT records the source).
+  Judgement-call slop rules go to Clef (`@cf/cloudflare/clef`): `just clef-review`.
+- Secrets: secretspec, `~/.config/ficus/.env`. Agents must set SECRETSPEC_REASON to enter the shell.

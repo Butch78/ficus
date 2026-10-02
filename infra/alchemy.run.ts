@@ -1,0 +1,56 @@
+// The Ficus stack: the main Worker (crates/ficus-worker), Rust compiled to
+// wasm32 and packaged by worker-build.
+//
+//   bun run plan | deploy | destroy        STAGE defaults to dev
+import * as Alchemy from "alchemy";
+import * as Cloudflare from "alchemy/Cloudflare";
+import * as Command from "alchemy/Command";
+import * as Output from "alchemy/Output";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+
+// Stated here rather than inherited from alchemy's default, which moves
+// between alchemy releases: the runtime's behaviour is ours to pin.
+const COMPATIBILITY = { date: "2026-09-10" } as const;
+
+export default Alchemy.Stack(
+  "Ficus",
+  {
+    providers: Layer.mergeAll(Cloudflare.providers(), Command.providers()),
+    state: Cloudflare.state(),
+  },
+  Effect.gen(function* () {
+    const { stage } = yield* Alchemy.Stack;
+
+    const bundle = yield* Command.Build("WorkerBundle", {
+      cwd: "../crates/ficus-worker",
+      command: "worker-build --release",
+      outdir: "build",
+      // The memo hashes what `include` matches, never `command`: this file
+      // is listed so a changed build line rebuilds.
+      memo: {
+        include: [
+          "**/*",
+          "../ficus-core/**",
+          "../../Cargo.toml",
+          "../../Cargo.lock",
+          "../../rust-toolchain.toml",
+          "../../infra/alchemy.run.ts",
+        ],
+        lockfile: false,
+      },
+    });
+
+    const worker = yield* Cloudflare.Worker("Worker", {
+      name: `ficus-${stage}`,
+      // index.js, not build/worker/shim.mjs: the shim is a back-compat
+      // re-export that only resolves the wasm under one bundling mode.
+      main: "../crates/ficus-worker/build/index.js",
+      compatibility: COMPATIBILITY,
+      // The edge that orders the build before the upload.
+      env: { FICUS_BUNDLE_HASH: Output.map(bundle.hash.output, (hash) => hash ?? "unhashed") },
+    });
+
+    return { url: worker.url.as<string>() };
+  }),
+);
