@@ -1,6 +1,6 @@
 //! The scorer's HTTP face, for the `ScorerContainer` Durable Object:
 //! `GET /health` and `POST /score` (a `ScoreRequest`, answered with a
-//! `ScoreReport`).
+//! `ScoreReport`), plus the agent sandbox (`POST /fs/<op>`, `POST /exec`).
 
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -27,7 +27,9 @@ async fn main() -> std::io::Result<()> {
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_owned());
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
-        .route("/score", post(score));
+        .route("/score", post(score))
+        .route("/fs/{op}", post(ficus_scorer::sandbox::fs))
+        .route("/exec", post(ficus_scorer::sandbox::exec));
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     eprintln!("ficus-scorer listening on {port}");
     axum::serve(listener, app).await

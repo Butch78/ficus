@@ -2,6 +2,8 @@
 //! commit, run the root's checks (inside the root's devenv when it has one),
 //! and measure the diff.
 
+pub mod sandbox;
+
 use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
