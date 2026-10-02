@@ -46,6 +46,11 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/devenv
+      # Before the deploy, not inside it: alchemy builds the scorer image in a
+      # phase that does not wait for the ScorerBinary build, so the image could
+      # copy a missing (or an old) binary.
+      - name: Build the scorer binary
+        run: devenv shell -- scripts/build-scorer
       - name: Deploy
         id: deploy
         working-directory: infra

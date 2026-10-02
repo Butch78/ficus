@@ -342,6 +342,32 @@ pub struct Behind {
     pub rebase: Option<AttemptId>,
 }
 
+/// Where an attempt stands in its task, as of now (`Tree::standings`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Standing {
+    /// Accepting the task now would take this attempt.
+    Best,
+    /// Passes every check, but another passing attempt is cheaper (or as
+    /// cheap and the judges surer of it, or as sure and earlier).
+    Outscored { by: AttemptId },
+    /// Scored, and failed at least one check: it cannot be accepted.
+    Failing {
+        checks_passed: u32,
+        checks_total: u32,
+    },
+    /// Started from a node that is no longer the head: it is rebased, or
+    /// retried, before it can be accepted.
+    Behind,
+    /// Still being worked on.
+    Working,
+    /// Submitted; the checks are running.
+    Checking,
+    /// This attempt was accepted.
+    Accepted { node: NodeId },
+    /// Out of the running, for this reason.
+    Closed { reason: CloseReason },
+}
+
 /// What moving the release pointer changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Release {
@@ -830,6 +856,37 @@ impl Tree {
         self.accept(task)
     }
 
+    /// Where each of `task`'s attempts stands if the task were accepted now,
+    /// in attempt order: what a person deciding whether to accept needs. The
+    /// best one is `best_attempt`'s, so this and `accept` cannot disagree.
+    pub fn standings(&self, task: TaskId) -> Result<Vec<(AttemptId, Standing)>, TreeError> {
+        self.tasks.get(&task).ok_or(TreeError::UnknownTask(task))?;
+        let best = self.best_attempt(task).map(|attempt| attempt.id);
+        Ok(self
+            .attempts_of(task)
+            .map(|attempt| {
+                let standing = match &attempt.state {
+                    AttemptState::Accepted { node } => Standing::Accepted { node: *node },
+                    AttemptState::Closed { reason } => Standing::Closed {
+                        reason: reason.clone(),
+                    },
+                    _ if self.is_behind(attempt) => Standing::Behind,
+                    AttemptState::Working => Standing::Working,
+                    AttemptState::Checking { .. } => Standing::Checking,
+                    AttemptState::Scored { score, .. } if !score.passes() => Standing::Failing {
+                        checks_passed: score.checks_passed(),
+                        checks_total: score.checks_total(),
+                    },
+                    AttemptState::Scored { .. } => match best {
+                        Some(by) if by != attempt.id => Standing::Outscored { by },
+                        Some(_) | None => Standing::Best,
+                    },
+                };
+                (attempt.id, standing)
+            })
+            .collect())
+    }
+
     /// The attempt `accept` would pick for `task`: scored on the head, passing
     /// every check, cheapest; on equal cost the one the judges were surest
     /// of, then the earliest.
@@ -1005,6 +1062,69 @@ mod tests {
 
     fn passing(cost: u64) -> Score {
         Score::new(3, 3, cost).expect("3 of 3 is a valid score")
+    }
+
+    #[test]
+    fn standings_say_which_attempt_accept_would_take_and_why_not_the_rest() {
+        let mut tree = Tree::init(repo("t-site"), oid('a')).unwrap();
+        let task = tree.task_new("fix slugify", vec![]).unwrap();
+        let [costly, cheap, failing, working, checking] =
+            ["alpha", "beta", "cheater", "gamma", "delta"]
+                .map(|agent| tree.start(task, agent).unwrap());
+        scored(&mut tree, costly, oid('b'), passing(12));
+        scored(&mut tree, cheap, oid('c'), passing(2));
+        scored(&mut tree, failing, oid('d'), Score::new(1, 3, 1).unwrap());
+        tree.submit(checking, oid('e')).unwrap();
+
+        assert_eq!(
+            tree.standings(task).unwrap(),
+            vec![
+                (costly, Standing::Outscored { by: cheap }),
+                (cheap, Standing::Best),
+                (
+                    failing,
+                    Standing::Failing {
+                        checks_passed: 1,
+                        checks_total: 3
+                    }
+                ),
+                (working, Standing::Working),
+                (checking, Standing::Checking),
+            ]
+        );
+
+        // The standings' best is the acceptance's: one rule.
+        let acceptance = tree.accept(task).unwrap();
+        assert_eq!(acceptance.accepted, cheap);
+        assert!(matches!(
+            tree.standings(task).unwrap().as_slice(),
+            [
+                (_, Standing::Closed { .. }),
+                (_, Standing::Accepted { .. }),
+                ..
+            ]
+        ));
+    }
+
+    #[test]
+    fn an_attempt_of_another_task_started_from_an_old_head_stands_behind() {
+        let mut tree = Tree::init(repo("t-site"), oid('a')).unwrap();
+        let first = tree.task_new("first", vec![]).unwrap();
+        let second = tree.task_new("second", vec![]).unwrap();
+        let accepted = tree.start(first, "alpha").unwrap();
+        let behind = tree.start(second, "beta").unwrap();
+        scored(&mut tree, accepted, oid('b'), passing(1));
+        scored(&mut tree, behind, oid('c'), passing(1));
+        tree.accept(first).unwrap();
+
+        assert_eq!(
+            tree.standings(second).unwrap(),
+            vec![(behind, Standing::Behind)]
+        );
+        assert_eq!(
+            tree.standings(TaskId(99)),
+            Err(TreeError::UnknownTask(TaskId(99)))
+        );
     }
 
     #[test]

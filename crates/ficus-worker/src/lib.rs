@@ -5,6 +5,7 @@
 //! the request to the tenant's tree Durable Object.
 
 mod artifacts;
+mod diff;
 mod progress;
 mod tree_object;
 

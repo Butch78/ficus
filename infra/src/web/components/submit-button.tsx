@@ -13,13 +13,15 @@ interface Props {
   readonly children: ReactNode;
   /** What the button says while the action runs. */
   readonly pending: ReactNode;
+  /** Primary for the step forward; secondary-destructive for withdrawing something. */
+  readonly variant?: "primary" | "secondary" | "secondary-destructive";
 }
 
-export function SubmitButton({ children, pending: pendingLabel }: Props) {
+export function SubmitButton({ children, pending: pendingLabel, variant = "primary" }: Props) {
   const { pending } = useFormStatus();
 
   return (
-    <Button type="submit" variant="primary" loading={pending} disabled={pending}>
+    <Button type="submit" variant={variant} loading={pending} disabled={pending}>
       {pending ? pendingLabel : children}
     </Button>
   );

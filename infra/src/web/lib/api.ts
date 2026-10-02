@@ -157,3 +157,42 @@ export const readFile = (org: string, name: string, subject: Subject, commit: st
   send("GET", tree(org, name) + reading(subject, "file", new URLSearchParams({ ref: commit, path })), undefined).pipe(
     Effect.map((answer) => (answer.contentType.startsWith("text/") ? answer.text : undefined)),
   );
+
+/** `body` is JSON, already serialized. */
+const post = <S extends Schema.Constraint>(schema: S, path: string, body: string) =>
+  send("POST", path, body).pipe(Effect.flatMap((answer) => decoded(schema, answer.text)));
+
+/**
+ * A change the UI makes on the person's behalf, as the `ficus.<name>` span:
+ * marked with `operation` and the organization, so the page it lands on can
+ * show its Cloudflare trace (lib/trace.ts).
+ */
+const marked = <A, E, R>(name: string, org: string, operation: string, change: Effect.Effect<A, E, R>) =>
+  Effect.annotateCurrentSpan({ [OPERATION_ATTRIBUTE]: operation, [ORG_ATTRIBUTE]: org }).pipe(
+    Effect.andThen(change),
+    Effect.withSpan(`ficus.${name}`),
+  );
+
+export const showBud = (org: string, name: string, bud: number) =>
+  get(Answers.BudRace, `${tree(org, name)}/buds/${bud}`);
+
+export const diff = (org: string, name: string, subject: Subject) =>
+  get(Answers.Diff, `${tree(org, name)}/${subject.kind}/${subject.id}/diff`);
+
+export const createBud = (org: string, name: string, intent: string, operation: string) =>
+  marked("bud", org, operation, post(Answers.BudCreated, `${tree(org, name)}/buds`, JSON.stringify({ intent })));
+
+export const harvest = (org: string, name: string, bud: number, operation: string) =>
+  marked("harvest", org, operation, post(Answers.Harvested, `${tree(org, name)}/buds/${bud}/harvest`, "{}"));
+
+export const sprout = (org: string, name: string, bud: number, agent: string, operation: string) =>
+  marked("sprout", org, operation, post(Answers.Growing, `${tree(org, name)}/buds/${bud}/leaves`, JSON.stringify({ agent })));
+
+export const regrow = (org: string, name: string, leaf: number, operation: string) =>
+  marked("regrow", org, operation, post(Answers.Growing, `${tree(org, name)}/leaves/${leaf}/regrow`, "{}"));
+
+export const wither = (org: string, name: string, leaf: number, note: string, operation: string) =>
+  marked("wither", org, operation, send("POST", `${tree(org, name)}/leaves/${leaf}/wither`, JSON.stringify({ note })));
+
+export const submit = (org: string, name: string, leaf: number, operation: string) =>
+  marked("submit", org, operation, send("POST", `${tree(org, name)}/leaves/${leaf}/ripe`, "{}"));

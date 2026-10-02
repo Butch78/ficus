@@ -22,6 +22,7 @@ impl Progress {
         self.send(Line::Step {
             step,
             state,
+            item: None,
             detail,
         });
     }

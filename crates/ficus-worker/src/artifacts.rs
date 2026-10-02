@@ -54,6 +54,12 @@ extern "C" {
     #[wasm_bindgen(method, catch, js_name = readFile)]
     async fn read_file_raw(this: &Repo, args: JsValue) -> Result<JsValue, JsValue>;
 
+    #[wasm_bindgen(method, catch, js_name = readCommit)]
+    async fn read_commit_raw(this: &Repo, hash: &str) -> Result<JsValue, JsValue>;
+
+    #[wasm_bindgen(method, catch, js_name = readBlob)]
+    async fn read_blob_raw(this: &Repo, hash: &str) -> Result<JsValue, JsValue>;
+
     /// The web `Blob` `readFile` resolves to: bytes plus a browser-safe type.
     #[derive(Debug, Clone)]
     pub type Blob;
@@ -242,6 +248,12 @@ impl TreeEntry {
     }
 }
 
+/// A blob's contents, unless it is larger than the caller would read.
+pub enum BlobBytes {
+    Bytes(Vec<u8>),
+    TooLarge,
+}
+
 /// A file's bytes and the content type Artifacts gives them.
 pub struct File {
     pub content_type: String,
@@ -406,6 +418,41 @@ impl Repo {
                 .await
                 .map_err(ArtifactsError::from_js)?,
         )
+    }
+
+    /// A commit by id; `None` if there is no such object.
+    pub async fn read_commit(&self, hash: &str) -> Result<Option<CommitMetadata>, ArtifactsError> {
+        decode(
+            self.read_commit_raw(hash)
+                .await
+                .map_err(ArtifactsError::from_js)?,
+        )
+    }
+
+    /// A blob's bytes by id: `Ok(None)` if there is no such blob, and
+    /// `Blob::TooLarge` past `max_bytes` rather than copying it.
+    pub async fn read_blob(
+        &self,
+        hash: &str,
+        max_bytes: u32,
+    ) -> Result<Option<BlobBytes>, ArtifactsError> {
+        let found = self
+            .read_blob_raw(hash)
+            .await
+            .map_err(ArtifactsError::from_js)?;
+        if found.is_null() || found.is_undefined() {
+            return Ok(None);
+        }
+        let blob: Blob = found.unchecked_into();
+        if blob.size() > f64::from(max_bytes) {
+            return Ok(Some(BlobBytes::TooLarge));
+        }
+        let buffer = wasm_bindgen_futures::JsFuture::from(blob.array_buffer())
+            .await
+            .map_err(ArtifactsError::from_js)?;
+        Ok(Some(BlobBytes::Bytes(
+            js_sys::Uint8Array::new(&buffer).to_vec(),
+        )))
     }
 
     /// The file at `path` as of `git_ref`; `None` if either does not resolve

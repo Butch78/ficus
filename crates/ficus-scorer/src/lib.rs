@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
+use ficus_core::progress::{Line, ScoreStep, StepState};
 use ficus_core::scoring::{
     AttemptRef, CheckOrigin, CheckOutcome, CheckRun, CheckSpec, ChecksError, LOCKED_PATHS,
     RebaseRef, RebaseReport, RootChecks, ScoreReport, clip_diff,
@@ -168,6 +169,38 @@ struct Prepared {
 
 const PREPARED_FILE: &str = "prepared.json";
 
+/// The prefix of a progress line on stderr: the sandbox forwards these as
+/// the attempt's scoring steps, and keeps everything else as error text.
+pub const PROGRESS_PREFIX: &str = "ficus-progress ";
+
+/// Say a step changed state, on stderr, as it happens.
+fn progress(step: ScoreStep, state: StepState, item: Option<&str>, detail: Option<&str>) {
+    let line = Line::<ScoreStep>::Step {
+        step,
+        state,
+        item,
+        detail,
+    };
+    eprint!(
+        "{PROGRESS_PREFIX}{}",
+        String::from_utf8_lossy(&line.to_ndjson())
+    );
+}
+
+/// Run `work` as `step`: active before, complete or error after.
+async fn stepped<T>(
+    step: ScoreStep,
+    work: impl std::future::Future<Output = Result<T, ScoreError>>,
+) -> Result<T, ScoreError> {
+    progress(step, StepState::Active, None, None);
+    let done = work.await;
+    match &done {
+        Ok(_) => progress(step, StepState::Complete, None, None),
+        Err(error) => progress(step, StepState::Error, None, Some(&error.to_string())),
+    }
+    done
+}
+
 /// Phase one, with network: clone the attempt into a fresh workdir under
 /// `root`, check `head` descends from `base`, put the root's locked files
 /// back, and build the root's devenv shell. Returns the workdir.
@@ -181,58 +214,72 @@ pub async fn prepare(root: &Path, attempt: &AttemptRef) -> Result<PathBuf, Score
     tokio::fs::create_dir_all(&workdir).await?;
     let repo = workdir.join("attempt");
     let repo_arg = repo.to_string_lossy().into_owned();
-    git(
-        &workdir,
-        "clone",
-        &[
-            "clone",
-            "--quiet",
-            "--no-checkout",
-            &attempt.remote,
-            &repo_arg,
-        ],
-    )
-    .await?;
-
     let (base, head) = (attempt.base.as_str(), attempt.head.as_str());
-    git(
-        &repo,
-        "checkout",
-        &["checkout", "--quiet", "--detach", head],
-    )
+    stepped(ScoreStep::Clone, async {
+        git(
+            &workdir,
+            "clone",
+            &[
+                "clone",
+                "--quiet",
+                "--no-checkout",
+                &attempt.remote,
+                &repo_arg,
+            ],
+        )
+        .await?;
+        git(
+            &repo,
+            "checkout",
+            &["checkout", "--quiet", "--detach", head],
+        )
+        .await?;
+        if !succeeds(&repo, &["merge-base", "--is-ancestor", base, head]).await? {
+            return Err(ScoreError::NotDescendant);
+        }
+        Ok(())
+    })
     .await?;
-    if !succeeds(&repo, &["merge-base", "--is-ancestor", base, head]).await? {
-        return Err(ScoreError::NotDescendant);
-    }
     // Fail now, while it is cheap, if the root defines nothing to run.
     root_checks(&repo, base).await?;
 
-    let mut root_has_devenv = false;
-    for path in LOCKED_PATHS {
-        if succeeds(&repo, &["cat-file", "-e", &format!("{base}:{path}")]).await? {
-            git(
-                &repo,
-                "restore locked file",
-                &["checkout", "--quiet", base, "--", path],
-            )
-            .await?;
-            root_has_devenv |= *path == "devenv.nix";
-        } else {
-            match tokio::fs::remove_file(repo.join(path)).await {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
+    let root_has_devenv = stepped(ScoreStep::Restore, async {
+        let mut root_has_devenv = false;
+        for path in LOCKED_PATHS {
+            if succeeds(&repo, &["cat-file", "-e", &format!("{base}:{path}")]).await? {
+                git(
+                    &repo,
+                    "restore locked file",
+                    &["checkout", "--quiet", base, "--", path],
+                )
+                .await?;
+                root_has_devenv |= *path == "devenv.nix";
+            } else {
+                match tokio::fs::remove_file(repo.join(path)).await {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
             }
         }
-    }
+        Ok(root_has_devenv)
+    })
+    .await?;
 
     let devenv = if root_has_devenv {
+        progress(ScoreStep::Devenv, StepState::Active, None, None);
         let built = run(
             &repo,
             &["devenv", "--quiet", "shell", "--", "true"],
             DEVENV_PREPARE_SECS,
         )
         .await?;
+        let state = if built.passed {
+            StepState::Complete
+        } else {
+            StepState::Error
+        };
+        progress(ScoreStep::Devenv, state, None, None);
         Some(if built.passed {
             Ok(())
         } else {
@@ -300,7 +347,7 @@ pub async fn check(workdir: &Path) -> Result<CheckRun, ScoreError> {
         }
     };
 
-    let cost = diff_cost(&repo, base, head).await?;
+    let cost = stepped(ScoreStep::Cost, diff_cost(&repo, base, head)).await?;
     let touched = diff_paths(&repo, base, head).await?;
     let diff = if root.judges.is_empty() {
         String::new()
@@ -352,7 +399,14 @@ async fn run_checks(
         } else {
             vec!["bash", "-c", &check.run]
         };
+        progress(ScoreStep::Check, StepState::Active, Some(&check.name), None);
         let ran = run(repo, &argv, check.timeout_secs()).await?;
+        let state = if ran.passed {
+            StepState::Complete
+        } else {
+            StepState::Error
+        };
+        progress(ScoreStep::Check, state, Some(&check.name), None);
         outcomes.push(CheckOutcome {
             name: check.name.clone(),
             origin,

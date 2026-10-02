@@ -54,8 +54,11 @@ export default Alchemy.Stack(
     });
 
     // The scorer: ficus-scorer (static musl) in an image with nix + devenv.
-    // The binary's hash rides into the container's env, which is the edge
-    // that builds the binary before the image that copies it.
+    // The binary's hash rides into the container's env so a new binary
+    // redeploys the container. That edge does not order the image build
+    // after this one (the image builds in an earlier phase), so run
+    // scripts/build-scorer before deploying, as deploy.yml does; this build
+    // then finds it up to date.
     const scorerBinary = yield* Command.Build("ScorerBinary", {
       cwd: "..",
       command: "scripts/build-scorer",

@@ -10,7 +10,9 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use ficus_core::browse::{FilePath, GitRef, Subject};
-use ficus_core::progress::{CONTENT_TYPE as PROGRESS, InitStep, StepState};
+use ficus_core::progress::{
+    CONTENT_TYPE as PROGRESS, Incoming, InitStep, Ledger, StepState, outcome_body,
+};
 use ficus_core::scoring::{CheckSpec, RebaseReport, RebaseRequest, ScoreReport, ScoreRequest};
 use ficus_core::tree::{AttemptId, HistoryEntry, NodeId, Oid, RepoName, TaskId, Tree, TreeError};
 use futures_util::StreamExt;
@@ -138,6 +140,10 @@ impl DurableObject for TreeObject {
             (Method::Get, ["attempts", attempt]) => match attempt.parse() {
                 Ok(attempt) => self.show_attempt(attempt).await,
                 Err(_) => Response::error("attempt id must be a number", 400),
+            },
+            (Method::Get, ["tasks", task]) => match task.parse() {
+                Ok(task) => self.show_task(task).await,
+                Err(_) => Response::error("task id must be a number", 400),
             },
             (Method::Get, ["attempts", attempt, read]) => match attempt.parse() {
                 Ok(attempt) => self.read(Subject::Attempt(attempt), read, &req).await,
@@ -300,7 +306,9 @@ impl TreeObject {
             intent: job.intent.clone(),
             checks: job.checks.clone(),
         };
-        let scored = self.ask_sandbox(&job.repo, "score", &request).await;
+        let scored = self
+            .ask_sandbox(&job.repo, "score", &request, Some(job.attempt))
+            .await;
         if let Err(error) = repo.revoke_token(&token.id).await {
             worker::console_error!(
                 "revoking the scorer's token on {}: {error}",
@@ -436,7 +444,7 @@ impl TreeObject {
             onto_head: job.onto_head.clone(),
             onto_branch: onto.default_branch,
         };
-        let outcome = match self.ask_sandbox(&fresh.repo, "rebase", &request).await {
+        let outcome = match self.ask_sandbox(&fresh.repo, "rebase", &request, None).await {
             SandboxOutcome::Report(report) => RebaseOutcome::Report(report),
             SandboxOutcome::Unscorable(reason) => RebaseOutcome::Conflict(reason),
             SandboxOutcome::Failed(reason) => RebaseOutcome::Failed(reason),
@@ -463,21 +471,32 @@ impl TreeObject {
     }
 
     /// Ask the sandbox named after `repo` for `action`; 422 means the input
-    /// is at fault and retrying will not help.
+    /// is at fault and retrying will not help. With `ledger`, the sandbox
+    /// streams its steps and each is recorded in that attempt's scoring
+    /// ledger as it happens, for pages to show live.
     async fn ask_sandbox<Req: Serialize, Rep: for<'de> Deserialize<'de>>(
         &self,
         repo: &RepoName,
         action: &str,
         request: &Req,
+        ledger: Option<AttemptId>,
     ) -> SandboxOutcome<Rep> {
+        // Scoring streams its steps; a rebase answers once.
+        let key = ledger.map(|attempt| format!("scoring:{attempt}"));
+        let mut steps = Ledger::default();
         let attempt = async {
+            if let Some(key) = &key {
+                self.state.storage().put(key, &steps).await?;
+            }
             let stub = self
                 .env
                 .durable_object("SANDBOX")?
                 .get_by_name(repo.as_str())?;
-            // axum's Json extractor refuses a body without this (415).
             let headers = Headers::new();
             headers.set("content-type", "application/json")?;
+            if key.is_some() {
+                headers.set("accept", PROGRESS)?;
+            }
             let mut init = RequestInit::new();
             init.with_method(Method::Post)
                 .with_headers(headers)
@@ -488,20 +507,106 @@ impl TreeObject {
                     &init,
                 )?)
                 .await?;
-            Ok::<_, worker::Error>((response.status_code(), response.text().await?))
+            let Some(key) = key.as_ref().filter(|_| response.status_code() == 200) else {
+                return Ok(Some((
+                    response.status_code(),
+                    outcome_body(&response.text().await?),
+                )));
+            };
+            let mut body = response.stream()?;
+            let mut pending = String::new();
+            let mut outcome = None;
+            while let Some(chunk) = body.next().await {
+                pending.push_str(&String::from_utf8_lossy(&chunk?));
+                while let Some(end) = pending.find('\n') {
+                    let line: String = pending.drain(..=end).collect();
+                    match Incoming::parse(&line) {
+                        Some(Incoming::Step {
+                            step,
+                            state,
+                            item,
+                            detail,
+                        }) => {
+                            steps.apply(&step, state, item.as_deref(), detail.as_deref(), now());
+                            self.state.storage().put(key, &steps).await?;
+                        }
+                        Some(Incoming::Outcome { status, body }) => outcome = Some((status, body)),
+                        None => {}
+                    }
+                }
+            }
+            Ok::<_, worker::Error>(outcome)
         };
-        match attempt.await {
-            Ok((200, body)) => match serde_json::from_str::<Rep>(&body) {
+        let answered = attempt.await;
+        if let Some(key) = &key {
+            // Whatever was still running when the stream ended did not finish.
+            steps.close(StepState::Error, now());
+            if let Err(error) = self.state.storage().put(key, &steps).await {
+                worker::console_error!("storing the scoring ledger {key}: {error}");
+            }
+        }
+        match answered {
+            Ok(Some((200, body))) => match serde_json::from_value::<Rep>(body) {
                 Ok(report) => SandboxOutcome::Report(report),
                 Err(error) => SandboxOutcome::Failed(format!(
                     "sandbox answered {action} with an unreadable report: {error}"
                 )),
             },
-            Ok((422, reason)) => SandboxOutcome::Unscorable(reason),
-            Ok((status, body)) => {
-                SandboxOutcome::Failed(format!("sandbox answered {status}: {body}"))
+            Ok(Some((422, reason))) => SandboxOutcome::Unscorable(text_of(reason)),
+            Ok(Some((status, body))) => {
+                SandboxOutcome::Failed(format!("sandbox answered {status}: {}", text_of(body)))
+            }
+            Ok(None) => {
+                SandboxOutcome::Failed("the sandbox's stream ended without an outcome".to_owned())
             }
             Err(error) => SandboxOutcome::Failed(error.to_string()),
+        }
+    }
+
+    /// An attempt's scoring steps so far, if it has been scored or is being scored.
+    async fn scoring(&self, attempt: AttemptId) -> Result<Option<Ledger>> {
+        self.state
+            .storage()
+            .get::<Ledger>(&format!("scoring:{attempt}"))
+            .await
+    }
+
+    /// A task and its attempts: where each stands if the task were accepted
+    /// now, its scoring report and steps, and the history of earlier attempts.
+    async fn show_task(&self, task: TaskId) -> Result<Response> {
+        let Some(tree) = self.load().await? else {
+            return Response::error("no such tree", 404);
+        };
+        let standings = match tree.standings(task) {
+            Ok(standings) => standings,
+            Err(error) => return tree_error(&error),
+        };
+        let mut attempts = Vec::with_capacity(standings.len());
+        for (id, standing) in standings {
+            attempts.push(serde_json::json!({
+                "attempt": tree.attempt(id),
+                "standing": standing,
+                "report": self.report(id).await?,
+                "scoring": self.scoring(id).await?,
+            }));
+        }
+        Response::from_json(&serde_json::json!({
+            "task": tree.task(task),
+            "head": tree.head().id,
+            "attempts": attempts,
+            "history": tree.history_of(task).collect::<Vec<_>>(),
+        }))
+    }
+
+    async fn report(&self, attempt: AttemptId) -> Result<Option<ScoreReport>> {
+        match self
+            .state
+            .storage()
+            .get::<String>(&format!("report:{attempt}"))
+            .await?
+        {
+            Some(json) => Ok(Some(serde_json::from_str(&json)?)),
+            None => Ok(None),
         }
     }
 
@@ -549,21 +654,16 @@ impl TreeObject {
         let Some(entry) = tree.attempt(attempt) else {
             return tree_error(&TreeError::UnknownAttempt(attempt));
         };
-        let report = match self
-            .state
-            .storage()
-            .get::<String>(&format!("report:{attempt}"))
-            .await?
-        {
-            Some(json) => Some(serde_json::from_str::<ScoreReport>(&json)?),
-            None => None,
-        };
-        Response::from_json(&serde_json::json!({ "attempt": entry, "report": report }))
+        let (report, scoring) = (self.report(attempt).await?, self.scoring(attempt).await?);
+        Response::from_json(
+            &serde_json::json!({ "attempt": entry, "report": report, "scoring": scoring }),
+        )
     }
 
     /// Read the repo behind an attempt or node through Artifacts: `log`, `tree`
     /// or `file`, at `?ref=` (default: the commit the subject is pinned to,
-    /// else its repo's HEAD) and, for `tree` and `file`, `?path=`.
+    /// else its repo's HEAD) and, for `tree` and `file`, `?path=`; or `diff`,
+    /// what it changed.
     async fn read(&self, subject: Subject, what: &str, req: &Request) -> Result<Response> {
         let Some(tree) = self.load().await? else {
             return Response::error("no such tree", 404);
@@ -588,6 +688,9 @@ impl TreeObject {
         };
         let at = git_ref.as_deref();
         let label = at.unwrap_or("HEAD");
+        if what == "diff" {
+            return self.diff(&tree, subject, &repo).await;
+        }
         match what {
             "log" => {
                 let limit = query
@@ -621,6 +724,45 @@ impl TreeObject {
                 }
             }
             _ => Response::error("not found", 404),
+        }
+    }
+
+    /// What an attempt changed since the node it started from, or a node since its
+    /// parent: the changed files and their hunks.
+    async fn diff(&self, tree: &Tree, subject: Subject, repo: &Repo) -> Result<Response> {
+        let change = match tree.change(subject) {
+            Ok(change) => change,
+            Err(error) => return tree_error(&error),
+        };
+        let Some(base) = change.base else {
+            return Response::error("the root has no base to compare: browse it instead", 400);
+        };
+        let tree_of = |commit: Option<CommitMetadata>| commit.map(|commit| commit.tree_hash);
+        let (old, head) = match (
+            repo.read_commit(base.as_str()).await,
+            match &change.head {
+                Some(head) => repo.read_commit(head.as_str()).await,
+                None => repo
+                    .log(None, 1, 0)
+                    .await
+                    .map(|commits| commits.into_iter().next()),
+            },
+        ) {
+            (Ok(old), Ok(head)) => (tree_of(old), head),
+            (Err(error), _) | (_, Err(error)) => return artifacts_error(&error),
+        };
+        let Some(head) = head else {
+            return Response::error("no head commit to compare", 404);
+        };
+        match crate::diff::trees(repo, old, Some(head.tree_hash.clone())).await {
+            Ok(diff) => Response::from_json(&serde_json::json!({
+                "repo": change.repo,
+                "base": base,
+                "head": head.hash,
+                "files": diff.files,
+                "truncated": diff.truncated,
+            })),
+            Err(error) => artifacts_error(&error),
         }
     }
 
@@ -1059,6 +1201,20 @@ enum RebaseOutcome {
     /// The commits do not apply on the head: the agent's turn.
     Conflict(String),
     Failed(String),
+}
+
+/// Milliseconds since the epoch, as the ledger records them.
+fn now() -> u64 {
+    // A JS timestamp is an integral number of milliseconds well inside u64.
+    js_sys::Date::now() as u64
+}
+
+/// An outcome body as text: a string as it is, anything else as JSON.
+fn text_of(body: serde_json::Value) -> String {
+    match body {
+        serde_json::Value::String(text) => text,
+        other => other.to_string(),
+    }
 }
 
 /// Whether the caller asked to hear an operation's steps as they happen.

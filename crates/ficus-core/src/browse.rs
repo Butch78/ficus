@@ -52,6 +52,42 @@ impl Tree {
     }
 }
 
+/// What a subject changed: its repo, the commit it started from, and where it is
+/// now (`None`: its repo's HEAD, for an attempt still moving).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Change {
+    pub repo: RepoName,
+    /// `None` only for the root, which started from nothing.
+    pub base: Option<Oid>,
+    pub head: Option<Oid>,
+}
+
+impl Tree {
+    /// An attempt's change from the node it started from; a node's from its parent.
+    /// Either base commit is in the subject's repo: an attempt's repo is a fork of
+    /// its base node's, and an accepted node's repo is its attempt's.
+    pub fn change(&self, subject: Subject) -> Result<Change, TreeError> {
+        let view = self.view(subject)?;
+        let base = match subject {
+            Subject::Attempt(id) => {
+                let attempt = self.attempt(id).ok_or(TreeError::UnknownAttempt(id))?;
+                self.node(attempt.base).map(|node| node.commit.clone())
+            }
+            Subject::Node(id) => {
+                let node = self.node(id).ok_or(TreeError::UnknownNode(id))?;
+                node.parent
+                    .and_then(|parent| self.node(parent))
+                    .map(|parent| parent.commit.clone())
+            }
+        };
+        Ok(Change {
+            repo: view.repo,
+            base,
+            head: view.pinned,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum BrowseError {
     #[error("not a ref: {0:?}")]
@@ -183,6 +219,26 @@ mod tests {
         let view = tree.view(Subject::Attempt(attempt)).unwrap();
         assert_eq!(view.pinned, Some(oid('b')));
         assert_eq!(view.repo, tree.attempt(attempt).unwrap().repo);
+    }
+
+    #[test]
+    fn an_attempt_changes_from_its_base_and_a_node_from_its_parent() {
+        let mut tree = initialized();
+        let root = tree.head().id;
+        assert_eq!(tree.change(Subject::Node(root)).unwrap().base, None);
+
+        let task = tree.task_new("fix it", Vec::new()).unwrap();
+        let attempt = tree.start(task, "alpha").unwrap();
+        let working = tree.change(Subject::Attempt(attempt)).unwrap();
+        assert_eq!((working.base, working.head), (Some(oid('a')), None));
+
+        tree.submit(attempt, oid('b')).unwrap();
+        tree.scored(attempt, Score::new(1, 1, 3).unwrap(), Vec::new())
+            .unwrap();
+        let acceptance = tree.accept(task).unwrap();
+        let accepted = tree.change(Subject::Node(acceptance.node)).unwrap();
+        assert_eq!((accepted.base, accepted.head), (Some(oid('a')), Some(oid('b'))));
+        assert_eq!(accepted.repo, tree.attempt(attempt).unwrap().repo);
     }
 
     #[test]

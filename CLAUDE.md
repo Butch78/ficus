@@ -85,7 +85,9 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   travel in the request and run after the root's. Cost = diff lines; the report also lists `touched` paths.
   `[[judge]]` in ficus.toml = a yes/no question on `{task, diff}` the Sandbox asks Clef (Workers AI binding)
   after the container is gone; counts as a check, and its mean confidence breaks cost ties at acceptance.
-  Image: `infra/src/sandbox/context` (nix + devenv; binary from `scripts/build-scorer`).
+  Image: `infra/src/sandbox/context` (nix + devenv; binary from `scripts/build-scorer`). Run
+  `scripts/build-scorer` before `bun run deploy`: alchemy builds the image before its ScorerBinary step, so
+  otherwise the image copies a missing or stale binary.
 - The deploy token needs Containers: Edit (registry credentials) on top of Workers, Workers AI, Artifacts.
 - `just e2e` (FICUS_API=https://ficus-dev.fruitcards.workers.dev) runs the full cycle live.
 - After a deploy, old isolates keep serving for a few seconds: wait before judging a change live

@@ -1,6 +1,11 @@
+import { Banner, Text } from "@cloudflare/kumo";
+import * as Result from "effect/Result";
 import { notFound } from "next/navigation";
+import { DiffView } from "../../../../../../../components/diff-view.tsx";
 import { PageHeader } from "../../../../../../../components/page-header.tsx";
 import { RepoBrowser } from "../../../../../../../components/repo-browser.tsx";
+import * as Api from "../../../../../../../lib/api.ts";
+import { attempt } from "../../../../../../../lib/run.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +23,8 @@ export default async function NodePage({ params, searchParams }: Props) {
   }
 
   const base = `/orgs/${org}/trees/${tree}`;
+  // The root grew from nothing; every other node is a harvest, with a change.
+  const change = node === 0 ? undefined : await attempt(Api.diff(org, tree, { kind: "nodes", id: node }));
 
   return (
     <>
@@ -29,6 +36,21 @@ export default async function NodePage({ params, searchParams }: Props) {
         ]}
         title={`node ${node}`}
       />
+      {change === undefined ? null : (
+        <section id="change" className="flex flex-col gap-3">
+          <Text variant="heading" as="h3">
+            What changed
+          </Text>
+          {Result.isSuccess(change) ? (
+            <DiffView diff={change.success} />
+          ) : (
+            <Banner variant="secondary" description={`The change cannot be shown: ${change.failure.message}`} />
+          )}
+        </section>
+      )}
+      <Text variant="heading" as="h3">
+        Files
+      </Text>
       <RepoBrowser
         org={org}
         tree={tree}

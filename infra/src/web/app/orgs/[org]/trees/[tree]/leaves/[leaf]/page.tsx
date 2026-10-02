@@ -1,21 +1,47 @@
-import { Badge, Empty, LayerCard, Text } from "@cloudflare/kumo";
+import { Banner, Input, LayerCard, Text } from "@cloudflare/kumo";
+import * as Result from "effect/Result";
 import { notFound } from "next/navigation";
-import { LeafStatus } from "../../../../../../../components/leaf-status.tsx";
+import { AutoRefresh } from "../../../../../../../components/auto-refresh.tsx";
+import { DiffView } from "../../../../../../../components/diff-view.tsx";
+import { ChainOfThought, ChainOfThoughtStep } from "../../../../../../../components/elements/chain-of-thought.tsx";
+import {
+  CollapsiblePanel,
+  CollapsibleRoot,
+  CollapsibleTrigger,
+  LayerCardPrimary,
+  LayerCardSecondary,
+} from "../../../../../../../components/kumo.ts";
+import { OperationOutcome } from "../../../../../../../components/operation-outcome.tsx";
 import { PageHeader } from "../../../../../../../components/page-header.tsx";
 import { RepoBrowser } from "../../../../../../../components/repo-browser.tsx";
+import { ScoringSteps } from "../../../../../../../components/scoring-steps.tsx";
+import { StandingBadge } from "../../../../../../../components/standing-badge.tsx";
+import { SubmitButton } from "../../../../../../../components/submit-button.tsx";
 import * as Api from "../../../../../../../lib/api.ts";
-import { load } from "../../../../../../../lib/run.ts";
-import { CollapsiblePanel, CollapsibleRoot, CollapsibleTrigger, LayerCardPrimary, LayerCardSecondary } from "../../../../../../../components/kumo.ts";
+import { attempt, load } from "../../../../../../../lib/run.ts";
+import { say } from "../../../../../../../lib/standing.ts";
+import { timeline } from "../../../../../../../lib/timeline.ts";
+import { regrowLeaf, submitLeaf, witherLeaf } from "../../../../../../actions.ts";
 
 export const dynamic = "force-dynamic";
 
 interface Props {
   readonly params: Promise<{ org: string; tree: string; leaf: string }>;
-  readonly searchParams: Promise<{ path?: string; file?: string }>;
+  readonly searchParams: Promise<{ path?: string; file?: string; op?: string; trace?: string; error?: string }>;
+}
+
+function Hidden({ org, tree, leaf }: { readonly org: string; readonly tree: string; readonly leaf: number }) {
+  return (
+    <>
+      <input type="hidden" name="org" value={org} />
+      <input type="hidden" name="tree" value={tree} />
+      <input type="hidden" name="leaf" value={leaf} />
+    </>
+  );
 }
 
 export default async function LeafPage({ params, searchParams }: Props) {
-  const [{ org, tree, leaf: raw }, { path, file }] = await Promise.all([params, searchParams]);
+  const [{ org, tree, leaf: raw }, { path, file, op, trace, error }] = await Promise.all([params, searchParams]);
   const leaf = Number(raw);
 
   if (!Number.isInteger(leaf) || leaf < 0) {
@@ -23,7 +49,18 @@ export default async function LeafPage({ params, searchParams }: Props) {
   }
 
   const detail = await load(Api.showLeaf(org, tree, leaf));
+
+  const [race, change] = await Promise.all([
+    load(Api.showBud(org, tree, detail.leaf.bud)),
+    attempt(Api.diff(org, tree, { kind: "leaves", id: leaf })),
+  ]);
+
+  const standing = race.leaves.find((entry) => entry.leaf.id === leaf)?.standing ?? "Growing";
   const base = `/orgs/${org}/trees/${tree}`;
+  const state = detail.leaf.state;
+  // Still in the race: it can be withdrawn, and moved on.
+  const { tone } = say(standing);
+  const live = tone !== "fruit" && tone !== "pruned";
 
   return (
     <>
@@ -32,39 +69,85 @@ export default async function LeafPage({ params, searchParams }: Props) {
           ["Organizations", "/"],
           [org, `/orgs/${org}`],
           [tree, base],
+          [`bud ${detail.leaf.bud}`, `${base}/buds/${detail.leaf.bud}`],
         ]}
         title={`leaf ${leaf}: ${detail.leaf.agent}`}
-      />
-      <div className="flex flex-col gap-1">
-        <LeafStatus state={detail.leaf.state} />
-        <Text variant="secondary" size="sm">
-          Bud {detail.leaf.bud}, grown from node {detail.leaf.base}.
+      >
+        <StandingBadge standing={standing} />
+        <AutoRefresh active={standing === "Growing" || standing === "Ripening"} what="this leaf is still moving" />
+      </PageHeader>
+      <Text size="sm">{say(standing).sentence}</Text>
+      <Text variant="secondary" size="sm">
+        For: {race.bud.intent}
+      </Text>
+      <OperationOutcome org={org} op={op} trace={trace} error={error} />
+
+      <ChainOfThought>
+        {timeline(state, detail.leaf.base).map((moment) => (
+          <ChainOfThoughtStep key={moment.label} status={moment.status} label={moment.label} />
+        ))}
+      </ChainOfThought>
+
+      {live ? (
+        <span className="flex flex-wrap items-end gap-3">
+          {state === "Growing" ? (
+            <form action={submitLeaf}>
+              <Hidden org={org} tree={tree} leaf={leaf} />
+              <SubmitButton pending="Submitting…">Submit for scoring</SubmitButton>
+            </form>
+          ) : null}
+          {standing === "Stale" ? (
+            <form action={regrowLeaf}>
+              <Hidden org={org} tree={tree} leaf={leaf} />
+              <SubmitButton pending="Regrowing…">Regrow on the head</SubmitButton>
+            </form>
+          ) : null}
+          <form action={witherLeaf} className="flex flex-wrap items-end gap-2">
+            <Hidden org={org} tree={tree} leaf={leaf} />
+            <Input name="note" label="Withdraw it" placeholder="why (kept in the compost)" size="sm" />
+            <SubmitButton pending="Withering…" variant="secondary-destructive">
+              Wither
+            </SubmitButton>
+          </form>
+        </span>
+      ) : null}
+
+      <section id="change" className="flex flex-col gap-3">
+        <Text variant="heading" as="h3">
+          The change
         </Text>
-      </div>
+        {Result.isSuccess(change) ? (
+          <DiffView diff={change.success} />
+        ) : (
+          <Banner variant="secondary" description={`The change cannot be shown: ${change.failure.message}`} />
+        )}
+      </section>
+
+      {detail.scoring === undefined || detail.scoring === null || detail.scoring.entries.length === 0 ? null : (
+        <LayerCard>
+          <LayerCardSecondary>Scoring, in its sandbox</LayerCardSecondary>
+          <LayerCardPrimary>
+            <ScoringSteps ledger={detail.scoring} />
+          </LayerCardPrimary>
+        </LayerCard>
+      )}
       <LayerCard>
-        <LayerCardSecondary className="flex items-center justify-between">
-          <span>Scoring report</span>
-          {detail.report === null ? null : <Badge variant="outline">cost {detail.report.cost}</Badge>}
-        </LayerCardSecondary>
+        <LayerCardSecondary>Checks</LayerCardSecondary>
         <LayerCardPrimary className="flex flex-col gap-2">
           {detail.report === null ? (
-            <Empty size="sm" title="Not scored yet" description="The root's checks run once the leaf is submitted." />
+            <Text variant="secondary" size="sm">
+              Not scored yet: the root's checks run once the leaf is submitted.
+            </Text>
           ) : (
             detail.report.checks.map((check) => (
               <CollapsibleRoot key={check.name}>
                 <CollapsibleTrigger>
-                  <span className="inline-flex items-center gap-2">
-                    <Badge variant={check.passed ? "success" : "error"}>{check.passed ? "passed" : "failed"}</Badge>
-                    <Text variant="mono">
-                      {check.name}
-                    </Text>
-                    <Text variant="secondary" as="span" size="sm">
-                      {(check.millis / 1000).toFixed(1)}s
-                    </Text>
+                  <span className={check.passed ? "text-kumo-success" : "text-kumo-danger"}>
+                    {check.passed ? "Passed" : "Failed"}: {check.name} · {(check.millis / 1000).toFixed(1)} s
                   </span>
                 </CollapsibleTrigger>
                 <CollapsiblePanel>
-                  <pre className="overflow-x-auto rounded-md border border-kumo-hairline bg-kumo-recessed p-3 font-mono text-sm text-kumo-default">
+                  <pre className="overflow-x-auto rounded-md border border-kumo-hairline bg-kumo-recessed p-3 font-mono text-xs text-kumo-default">
                     {check.tail || "(no output)"}
                   </pre>
                 </CollapsiblePanel>
@@ -73,14 +156,11 @@ export default async function LeafPage({ params, searchParams }: Props) {
           )}
         </LayerCardPrimary>
       </LayerCard>
-      <RepoBrowser
-        org={org}
-        tree={tree}
-        subject={{ kind: "leaves", id: leaf }}
-        here={`${base}/leaves/${leaf}`}
-        path={path ?? ""}
-        file={file}
-      />
+
+      <Text variant="heading" as="h3">
+        Files
+      </Text>
+      <RepoBrowser org={org} tree={tree} subject={{ kind: "leaves", id: leaf }} here={`${base}/leaves/${leaf}`} path={path ?? ""} file={file} />
     </>
   );
 }

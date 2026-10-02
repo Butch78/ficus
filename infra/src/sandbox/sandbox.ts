@@ -23,6 +23,11 @@
  *     with their tokens added by Egress; `ficus-scorer rebase` replays
  *     the behind commits onto the head and pushes. Nothing from either repo
  *     is run. The answer is the RebaseReport, or 422 on a conflict.
+ *
+ *   `/score` with `Accept: application/x-ndjson` answers with a stream
+ *   instead (crates/ficus-core/src/progress.rs): each step as it happens, the
+ *   sandbox's own and `ficus-scorer`'s, then the outcome: what the plain
+ *   answer would have been.
  */
 import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
@@ -70,6 +75,19 @@ const EXEC_ENV = {
 } as const;
 
 const SCORER = "/usr/local/bin/ficus-scorer";
+
+/** `ficus-scorer`'s progress lines on stderr (crates/ficus-scorer `PROGRESS_PREFIX`). */
+const PROGRESS_PREFIX = "ficus-progress ";
+
+const PROGRESS = "application/x-ndjson";
+
+/** Where progress lines go: the caller's stream, or nowhere. */
+type Report = (line: string) => void;
+
+const quiet: Report = () => undefined;
+
+const stepLine = (step: string, state: "active" | "complete" | "error", detail?: string) =>
+  JSON.stringify(detail === undefined ? { kind: "step", step, state } : { kind: "step", step, state, detail });
 
 const Oid = Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}([0-9a-f]{24})?$/));
 
@@ -125,6 +143,26 @@ interface Ran {
   readonly stderr: string;
 }
 
+/** Each line of `stream` as it arrives, the last one even without a newline. */
+const eachLine = async (stream: ReadableStream | null, take: (line: string) => void) => {
+  if (stream === null) {
+    return;
+  }
+
+  let pending = "";
+
+  for await (const chunk of stream.pipeThrough(new TextDecoderStream())) {
+    const lines = (pending + chunk).split("\n");
+
+    pending = lines.pop() ?? "";
+    lines.forEach(take);
+  }
+
+  if (pending !== "") {
+    take(pending);
+  }
+};
+
 interface Bindings {
   readonly AI: Clef.AiBinding;
 }
@@ -148,12 +186,11 @@ export class Sandbox extends DurableObject<Bindings> {
 
     switch (pathname) {
       case "/score": {
-        return respond(
-          this.#score(request).pipe(
-            // oxlint-disable-next-line effecttsgo/strict-effect-provide -- a request is an entry point
-            Effect.provide(Clef.layerBinding(this.env.AI)),
-          ),
-        );
+        if (request.headers.get("accept")?.includes(PROGRESS) === true) {
+          return this.#streamed(request);
+        }
+
+        return respond(this.#scoreWithClef(request, quiet));
       }
 
       case "/rebase": {
@@ -164,6 +201,42 @@ export class Sandbox extends DurableObject<Bindings> {
         return new Response("not found", { status: 404 });
       }
     }
+  }
+
+  /** Score, with the judges' Clef: a request is an entry point. */
+  #scoreWithClef(request: Request, say: Report) {
+    return this.#score(request, say).pipe(
+      // oxlint-disable-next-line effecttsgo/strict-effect-provide -- a request is an entry point
+      Effect.provide(Clef.layerBinding(this.env.AI)),
+    );
+  }
+
+  /** Score, answering at once with the steps as they happen, the outcome last. */
+  #streamed(request: Request): Response {
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+    const writer = writable.getWriter();
+    const encoder = new TextEncoder();
+    const report: Report = (line) => void writer.write(encoder.encode(`${line}\n`));
+
+    const outcome = this.#scoreWithClef(request, report).pipe(
+      Effect.match({
+        onSuccess: (body) => ({ kind: "outcome", status: 200, body }),
+        onFailure: (error) => ({ kind: "outcome", status: error.status, body: error.message }),
+      }),
+    );
+
+    this.ctx.waitUntil(
+      Effect.runPromise(outcome).then(
+        (line) => {
+          report(JSON.stringify(line));
+
+          return writer.close();
+        },
+        (cause) => writer.abort(cause),
+      ),
+    );
+
+    return new Response(readable, { headers: { "content-type": PROGRESS, "cache-control": "no-store" } });
   }
 
   /** The request body, decoded as `schema`. */
@@ -220,12 +293,13 @@ export class Sandbox extends DurableObject<Bindings> {
     return report;
   });
 
-  readonly #score = Effect.fn("Sandbox.score")(function* (this: Sandbox, request: Request) {
+  readonly #score = Effect.fn("Sandbox.score")(function* (this: Sandbox, request: Request, say: Report) {
     const score = yield* this.#body(request, ScoreRequest, "score");
     const repo = repoOf(score.remote);
     const attempt = JSON.stringify({ remote: score.remote, base: score.base, head: score.head, checks: score.checks ?? [] });
 
-    yield* this.#ready();
+    say(stepLine("sandbox", "active"));
+    yield* this.#ready().pipe(Effect.tapError((error) => Effect.sync(() => say(stepLine("sandbox", "error", error.message)))));
     yield* this.#route(repo.host, { mode: "artifacts", repos: [{ repoPath: repo.repoPath, token: score.token }] });
 
     for (const host of NIX_HOSTS) {
@@ -236,10 +310,14 @@ export class Sandbox extends DurableObject<Bindings> {
     const trusted = yield* this.#exec(["/usr/local/bin/ficus-trust-egress"]);
 
     if (trusted.exitCode !== 0) {
+      say(stepLine("sandbox", "error", "could not trust the egress CA"));
+
       return yield* failure(503, `trusting the egress CA: ${trusted.stderr.trim()}`);
     }
 
-    const prepared = yield* this.#exec([SCORER, "prepare", attempt]);
+    say(stepLine("sandbox", "complete"));
+
+    const prepared = yield* this.#exec([SCORER, "prepare", attempt], say);
 
     // Close everything before any of the root's checks run.
     yield* this.#route(repo.host, { mode: "deny" });
@@ -249,12 +327,21 @@ export class Sandbox extends DurableObject<Bindings> {
     }
 
     const { workdir } = yield* this.#json(prepared, Prepared, "prepare");
-    const checked = yield* this.#exec([SCORER, "check", workdir]);
+    const checked = yield* this.#exec([SCORER, "check", workdir], say);
     const run = yield* this.#json(checked, CheckRun, "check");
 
     yield* Effect.promise(() => this.#container().destroy());
 
-    return yield* this.#judge(run, score.intent ?? "");
+    if (run.judges.length === 0) {
+      return run.report;
+    }
+
+    say(stepLine("judge", "active"));
+
+    return yield* this.#judge(run, score.intent ?? "").pipe(
+      Effect.tap(() => Effect.sync(() => say(stepLine("judge", "complete")))),
+      Effect.tapError((error) => Effect.sync(() => say(stepLine("judge", "error", error.message)))),
+    );
   });
 
   /** The report with the root's judges' outcomes added. A Clef failure is retryable: 503. */
@@ -320,21 +407,33 @@ export class Sandbox extends DurableObject<Bindings> {
     });
   });
 
-  readonly #exec = Effect.fn("Sandbox.exec")(function* (this: Sandbox, argv: ReadonlyArray<string>) {
+  /**
+   * Run `argv`. Its stderr is read as it is written: progress lines go to
+   * `report` at once, the rest is kept as the command's error text.
+   */
+  readonly #exec = Effect.fn("Sandbox.exec")(function* (this: Sandbox, argv: ReadonlyArray<string>, report: Report = quiet) {
     const container = this.#container();
 
-    const output = yield* Effect.tryPromise({
-      try: async () => (await container.exec([...argv], { env: { ...EXEC_ENV } })).output(),
+    return yield* Effect.tryPromise({
+      try: async () => {
+        const running = await container.exec([...argv], { env: { ...EXEC_ENV }, stdout: "pipe", stderr: "pipe" });
+        const kept: Array<string> = [];
+
+        const [stdout] = await Promise.all([
+          new Response(running.stdout).text(),
+          eachLine(running.stderr, (line) => {
+            if (line.startsWith(PROGRESS_PREFIX)) {
+              report(line.slice(PROGRESS_PREFIX.length));
+            } else {
+              kept.push(line);
+            }
+          }),
+        ]);
+
+        return { exitCode: await running.exitCode, stdout, stderr: kept.join("\n") } satisfies Ran;
+      },
       catch: (cause) => failure(503, `${argv.slice(0, 2).join(" ")}: ${String(cause)}`),
     });
-
-    const decoder = new TextDecoder();
-
-    return {
-      exitCode: output.exitCode,
-      stdout: decoder.decode(output.stdout),
-      stderr: decoder.decode(output.stderr),
-    } satisfies Ran;
   });
 
   /** A `ficus-scorer` result: 2 is the attempt's or root's fault, other failures the sandbox's. */

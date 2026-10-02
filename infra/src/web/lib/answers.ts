@@ -91,10 +91,28 @@ export const CheckOutcome = Schema.Struct({
   tail: Schema.String,
 });
 
+/** ficus-core `Ledger`: an operation's steps as they went (a leaf's scoring). */
+export const Ledger = Schema.Struct({
+  entries: Schema.Array(
+    Schema.Struct({
+      step: Schema.String,
+      item: Schema.optional(Schema.String),
+      state: Schema.Literals(["active", "complete", "error"]),
+      detail: Schema.optional(Schema.String),
+      started_at: Schema.Number,
+      ended_at: Schema.optional(Schema.Number),
+    }),
+  ),
+});
+
+export type Ledger = typeof Ledger.Type;
+
 /** `GET .../leaves/<leaf>`: the leaf and, once scored, its report. */
 export const LeafDetail = Schema.Struct({
   leaf: Leaf,
   report: Schema.NullOr(Schema.Struct({ checks: Schema.Array(CheckOutcome), cost: Schema.Number })),
+  /** Its scoring steps, live while it ripens; absent for a leaf never scored. */
+  scoring: Schema.optional(Schema.NullOr(Ledger)),
 });
 
 const Person = Schema.Struct({ name: Schema.String, email: Schema.String });
@@ -146,3 +164,88 @@ export const Organizations = Schema.Array(Schema.Struct({ id: Schema.String, nam
 export const Session = Schema.NullOr(
   Schema.Struct({ user: Schema.Struct({ id: Schema.String, email: Schema.String, name: Schema.String }) }),
 );
+
+/** ficus-core `Standing`: where a leaf stands if its bud were harvested now. */
+export const Standing = Schema.Union([
+  Schema.Literals(["Winner", "Stale", "Growing", "Ripening"]),
+  Schema.Struct({ Outscored: Schema.Struct({ by: Id }) }),
+  Schema.Struct({ Failing: Schema.Struct({ checks_passed: Schema.Number, checks_total: Schema.Number }) }),
+  Schema.Struct({ Fruit: Schema.Struct({ node: Id }) }),
+  Schema.Struct({ Pruned: Schema.Struct({ reason: PruneReason }) }),
+]);
+
+export type Standing = typeof Standing.Type;
+
+const Report = Schema.Struct({ checks: Schema.Array(CheckOutcome), cost: Schema.Number });
+
+export type Report = typeof Report.Type;
+
+/** `GET .../buds/<bud>`: the race. */
+export const BudRace = Schema.Struct({
+  bud: Bud,
+  head: Id,
+  leaves: Schema.Array(
+    Schema.Struct({ leaf: Leaf, standing: Standing, report: Schema.NullOr(Report), scoring: Schema.optional(Schema.NullOr(Ledger)) }),
+  ),
+  compost: Schema.Array(Compost),
+});
+
+export type BudRace = typeof BudRace.Type;
+
+const DiffLine = Schema.Struct({ kind: Schema.Literals(["context", "added", "removed"]), text: Schema.String });
+
+const Hunk = Schema.Struct({
+  old_start: Schema.Number,
+  old_lines: Schema.Number,
+  new_start: Schema.Number,
+  new_lines: Schema.Number,
+  lines: Schema.Array(DiffLine),
+});
+
+export type Hunk = typeof Hunk.Type;
+
+export const FileDiff = Schema.Struct({
+  path: Schema.String,
+  change: Schema.Literals(["added", "removed", "modified"]),
+  content: Schema.Union([
+    Schema.Struct({
+      kind: Schema.Literal("text"),
+      additions: Schema.Number,
+      deletions: Schema.Number,
+      hunks: Schema.Array(Hunk),
+    }),
+    Schema.Struct({ kind: Schema.Literals(["binary", "too_large"]) }),
+  ]),
+});
+
+export type FileDiff = typeof FileDiff.Type;
+
+/** `GET .../{leaves,nodes}/<id>/diff`. */
+export const Diff = Schema.Struct({
+  repo: Schema.String,
+  base: Schema.String,
+  head: Schema.String,
+  files: Schema.Array(FileDiff),
+  truncated: Schema.Boolean,
+});
+
+export type Diff = typeof Diff.Type;
+
+/** `POST .../buds`. */
+export const BudCreated = Schema.Struct({ bud: Id });
+
+/** `POST .../buds/<bud>/harvest`. */
+export const Harvested = Schema.Struct({ fruit: Id, node: Id });
+
+
+/** `POST .../buds/<bud>/leaves` and `.../regrow`: a leaf to push to, with its write token. */
+export const Growing = Schema.Struct({
+  leaf: Id,
+  bud: Id,
+  agent: Schema.String,
+  remote: Schema.String,
+  token: Schema.String,
+  base_commit: Schema.String,
+});
+
+export type Growing = typeof Growing.Type;
