@@ -17,5 +17,7 @@
     // keeps hovers and refactors without reporting every finding twice.
     "plugins": [{ "name": "@effect/language-service", "diagnostics": false }]
   },
-  "include": ["alchemy.run.ts", "src"]
+  "include": ["alchemy.run.ts", "src"],
+  // Typechecked by its own tsconfig against the Workers runtime.
+  "exclude": ["src/agents"]
 }

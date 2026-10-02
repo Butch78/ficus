@@ -1,0 +1,10 @@
+{
+  // The agents Worker runs on workerd, not Bun: Workers types, no Bun types.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "types": ["@cloudflare/workers-types"],
+    "lib": ["ESNext"]
+  },
+  "include": ["."],
+  "exclude": []
+}

@@ -8,7 +8,7 @@
     "plan": "bun --bun alchemy plan alchemy.run.ts --stage ${STAGE:-dev}",
     "deploy": "bun --bun alchemy deploy alchemy.run.ts --stage ${STAGE:-dev} --yes",
     "destroy": "bun --bun alchemy destroy alchemy.run.ts --stage ${STAGE:-dev}",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p src/agents",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "test": "bun test ./src/",
@@ -16,10 +16,15 @@
     "prepare": "effect-tsgo patch --typescript --oxlint"
   },
   "dependencies": {
+    "@earendil-works/chord": "0.99.2",
+    "@earendil-works/pi-ai": "0.99.2",
+    "@earendil-works/pi-durable": "0.99.2",
     "@effect/platform-bun": "4.0.0",
     "@effect/platform-node": "4.0.0",
+    "agents": "0.25.0",
     "alchemy": "2.0.0-beta.80",
-    "effect": "4.0.0"
+    "effect": "4.0.0",
+    "typebox": "1.3.27"
   },
   "devDependencies": {
     "@effect/tsgo": "0.47.2",

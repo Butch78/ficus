@@ -1,0 +1,10 @@
+cloudflare/agents 3ddbd76cf0a21c46410563281bded36a2f56a911 packages/agents/src/harness/pi (MIT), vendored 2026-10-02 because
+agents@0.25.0 on npm does not export ./harness/pi yet. skills.ts left out (needs
+agents/skills internals). Changes: `../../lifecycle` -> `agents/lifecycle`; index.ts
+without the skills re-exports; session-store.ts guards `match[1]` for
+noUncheckedIndexedAccess. Delete this copy once agents publishes harness/pi.
+
+pi 1.0.0 (2026-10-01) breaks this harness: async SqliteDatabase with a transaction
+executor, ConversationConfig/setModel and registry.tools removed, env as a factory
+with an id. Stay on @earendil-works/* 0.99.2 until cloudflare/agents updates
+harness/pi for 1.0, then replace this copy with the published module.

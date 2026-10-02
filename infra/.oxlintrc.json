@@ -19,7 +19,7 @@
     { "name": "anti-slop", "specifier": "./tools/oxlint/anti-slop/index.ts" },
     { "name": "anti-slop-effect", "specifier": "./tools/oxlint/anti-slop/effect/index.ts" }
   ],
-  "ignorePatterns": ["node_modules", ".alchemy", ".claude/**", "tools/oxlint/anti-slop/**"],
+  "ignorePatterns": ["node_modules", ".alchemy", ".claude/**", "tools/oxlint/anti-slop/**", "src/agents/vendor/**"],
   "categories": { "correctness": "error" },
   "rules": {
     // Effect.gen / Effect.fn take a generator even when nothing is yielded.
