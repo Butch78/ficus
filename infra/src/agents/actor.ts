@@ -7,30 +7,60 @@
  *   earlier attempts. pi's run is durable from there: every model turn and
  *   tool call is checkpointed in this object's SQLite, so an eviction resumes
  *   the run rather than losing it.
- * - `GET /status`: whether the agent is still working, and its last words.
+ * - `GET /status`: whether the agent is still working, its phase, and its
+ *   last words.
  *
  * The agent works in a container (`ScorerContainer`, the same image the
  * scorer uses: nix, devenv, git), through pi's read/write/edit/bash tools, so
- * it can run the root's own checks before it submits. It submits with the
- * `submit_leaf` tool, which freezes the leaf and queues it for scoring.
+ * it can run the root's own checks before it submits. A leaf grows in two
+ * phases, one pi conversation throughout, each phase with its own model, tools
+ * and rules (pi's per-conversation agent state):
+ *
+ * - `scout`: a cheap model reads the code and runs the checks, without edit
+ *   tools, and hands over a plan with `plan_change`.
+ * - `change`: a second model takes over the same conversation, so it sees
+ *   everything the scout read, makes the change, and submits it with
+ *   `submit_leaf`, which freezes the leaf and queues it for scoring.
+ *
+ * Clef judges both handovers (`gates.ts`): it can turn back a vague or
+ * off-task plan, and a diff that misses the task or weakens a test. With the
+ * plan it also routes the change: a mechanical plan stays with the scout's
+ * cheap model, anything else goes to the assignment's.
  */
 import { DurableObject } from "cloudflare:workers";
+import type { Context } from "@earendil-works/chord";
+import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { createRegistry, Harness } from "@earendil-works/pi-durable";
-import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
-import { CLOUDFLARE_PROVIDER_ID, createAI } from "agents/models/pi-ai";
+import {
+  type AgentChange,
+  configure,
+  createRegistry,
+  defineExtension,
+  defineTool,
+  Harness,
+  type ToolExecutionApi,
+} from "@earendil-works/pi-durable";
+import { CodingTools } from "@earendil-works/pi-durable/tools";
+import { PiHarness } from "agents/harness/pi";
 import { Lifecycle } from "agents/lifecycle";
+import { CLOUDFLARE_PROVIDER_ID, createAI } from "agents/models/pi-ai";
+import type * as Decision from "effect/ai/Decision";
+import * as DecisionModel from "effect/ai/DecisionModel";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { Type } from "typebox";
+import { Clef } from "../clef/clef.ts";
+import { clip, describe, DIFF, effort, MAX_REJECTIONS, objections, type Objection, PLAN } from "./gates.ts";
 import { ContainerEnv, type SandboxStub } from "./sandbox-env.ts";
-import { BACKGROUND_CONTEXT as BACKGROUND } from "./vendor/pi-harness/context.ts";
-import { PiHarness } from "./vendor/pi-harness/index.ts";
 
 /** Where the leaf is checked out inside the agent's container. */
 const LEAF_DIR = "/work/leaf";
 
-/** The model an agent runs when its assignment names none. */
+/** The model that makes the change when the assignment names none. */
 export const DEFAULT_MODEL = "@cf/moonshotai/kimi-k2.7-code";
+
+/** The model that scouts when the assignment names none: fast and cheap, since it only reads. */
+export const DEFAULT_SCOUT_MODEL = "@cf/zai-org/glm-5.3-flash";
 
 const CompostEntry = Schema.Struct({
   leaf: Schema.Number,
@@ -46,7 +76,10 @@ export const Assignment = Schema.Struct({
   bud: Schema.Number,
   intent: Schema.String,
   agent: Schema.String,
+  /** Makes the change. */
   model: Schema.optional(Schema.String),
+  /** Reads the code and plans the change. */
+  scout_model: Schema.optional(Schema.String),
   remote: Schema.String,
   token: Schema.String,
   base_commit: Schema.String,
@@ -56,6 +89,14 @@ export const Assignment = Schema.Struct({
 export interface Assignment extends Schema.Schema.Type<typeof Assignment> {}
 
 const ASSIGNMENT_KEY = "assignment";
+
+/** The plan `plan_change` accepted, for the diff gate. */
+const PLAN_KEY = "plan";
+
+/** The root's files, as `crates/ficus-core` `LOCKED_PATHS`: restored before scoring, so out of the diff. */
+const LOCKED_PATHS = ["ficus.toml", "devenv.nix", "devenv.yaml", "devenv.lock", ".envrc"] as const;
+
+type Gate = "plan" | "submit";
 
 interface Bindings {
   readonly AI: Ai;
@@ -68,6 +109,26 @@ export class GrowRejected extends Schema.TaggedError<GrowRejected>()("Agent.Grow
   message: Schema.String,
 }) {}
 
+/** A tool ran in an actor that was never assigned a leaf. */
+export class NoAssignment extends Schema.TaggedError<NoAssignment>()("Agent.NoAssignment", {
+  message: Schema.String,
+}) {}
+
+/** Clef objected to a plan or a diff, and the gate has turns left. */
+export class Rejected extends Schema.TaggedError<Rejected>()("Agent.Rejected", {
+  message: Schema.String,
+}) {}
+
+/** This object's storage, or the container, failed a gate. */
+export class GateFailed extends Schema.TaggedError<GateFailed>()("Agent.GateFailed", {
+  message: Schema.String,
+}) {}
+
+/** pi did not take the switch to the change phase. */
+export class PlanFailed extends Schema.TaggedError<PlanFailed>()("Agent.PlanFailed", {
+  message: Schema.String,
+}) {}
+
 /** The tree refused the submission, or could not be reached. */
 export class SubmitFailed extends Schema.TaggedError<SubmitFailed>()("Agent.SubmitFailed", {
   message: Schema.String,
@@ -77,9 +138,29 @@ export class SubmitFailed extends Schema.TaggedError<SubmitFailed>()("Agent.Subm
 const attempt = <A, E>(run: () => Promise<A>, onFail: (cause: unknown) => E): Effect.Effect<A, E> =>
   Effect.tryPromise({ try: run, catch: onFail });
 
+/**
+ * A gate's answers, or `undefined` when Clef cannot give them. The gates are
+ * advice ahead of the root's checks, which still run on every leaf, so a
+ * Clef outage lets the agent through rather than stalling it.
+ */
+const advice = <Input extends Schema.Constraint, Decisions extends Record<string, Decision.Any>>(
+  definition: Decision.Definition<Input, Decisions>,
+  input: Input["Type"],
+) =>
+  DecisionModel.decide(definition, { input }).pipe(
+    Effect.map(({ answers }): Decision.Answers<Decisions> | undefined => answers),
+    Effect.catchTag("AiError", (error) =>
+      Effect.logWarning("Clef did not answer; the gate lets this through", error).pipe(Effect.as(undefined)),
+    ),
+  );
+
 const toolText = (text: string, isError: boolean) => ({ content: [{ type: "text" as const, text }], isError });
 
-/** The instructions an agent starts from. */
+/** Objections a gate let through after its last turn-back, for the record. */
+const remaining = (doubts: ReadonlyArray<Objection>): string =>
+  doubts.length === 0 ? "" : `\nClef's remaining doubts:\n${describe(doubts)}`;
+
+/** The task an agent starts from, the same in both phases. Each phase's rules are its pi instructions. */
 export const prompt = (assignment: Assignment): string => {
   const compost =
     assignment.compost.length === 0
@@ -95,17 +176,41 @@ export const prompt = (assignment: Assignment): string => {
     "",
     `Your checkout is ${LEAF_DIR} (git, on main, already configured to push). It starts at commit ${assignment.base_commit}.`,
     "",
-    "Rules:",
-    "- The repository's `ficus.toml` lists the checks your change must pass. Run each one yourself before submitting. If the repository has a `devenv.nix`, run checks as `devenv shell -- <command>` (the first run builds the environment and can take a few minutes).",
-    "- You cannot change the checks: `ficus.toml` and the devenv files are restored from the base before scoring.",
-    "- Keep the change as small as the task allows. Do not reformat or touch unrelated code.",
-    "- When the checks pass, commit, `git push origin HEAD:main`, then call the `submit_leaf` tool. Submitting freezes your leaf; you cannot push after it.",
-    "- If you cannot complete the task, say why instead of submitting.",
+    "The repository's `ficus.toml` lists the checks the change must pass. If the repository has a `devenv.nix`, run checks as `devenv shell -- <command>` (the first run builds the environment and can take a few minutes). The checks cannot be changed: `ficus.toml` and the devenv files are restored from the base before scoring.",
     "",
     "Earlier attempts at this task (the compost):",
     compost,
   ].join("\n");
 };
+
+type Phase = "scout" | "change";
+
+/** The tools each phase is offered, by name; pi drops the rest. */
+const PHASE_TOOLS: Readonly<Record<Phase, ReadonlySet<string>>> = {
+  scout: new Set(["read", "bash", "plan_change"]),
+  change: new Set(["read", "write", "edit", "bash", "submit_leaf"]),
+};
+
+const SCOUT_RULES = [
+  "You are scouting. A stronger model takes over this conversation after you to make the change, and sees everything you read and ran.",
+  "- Read the code the task touches and `ficus.toml`.",
+  "- Run the checks once, to see where they stand before any change.",
+  "- Do not change, commit or push anything.",
+  "- When you know the smallest change that does the task, call `plan_change` with the files and the exact edits, the checks to run, and anything surprising you found.",
+  "- If the task cannot be done, say why instead of planning.",
+].join("\n");
+
+const changeRules = (plan: string): string =>
+  [
+    "The scout has read the code; its plan is below. Follow it unless the code says otherwise.",
+    "- Keep the change as small as the task allows. Do not reformat or touch unrelated code.",
+    "- Run every check in `ficus.toml` yourself.",
+    "- When the checks pass, commit, `git push origin HEAD:main`, then call the `submit_leaf` tool. Submitting freezes your leaf; you cannot push after it.",
+    "- If you cannot complete the task, say why instead of submitting.",
+    "",
+    "The scout's plan:",
+    plan,
+  ].join("\n");
 
 export class AgentActor extends DurableObject<Bindings> {
   readonly #ai = createAI({ binding: this.env.AI });
@@ -113,7 +218,11 @@ export class AgentActor extends DurableObject<Bindings> {
   /** The leaf's container: one `ScorerContainer` instance per agent. */
   readonly #sandbox: SandboxStub = this.env.SCORER.get(this.env.SCORER.idFromName(`agent:${this.ctx.id.name ?? this.ctx.id.toString()}`));
 
-  readonly #workspace = new ContainerEnv(this.#sandbox, LEAF_DIR);
+  readonly #workspace = new ContainerEnv(this.#sandbox, `agent:${this.ctx.id.toString()}`, LEAF_DIR);
+
+  readonly #ficus = defineExtension({ name: "ficus", tools: [this.#planTool(), this.#submitTool()] });
+
+  readonly #clef = Clef.layerBinding(this.env.AI);
 
   readonly harness = new PiHarness({
     harness: ({ storage, context }) => {
@@ -123,18 +232,23 @@ export class AgentActor extends DurableObject<Bindings> {
 
       const registry = createRegistry();
 
-      registry.tools.add(createReadTool());
-      registry.tools.add(createWriteTool());
-      registry.tools.add(createEditTool());
-      registry.tools.add(createBashTool());
-      registry.tools.add(this.#submitTool());
+      registry.install(CodingTools);
+      registry.install(this.#ficus);
 
-      return Harness.open(storage, { models, registry, env: this.#workspace }, context);
+      return Harness.open(
+        storage,
+        {
+          models,
+          registry,
+          env: () => this.#workspace,
+          settings: { retry: { enabled: true, maxRetries: 2, baseDelayMs: 500 } },
+        },
+        context,
+      );
     },
     defaults: {
-      model: { provider: CLOUDFLARE_PROVIDER_ID, modelId: DEFAULT_MODEL },
+      model: { provider: CLOUDFLARE_PROVIDER_ID, id: DEFAULT_MODEL },
       thinkingLevel: "low",
-      retry: { enabled: true, maxRetries: 2, baseDelayMs: 500 },
     },
   });
 
@@ -157,9 +271,13 @@ export class AgentActor extends DurableObject<Bindings> {
       const session = this.harness.session();
       const messages = await session.messages();
       const last = messages.at(-1);
+      const pi = await this.harness.pi();
+      const agent = await (await pi.root(BACKGROUND)).agent(BACKGROUND);
 
       return Response.json({
         busy: await session.busy(),
+        phase: agent.tools.some((tool) => tool.name === "plan_change") ? "scout" : "change",
+        model: agent.model?.modelId ?? null,
         entries: messages.length,
         assignment: await this.ctx.storage.get(ASSIGNMENT_KEY),
         last: last === undefined ? null : last.kind,
@@ -192,10 +310,12 @@ export class AgentActor extends DurableObject<Bindings> {
     yield* this.#prepare(assignment);
     yield* attempt(() => this.ctx.storage.put(ASSIGNMENT_KEY, assignment), failed("storing the assignment"));
 
-    const session = this.harness.session();
-    const model = { provider: CLOUDFLARE_PROVIDER_ID, modelId: assignment.model ?? DEFAULT_MODEL };
+    const pi = yield* attempt(() => this.harness.pi(), failed("opening pi"));
+    const root = yield* attempt(() => pi.root(BACKGROUND), failed("opening the conversation"));
 
-    yield* attempt(() => session.setModel(model), failed("choosing the model"));
+    yield* attempt(() => root.configure(this.#phase("scout", assignment), BACKGROUND), failed("starting the scout"));
+
+    const session = this.harness.session();
 
     yield* attempt(
       () => session.submit([{ type: "text", text: prompt(assignment) }], { operationId: `grow-${assignment.leaf}` }),
@@ -230,16 +350,126 @@ export class AgentActor extends DurableObject<Bindings> {
     }
   });
 
-  /** Freeze this leaf and queue it for the root's checks, via its tree. */
-  readonly #submit = Effect.fn("Agent.submitLeaf")(function* (this: AgentActor) {
+  /**
+   * pi's agent state for a phase: its model, its tools, its rules. A `light`
+   * change keeps the scout's model.
+   */
+  #phase(phase: Phase, assignment: Assignment, plan = "", light = false): AgentChange {
+    const scout = assignment.scout_model ?? DEFAULT_SCOUT_MODEL;
+    const model = phase === "scout" || light ? scout : (assignment.model ?? DEFAULT_MODEL);
+    const tools = [...(CodingTools.tools ?? []), ...(this.#ficus.tools ?? [])].filter((tool) => PHASE_TOOLS[phase].has(tool.name));
+
+    return {
+      model: { provider: CLOUDFLARE_PROVIDER_ID, modelId: model },
+      tools,
+      instructions: phase === "scout" ? SCOUT_RULES : changeRules(plan),
+    };
+  }
+
+  /** The assignment `/grow` stored, for tools that run later. */
+  readonly #assignment = Effect.fn("Agent.assignment")(function* (this: AgentActor) {
     const stored = yield* attempt(
       () => this.ctx.storage.get(ASSIGNMENT_KEY),
-      (cause) => new SubmitFailed({ message: `reading the assignment: ${String(cause)}` }),
+      (cause) => new NoAssignment({ message: `reading the assignment: ${String(cause)}` }),
     );
 
-    const assignment = yield* Schema.decodeUnknownEffect(Assignment)(stored).pipe(
-      Effect.mapError(() => new SubmitFailed({ message: "this agent has no assignment" })),
+    return yield* Schema.decodeUnknownEffect(Assignment)(stored).pipe(
+      Effect.mapError(() => new NoAssignment({ message: "this agent has no assignment" })),
     );
+  });
+
+  /**
+   * Hand the conversation to the change phase. The switch is one pi commit,
+   * so the next model request already runs the change model with its tools.
+   */
+  readonly #plan = Effect.fn("Agent.planChange")(function* (
+    this: AgentActor,
+    plan: string,
+    api: ToolExecutionApi,
+    context: Context,
+  ) {
+    const assignment = yield* this.#assignment();
+    const answers = yield* advice(PLAN, { task: assignment.intent, plan });
+    const doubts = answers === undefined ? [] : objections(PLAN.decisions, answers);
+
+    if (doubts.length > 0 && (yield* this.#turnBack("plan"))) {
+      return yield* new Rejected({
+        message: `Clef doubts this plan. Revise it and call plan_change again:\n${describe(doubts)}`,
+      });
+    }
+
+    // An assignment that names its change model gets it; otherwise Clef routes.
+    const light = assignment.model === undefined && answers !== undefined && effort(answers) === "mechanical";
+    const change = this.#phase("change", assignment, plan, light);
+
+    yield* attempt(
+      () => this.ctx.storage.put(PLAN_KEY, plan),
+      (cause) => new GateFailed({ message: `storing the plan: ${String(cause)}` }),
+    );
+
+    yield* attempt(
+      () => api.commit((tx) => configure(tx, api.conversationId, change), context),
+      (cause) => new PlanFailed({ message: `switching to the change phase: ${String(cause)}` }),
+    );
+
+    return { model: change.model?.modelId ?? DEFAULT_MODEL, doubts };
+  });
+
+  /** Whether `gate` turns this call back: it does `MAX_REJECTIONS` times, then lets calls through. */
+  readonly #turnBack = Effect.fn("Agent.turnBack")(function* (this: AgentActor, gate: Gate) {
+    const key = `rejections:${gate}`;
+    const failed = (cause: unknown) => new GateFailed({ message: `counting ${gate} rejections: ${String(cause)}` });
+    const count = (yield* attempt(() => this.ctx.storage.get<number>(key), failed)) ?? 0;
+
+    if (count >= MAX_REJECTIONS) {
+      return false;
+    }
+
+    yield* attempt(() => this.ctx.storage.put(key, count + 1), failed);
+
+    return true;
+  });
+
+  /** The leaf's committed change, base to HEAD, without the root's locked files. */
+  readonly #diff = Effect.fn("Agent.diff")(function* (this: AgentActor, assignment: Assignment) {
+    const excludes = LOCKED_PATHS.map((path) => `':(exclude)${path}'`).join(" ");
+    let output = "";
+
+    const ran = yield* attempt(
+      () =>
+        this.#workspace.exec(
+          `git diff --no-color ${assignment.base_commit} HEAD -- . ${excludes}`,
+          { cwd: LEAF_DIR, timeout: 60_000, onOutput: (text) => (output += text) },
+          BACKGROUND,
+        ),
+      (cause) => new GateFailed({ message: `diffing the leaf: ${String(cause)}` }),
+    );
+
+    if (!ran.ok || ran.value.exitCode !== 0) {
+      return yield* new GateFailed({ message: `diffing the leaf: ${ran.ok ? `exit ${ran.value.exitCode}` : ran.error.message}` });
+    }
+
+    return output;
+  });
+
+  /** Freeze this leaf and queue it for the root's checks, via its tree, once Clef has seen the diff. */
+  readonly #submit = Effect.fn("Agent.submitLeaf")(function* (this: AgentActor) {
+    const assignment = yield* this.#assignment();
+
+    const plan = yield* attempt(
+      () => this.ctx.storage.get<string>(PLAN_KEY),
+      (cause) => new GateFailed({ message: `reading the plan: ${String(cause)}` }),
+    );
+
+    const diff = yield* this.#diff(assignment);
+    const answers = yield* advice(DIFF, { task: assignment.intent, plan: plan ?? "", diff: clip(diff) });
+    const doubts = answers === undefined ? [] : objections(DIFF.decisions, answers);
+
+    if (doubts.length > 0 && (yield* this.#turnBack("submit"))) {
+      return yield* new Rejected({
+        message: `Clef doubts this diff. Fix it, commit, push, and call submit_leaf again:\n${describe(doubts)}`,
+      });
+    }
 
     const tree = this.env.TREES.get(this.env.TREES.idFromName(assignment.tree));
     const url = `http://tree/trees/${assignment.tree}/leaves/${assignment.leaf}/ripe`;
@@ -258,27 +488,61 @@ export class AgentActor extends DurableObject<Bindings> {
       return yield* new SubmitFailed({ message: `submit refused (${response.status}): ${text}` });
     }
 
-    return text;
+    return { text, doubts };
   });
 
-  /** `submit_leaf`, as a pi tool: the Effect above, rendered as a tool result. */
-  #submitTool() {
-    return {
-      name: "submit_leaf",
+  /** `plan_change`, as a pi tool: ends the scout phase. */
+  #planTool() {
+    return defineTool({
+      name: "plan_change",
       description:
-        "Submit your leaf for scoring once your change is committed and pushed and the checks pass. This freezes the leaf: you cannot push after it. Takes no arguments.",
-      parameters: { type: "object", properties: {}, additionalProperties: false },
-      replay: "unsafe" as const,
-      execute: () =>
+        "End scouting: hand your plan to the model that makes the change. Call once, when you know the smallest change that does the task.",
+      parameters: Type.Object(
+        {
+          plan: Type.String({
+            minLength: 1,
+            description: "The files and the exact edits, the checks to run, and anything surprising you found.",
+          }),
+        },
+        { additionalProperties: false },
+      ),
+      replay: "safe" as const,
+      execute: ({ plan }, api, context) =>
         Effect.runPromise(
-          this.#submit().pipe(
+          this.#plan(plan, api, context).pipe(
+            // oxlint-disable-next-line effecttsgo/strict-effect-provide -- a tool call is an entry point
+            Effect.provide(this.#clef),
             Effect.match({
-              onSuccess: (text) => toolText(`Submitted: ${text}. Your work is done; stop here.`, false),
+              onSuccess: ({ model, doubts }) =>
+                toolText(`Plan handed over; ${model} makes the change from here.${remaining(doubts)}`, false),
               onFailure: (error) => toolText(error.message, true),
             }),
           ),
         ),
-    };
+    });
+  }
+
+  /** `submit_leaf`, as a pi tool: the Effect above, rendered as a tool result. */
+  #submitTool() {
+    return defineTool({
+      name: "submit_leaf",
+      description:
+        "Submit your leaf for scoring once your change is committed and pushed and the checks pass. This freezes the leaf: you cannot push after it. Takes no arguments.",
+      parameters: Type.Object({}, { additionalProperties: false }),
+      replay: "unsafe" as const,
+      execute: () =>
+        Effect.runPromise(
+          this.#submit().pipe(
+            // oxlint-disable-next-line effecttsgo/strict-effect-provide -- a tool call is an entry point
+            Effect.provide(this.#clef),
+            Effect.match({
+              onSuccess: ({ text, doubts }) =>
+                toolText(`Submitted: ${text}. Your work is done; stop here.${remaining(doubts)}`, false),
+              onFailure: (error) => toolText(error.message, true),
+            }),
+          ),
+        ),
+    });
   }
 }
 

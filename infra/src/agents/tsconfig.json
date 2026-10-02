@@ -1,7 +1,8 @@
 {
-  // workerd, not Bun: Workers types only.
+  // Runs on workerd; its pure-module tests run on Bun (skipLibCheck absorbs
+  // the overlapping globals).
   "extends": "../../tsconfig.json",
-  "compilerOptions": { "types": ["@cloudflare/workers-types"], "lib": ["ESNext"] },
+  "compilerOptions": { "types": ["@cloudflare/workers-types", "bun"], "lib": ["ESNext"] },
   "include": ["."],
   "exclude": []
 }

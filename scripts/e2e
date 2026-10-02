@@ -68,7 +68,7 @@ wait_scored() { # leaf -> prints its state once it is no longer ripening
 }
 
 report() { # leaf
-  call GET "/leaves/$1" | jq -c '{cost: .report.cost, checks: [.report.checks[]? | {name, passed}]}'
+  call GET "/leaves/$1" | jq -c '{cost: .report.cost, checks: [.report.checks[]? | {name, passed, confidence}]}'
 }
 
 step "no key is refused; another organization's trees are invisible"

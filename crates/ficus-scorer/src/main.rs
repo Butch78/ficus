@@ -5,7 +5,8 @@
 //!       clones the leaf, restores the root's locked files, builds the root's
 //!       devenv shell; prints {"workdir": "..."}
 //!   ficus-scorer check <workdir>            network: none
-//!       runs the root's checks, costs the diff; prints a ScoreReport
+//!       runs the root's checks, costs the diff; prints a CheckRun: the
+//!       ScoreReport, plus the root's judges and the diff they judge
 //!
 //! Exit 0 with JSON on stdout on success. Exit 2 when the leaf or root
 //! cannot be scored (retrying will not help), 1 for anything else; the
@@ -58,6 +59,6 @@ async fn prepare(leaf: &str) -> Result<String, ScoreError> {
 }
 
 async fn check(workdir: &Path) -> Result<String, ScoreError> {
-    let report = ficus_scorer::check(workdir).await?;
-    serde_json::to_string(&report).map_err(|error| ScoreError::Io(std::io::Error::other(error)))
+    let run = ficus_scorer::check(workdir).await?;
+    serde_json::to_string(&run).map_err(|error| ScoreError::Io(std::io::Error::other(error)))
 }

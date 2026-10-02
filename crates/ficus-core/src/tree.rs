@@ -126,12 +126,18 @@ impl From<RepoName> for String {
 ///
 /// A leaf can only become fruit if every check passed. Among passing leaves
 /// the lowest `cost` wins. What cost measures (diff size, build time, binary
-/// size) is the root's choice; the tree only needs it to be comparable.
+/// size) is the root's choice; the tree only needs it to be comparable. On
+/// equal cost the higher `confidence` wins: how sure the root's judges were,
+/// on average, in thousandths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Score {
     checks_passed: u32,
     checks_total: u32,
     cost: u64,
+    /// `None` when the root has no judges; absent from trees stored before
+    /// judges existed.
+    #[serde(default)]
+    confidence: Option<u16>,
 }
 
 impl Score {
@@ -146,7 +152,16 @@ impl Score {
             checks_passed,
             checks_total,
             cost,
+            confidence: None,
         })
+    }
+
+    /// This score with the judges' mean confidence, in thousandths (at most 1000).
+    pub fn judged(self, confidence: u16) -> Self {
+        Self {
+            confidence: Some(confidence.min(1000)),
+            ..self
+        }
     }
 
     pub fn passes(&self) -> bool {
@@ -163,6 +178,10 @@ impl Score {
 
     pub fn cost(&self) -> u64 {
         self.cost
+    }
+
+    pub fn confidence(&self) -> Option<u16> {
+        self.confidence
     }
 }
 
@@ -476,7 +495,8 @@ impl Tree {
     ///
     /// Only leaves that grew from the head are candidates: anything older was
     /// checked against a tree that no longer exists. The winner passes every
-    /// check and has the lowest cost; on equal cost the earliest leaf wins.
+    /// check and has the lowest cost; on equal cost the one the judges were
+    /// surest of, then the earliest leaf.
     pub fn harvest(&mut self, bud: BudId) -> Result<Harvest, TreeError> {
         self.open_bud(bud)?;
         let (fruit, commit, repo) = self
@@ -484,7 +504,7 @@ impl Tree {
             .filter(|leaf| leaf.base == self.head)
             .filter_map(|leaf| match &leaf.state {
                 LeafState::Ripe { commit, score } if score.passes() => {
-                    Some((leaf.id, commit, &leaf.repo, score.cost()))
+                    Some((leaf.id, commit, &leaf.repo, *score))
                 }
                 LeafState::Ripe { .. }
                 | LeafState::Growing
@@ -492,7 +512,10 @@ impl Tree {
                 | LeafState::Fruit { .. }
                 | LeafState::Pruned { .. } => None,
             })
-            .min_by_key(|&(id, _, _, cost)| (cost, id))
+            .min_by_key(|&(id, _, _, score)| {
+                let surest = std::cmp::Reverse(score.confidence().unwrap_or(0));
+                (score.cost(), surest, id)
+            })
             .map(|(id, commit, repo, _)| (id, commit.clone(), repo.clone()))
             .ok_or(TreeError::NothingToHarvest(bud))?;
 
@@ -635,6 +658,41 @@ mod tests {
         );
         assert!(Score::new(0, 0, 0).is_err());
         assert!(!Score::new(2, 3, 0).expect("2 of 3 is valid").passes());
+    }
+
+    #[test]
+    fn on_equal_cost_harvest_takes_the_leaf_the_judges_were_surest_of() {
+        let mut tree = Tree::plant(repo("t"), oid('0')).unwrap();
+        let bud = tree.bud_new("add a /health route").unwrap();
+        let first = tree.sprout(bud, "agent-a").unwrap();
+        let surer = tree.sprout(bud, "agent-b").unwrap();
+        let cheaper_but_doubted = tree.sprout(bud, "agent-c").unwrap();
+        ripen(&mut tree, first, oid('a'), passing(10).judged(600));
+        ripen(&mut tree, surer, oid('b'), passing(10).judged(900));
+        ripen(
+            &mut tree,
+            cheaper_but_doubted,
+            oid('c'),
+            passing(9).judged(510),
+        );
+
+        assert_eq!(tree.harvest(bud).unwrap().fruit, cheaper_but_doubted);
+
+        let bud = tree.bud_new("add a /ready route").unwrap();
+        let first = tree.sprout(bud, "agent-a").unwrap();
+        let surer = tree.sprout(bud, "agent-b").unwrap();
+        ripen(&mut tree, first, oid('d'), passing(10).judged(600));
+        ripen(&mut tree, surer, oid('e'), passing(10).judged(900));
+
+        assert_eq!(tree.harvest(bud).unwrap().fruit, surer);
+    }
+
+    #[test]
+    fn a_score_stored_before_judges_reads_back_unjudged() {
+        let stored: Score =
+            serde_json::from_str(r#"{"checks_passed":3,"checks_total":3,"cost":7}"#).unwrap();
+        assert_eq!(stored, passing(7));
+        assert_eq!(passing(7).judged(2000).confidence(), Some(1000));
     }
 
     #[test]

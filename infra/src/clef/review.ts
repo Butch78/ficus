@@ -14,20 +14,20 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
+import * as DecisionModel from "effect/ai/DecisionModel";
 import { Clef } from "./clef.ts";
-import { type Finding, RULES, findingsOf } from "./rules.ts";
+import { type Finding, RULES, type SourceFile, findingsOf } from "./rules.ts";
 
 export class Blocked extends Schema.TaggedError<Blocked>()("ClefReview.Blocked", {
   count: Schema.Number,
 }) {}
 
 /** Every finding across `files`, asking about up to four files at once. */
-export const review = Effect.fn("ClefReview.review")(function* (files: ReadonlyArray<Clef.SourceFile>) {
-  const clef = yield* Clef.Service;
-
+export const review = Effect.fn("ClefReview.review")(function* (files: ReadonlyArray<SourceFile>) {
   const perFile = yield* Effect.forEach(
     files,
-    (file) => clef.ask(file, RULES).pipe(Effect.map((answers) => findingsOf(file.path, answers))),
+    (file) =>
+      DecisionModel.decide(RULES, { input: file }).pipe(Effect.map(({ answers }) => findingsOf(file.path, answers))),
     { concurrency: 4 },
   );
 
@@ -69,5 +69,5 @@ const main = Effect.gen(function* () {
 
 if (import.meta.main) {
   // oxlint-disable-next-line effecttsgo/strict-effect-provide -- the program's entry point
-  BunRuntime.runMain(main.pipe(Effect.provide(Layer.mergeAll(Clef.layer.pipe(Layer.provide(FetchHttpClient.layer)), BunServices.layer))));
+  BunRuntime.runMain(main.pipe(Effect.provide(Layer.mergeAll(Clef.layerRest().pipe(Layer.provide(FetchHttpClient.layer)), BunServices.layer))));
 }
