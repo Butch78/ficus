@@ -82,10 +82,9 @@ Roughly in the order they block self-hosting:
 8. **Deploys.** *(Started: `[deploy]` and the `Deploy` Workflow.)* `deploy.yml` deploys `pr-<n>` and
    `prod` from GitHub. On Ficus, moving the release pointer (`POST /trees/<t>/release`) starts a
    Cloudflare Workflow that runs the released commit's `[deploy]` in a sandbox, with the Cloudflare
-   token added by Egress so it never enters the container. Still missing: Ficus's own `[deploy]`
-   (its sandbox image needs Docker to build, so it must be built and pushed to Cloudflare's registry
-   apart from the deploy), per-attempt preview stages, and a per-tree home for secrets (Secrets
-   Store) to replace repository secrets.
+   token added by Egress so it never enters the container. Ficus's own `[deploy]` builds its sandbox
+   image with nix and pushes it to Cloudflare's registry (a sandbox has no Docker), and the deploy
+   token lives in the Secrets Store. Still missing: per-attempt preview stages, and per-tree secrets.
 9. **Mirror to and from GitHub during the transition.**
    - Ficus → GitHub: after each accept, push the head to GitHub `main` (from a sandbox, token added
      by Egress). Branch protection then allows only the mirror to push.
@@ -139,8 +138,9 @@ One per gap above, so each can be picked up alone:
 - [ ] Push detection for attempt repos (poll `log` until Artifacts has events) and non-freezing preview scores.
 - [ ] Tree events to a Queue; signed webhook deliveries with retries.
 - [x] Deploy phase in `ficus.toml`, run by a Workflow on release (`src/deploys`).
-- [ ] Ficus's own `[deploy]`: the sandbox image built without Docker (nix) and pushed to Cloudflare's registry.
+- [x] Ficus's own `[deploy]`: the sandbox image built without Docker (nix) and pushed to Cloudflare's registry.
 - [ ] Per-tree secrets; per-attempt preview stages; deploys in the UI.
 - [ ] GitHub mirror out (head → `main` on accept) and GitHub App in (pull request → attempt → check run).
 - [ ] Tasks in the UI, with comments and labels; an issue → task importer.
-- [ ] Tree export (JSON of nodes, tasks, attempts, history, reports) and backfill of the D1 tree directory.
+- [x] Tree export (`GET /trees/<t>/export`) and nightly backups to R2.
+- [ ] Backfill of the D1 tree directory; code backups (git bundles of each head).

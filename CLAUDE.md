@@ -125,9 +125,19 @@ deadline 2026-10-14.
   reads each instance's status. The Workflow mints a read token and asks a Sandbox `POST /deploy`: `ficus-scorer
   deploy-prepare` (clone, read `[deploy]`) → its hosts + `api.cloudflare.com` open (Egress `cloudflare` mode puts the
   deploy token in `Authorization`; the container's `CLOUDFLARE_API_TOKEN` is a placeholder) → `ficus-scorer deploy`.
-  Only a stage deployed with `FICUS_DEPLOY_TOKEN` (and `CLOUDFLARE_ACCOUNT_ID`) gets the deploys Worker and the tree's
-  `DEPLOYS` binding; elsewhere releases do not deploy. A deploy that builds container images still needs Docker,
-  which a sandbox lacks: push the image to registry.cloudflare.com first (alchemy deploys a prepushed `image` as-is).
+  Only a stage deployed with `FICUS_DEPLOYS=true` gets the deploys Worker and the tree's `DEPLOYS` binding; the
+  Workflow binds the stage's deploy token from the Secrets Store by reference (`secrets.run.ts`, stack
+  `FicusSecrets`: `STAGE=prod bun run deploy:secrets` mints `ficus-deploy-<stage>` with `src/permissions.ts`, or
+  keeps a given `FICUS_DEPLOY_TOKEN`), so deploying never needs the token's value.
+- Ficus deploys itself: `[deploy]` in ficus.toml runs `scripts/deploy-ficus` (STAGE=prod): `scripts/build-scorer`,
+  `scripts/build-sandbox-image` (nix `dockerTools`, `nix/sandbox-image.nix`; no Docker in a sandbox),
+  `scripts/push-sandbox-image` (skopeo, 15-minute registry credentials), then the stacks with
+  `FICUS_SANDBOX_IMAGE=<registry ref>` (alchemy deploys an image already in registry.cloudflare.com as-is; without
+  it the sandbox builds `context/Dockerfile` with Docker, as `alchemy dev` does).
+- Backups: `GET /trees/<t>/export` (all storage, assignments left out); the Api's nightly cron writes every tree in
+  the directory to R2 `ficus-backups-<stage>` as `trees/<org>/<tree>/<date>.json`, expired after 90 days.
+- On expanse-5950x one of Cloudflare's IPv6 edges for workers.dev is unreachable: run scripts against deployed
+  stages with `CURL_HOME=<dir with .curlrc: ipv4>` if they hang.
 - The deploy token needs Containers: Edit (registry credentials) on top of Workers, Workers AI, Artifacts.
 - `just e2e` (FICUS_API=https://ficus-dev.fruitcards.workers.dev) runs the full cycle live.
 - After a deploy, old isolates keep serving for a few seconds: wait before judging a change live
