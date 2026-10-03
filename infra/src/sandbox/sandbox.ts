@@ -570,7 +570,7 @@ export class Sandbox extends DurableObject<Bindings> {
       outcomes.push(judged(judge, answers[judge.name]?.probability ?? 0, millis));
     }
 
-    return { checks: [...run.report.checks, ...outcomes], cost: run.report.cost };
+    return { ...run.report, checks: [...run.report.checks, ...outcomes] };
   });
 
   #container(): Container {
