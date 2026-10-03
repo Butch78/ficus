@@ -40,6 +40,8 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   `POST /trees/<t>/accept` (oldest ready task; both set the alarm that rebases the behind attempts) ·
   `GET /trees/<t>/behind` · `POST /trees/<t>/attempts/<id>/{retry,abandon}` ·
   `POST /trees/<t>/release {node?}` · `GET /trees/<t>/release` · `GET /trees/<t>` ·
+  `POST /trees/<t>/graft {source, branch?}` (imports an outside commit into `<t>-g<id>` as the new head;
+  open attempts become behind and are rebased; `.github/workflows/graft.yml` follows GitHub's main) ·
   `GET /trees/<t>/{attempts,nodes}/<id>/{log,tree,file}?ref=&path=` (reads through Artifacts; the tree picks
   the repo, `ficus-core::browse`; files leave as text/plain or octet-stream, never HTML).
   The Api lists an org's trees (`GET /v1/orgs/<org>/trees`) from D1 (`ficus_tree`), recorded on each 2xx init.
@@ -109,6 +111,10 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   `ficus-scorer prepare|check` is a CLI run by native exec. The root's `ficus.toml` and devenv files
   come from the base commit (LOCKED_PATHS), so a attempt cannot change its own checks; the task's checks
   travel in the request and run after the root's. Cost = diff lines; the report also lists `touched` paths.
+  `[fetch] {hosts, run}` in ficus.toml (from the base, like the checks): scoring is `ficus-scorer prepare` (clone,
+  restore; reports the hosts) → the Sandbox opens them → `fetch` (devenv build + `run`) → every route closes →
+  `check`. Agent workspaces open the same hosts, read once at the base (`ficus-scorer hosts`). Ficus's own
+  `ficus.toml` mirrors ci.yml. Attempts push `HEAD` (their default branch may not be `main`).
   `[[judge]]` in ficus.toml = a yes/no question on `{task, diff}` the Sandbox asks Clef (Workers AI binding)
   after the container is gone; counts as a check, and its mean confidence breaks cost ties at acceptance.
   Image: `infra/src/sandbox/context` (nix + devenv; binary from `scripts/build-scorer`). Run

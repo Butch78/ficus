@@ -53,7 +53,8 @@ Two consequences shape the plan:
 
 Roughly in the order they block self-hosting:
 
-1. **Checks for this repo.** There is no `ficus.toml` at the root. Its checks are `just fl`,
+1. **Checks for this repo.** *(Started: `ficus.toml` and `[fetch]` exist; timings are being measured.)*
+   There was no `ficus.toml` at the root. Its checks are `just fl`,
    `just test`, and `just infra-check`, and they need crates.io, the npm registry, and the
    devenv/nix caches. Egress only lets the prepare phase reach the attempt repo and the nix caches, so
    cargo and bun cannot fetch anything. A cold devenv for this repo is also far heavier than the
@@ -62,7 +63,7 @@ Roughly in the order they block self-hosting:
    clone URL changes on every accept. The Artifacts binding has no ref-update or push method, so
    keeping one trunk repo fast-forwarded means a sandbox pushing to it (with a token Egress adds) on
    accept.
-3. **Following an outside `main`.** A tree is initialized once. While GitHub stays the source of truth,
+3. **Following an outside `main`.** *(Done: `POST /trees/<t>/graft`, and `graft.yml`.)* A tree is initialized once. While GitHub stays the source of truth,
    its `main` moves without an acceptance. Ficus needs a graft: import an outside commit as a new
    head node, leaving open attempts behind (and so rebased) as an acceptance does.
 4. **Review.** Attempt and node diffs, the case for accepting and every attempt's standing are in the UI
@@ -123,10 +124,12 @@ Each step is useful on its own and can be reverted without losing work.
 
 One per gap above, so each can be picked up alone:
 
-- [ ] `ficus.toml` for this repo, Egress prepare-phase allowances for crates.io, npm, and the devenv
-      caches, and measured scorer timeouts and instance type.
+- [x] `ficus.toml` for this repo, and `[fetch]`: the root names the hosts its checks need (crates,
+      npm, rust-overlay's toolchains), open only while devenv builds and dependencies download.
+- [ ] Measured scorer timeouts and instance type for this repo.
 - [ ] Trunk repo: fast-forward a stable Artifacts repo per tree on accept, from a sandbox.
-- [ ] `POST /trees/<t>/graft {source, branch}`: import an outside commit as the new head node.
+- [x] `POST /trees/<t>/graft {source, branch}`: import an outside commit as the new head node;
+      `.github/workflows/graft.yml` calls it on every push to `main` once `FICUS_GRAFT_ENABLED` is set.
 - [x] Attempt and node diffs, rendered on their pages.
 - [ ] Comments on attempts and tasks; approval-gated accept that checks Better Auth org roles in the Api.
 - [x] UI actions (task, start agents, start by hand, submit, accept, retry, abandon).
