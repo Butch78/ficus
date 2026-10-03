@@ -15,7 +15,6 @@ permissions:
 
 env:
   SECRETSPEC_REASON: "CI: deploy with the bootstrap-minted token"
-  RUSTC_WRAPPER: ""
 
 jobs:
   deploy:
@@ -49,7 +48,7 @@ jobs:
       # Before the deploy, not inside it: alchemy builds the scorer image in a
       # phase that does not wait for the ScorerBinary build, so the image could
       # copy a missing (or an old) binary.
-      - name: Build the scorer binary
+      - name: Bundle the scorer
         run: devenv shell -- scripts/build-scorer
       - name: Deploy
         id: deploy

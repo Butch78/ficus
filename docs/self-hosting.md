@@ -32,7 +32,7 @@ Two consequences shape the plan:
   leans on rebases applying cleanly.
 - **Accept picks, people approve.** Accept takes the cheapest passing attempt. For agent swarms that
   is the point. For a project people maintain, someone has to say yes first, and nothing in
-  `ficus-core::tree` models that yet.
+  `infra/src/core/tree.ts` models that yet.
 
 ## What works today
 
@@ -54,11 +54,11 @@ Two consequences shape the plan:
 Roughly in the order they block self-hosting:
 
 1. **Checks for this repo.** *(Started: `ficus.toml` and `[fetch]` exist; timings are being measured.)*
-   There was no `ficus.toml` at the root. Its checks are `just fl`,
-   `just test`, and `just infra-check`, and they need crates.io, the npm registry, and the
-   devenv/nix caches. Egress only lets the prepare phase reach the attempt repo and the nix caches, so
-   cargo and bun cannot fetch anything. A cold devenv for this repo is also far heavier than the
-   demo root's, so `standard-1` and the scorer's timeouts need measuring.
+   There was no `ficus.toml` at the root. Its checks are ci.yml's: `bun run typecheck`, `lint` and
+   `test` in `infra/`, plus actionlint and zizmor. They need the npm registry and the devenv/nix
+   caches; `[fetch]` opens the registry while `bun install` runs. With Rust gone (ported to Effect),
+   the devenv is far lighter than when it filled `standard-1`'s disk; the instance type and the
+   scorer's timeouts still need measuring.
 2. **A stable trunk remote.** Each accept makes the accepted attempt's repo the new head, so `main`'s
    clone URL changes on every accept. The Artifacts binding has no ref-update or push method, so
    keeping one trunk repo fast-forwarded means a sandbox pushing to it (with a token Egress adds) on
@@ -124,8 +124,8 @@ Each step is useful on its own and can be reverted without losing work.
 
 One per gap above, so each can be picked up alone:
 
-- [x] `ficus.toml` for this repo, and `[fetch]`: the root names the hosts its checks need (crates,
-      npm, rust-overlay's toolchains), open only while devenv builds and dependencies download.
+- [x] `ficus.toml` for this repo, and `[fetch]`: the root names the hosts its checks need (the
+      npm registry), open only while devenv builds and dependencies download.
 - [ ] Measured scorer timeouts and instance type for this repo.
 - [ ] Trunk repo: fast-forward a stable Artifacts repo per tree on accept, from a sandbox.
 - [x] `POST /trees/<t>/graft {source, branch}`: import an outside commit as the new head node;

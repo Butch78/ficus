@@ -1,6 +1,6 @@
 /**
  * An organization's tenant key: the prefix of every name its trees create
- * (crates/ficus-core/src/tenant.rs checks the shape on the other side).
+ * (src/tree/tenant.ts takes it on the other side).
  *
  * Derived, not stored: the first 50 bits of SHA-256(organization id) in
  * lowercase base32. Ten characters keep repo names short (Artifacts allows

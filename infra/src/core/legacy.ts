@@ -1,7 +1,7 @@
 /**
  * Trees saved before the plain names (buds, leaves, harvests, compost) still
- * load: their keys and variants are renamed before `Tree` decodes them, as
- * ficus-core's serde aliases did. Saving writes the new names only.
+ * load: their keys and variants are renamed before `Tree` decodes them.
+ * Saving writes the new names only.
  */
 import * as Predicate from "effect/Predicate";
 import type * as Schema from "effect/Schema";

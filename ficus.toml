@@ -3,47 +3,26 @@
 # replaces it (docs/self-hosting.md, step 1). Each runs in the root's devenv
 # shell, in a sandbox with the network off.
 
-# Before the network closes: the toolchains and caches devenv builds from,
-# and the crates and packages the checks compile against.
+# Before the network closes: the packages the checks compile against.
 [fetch]
-hosts = [
-  "static.rust-lang.org", # rust-overlay's toolchains
-  "crates.io",            # worker-build's crate (nix/packages.nix), and cargo's API
-  "index.crates.io",
-  "static.crates.io",
-  "registry.npmjs.org",
-]
-run = """
-cargo fetch --locked \
-  && cargo fetch --locked --manifest-path crates/ficus-git/Cargo.toml \
-  && cd infra && bun install --frozen-lockfile
-"""
-timeout_secs = 3600
+hosts = ["registry.npmjs.org"]
+run = "cd infra && bun install --frozen-lockfile"
+timeout_secs = 1200
 
 [[check]]
-name = "rust-fmt"
-run = "cargo fmt --all --check && cargo fmt --manifest-path crates/ficus-git/Cargo.toml --check"
-timeout_secs = 300
+name = "typecheck"
+run = "cd infra && bun run typecheck"
+timeout_secs = 900
 
 [[check]]
-name = "rust-clippy"
-run = """
-export CARGO_NET_OFFLINE=true
-cargo clippy --workspace --exclude ficus-worker --all-targets -- -D warnings \
-  && cargo clippy -p ficus-worker --target wasm32-unknown-unknown -- -D warnings \
-  && cargo clippy --manifest-path crates/ficus-git/Cargo.toml --target wasm32-unknown-emscripten -- -D warnings
-"""
-timeout_secs = 3600
+name = "lint"
+run = "cd infra && bun run lint"
+timeout_secs = 900
 
 [[check]]
-name = "rust-test"
-run = "CARGO_NET_OFFLINE=true just test"
-timeout_secs = 3600
-
-[[check]]
-name = "infra"
-run = "cd infra && bun run typecheck && bun run lint && bun run test"
-timeout_secs = 1800
+name = "test"
+run = "cd infra && bun run test"
+timeout_secs = 900
 
 [[check]]
 name = "workflows"

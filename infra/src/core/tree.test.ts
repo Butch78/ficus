@@ -19,7 +19,7 @@ const passing = (cost: number): Score => ok(makeScore(3, 3, cost));
 
 const fresh = (name = "t") => ok(T.init(repo(name), oid("0")));
 
-/** A tree being built up step by step, as the Rust tests mutated theirs. */
+/** A tree being built up step by step. */
 const grow = (start = fresh()) => {
   let tree = start;
 

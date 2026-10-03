@@ -26,7 +26,7 @@
  *     is run. The answer is the RebaseReport, or 422 on a conflict.
  *
  *   `/score` with `Accept: application/x-ndjson` answers with a stream
- *   instead (crates/ficus-core/src/progress.rs): each step as it happens, the
+ *   instead (src/core/progress.ts): each step as it happens, the
  *   sandbox's own and `ficus-scorer`'s, then the outcome: what the plain
  *   answer would have been.
  *
@@ -48,6 +48,7 @@ import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as DecisionModel from "effect/ai/DecisionModel";
 import { Clef } from "../clef/clef.ts";
+import { RebaseReport, RebaseRequest, ScoreRequest } from "../core/scoring.ts";
 import type { EgressProps } from "./egress.ts";
 import { type CheckOutcome, CheckRun, judged, judging } from "./judges.ts";
 import { repoOf } from "./repo.ts";
@@ -94,7 +95,7 @@ const EXEC_ENV = {
 
 const SCORER = "/usr/local/bin/ficus-scorer";
 
-/** `ficus-scorer`'s progress lines on stderr (crates/ficus-scorer `PROGRESS_PREFIX`). */
+/** `ficus-scorer`'s progress lines on stderr (src/scorer/scorer.ts `PROGRESS_PREFIX`). */
 const PROGRESS_PREFIX = "ficus-progress ";
 
 const PROGRESS = "application/x-ndjson";
@@ -107,47 +108,8 @@ const quiet: Report = () => undefined;
 const stepLine = (step: string, state: "active" | "complete" | "error", detail?: string) =>
   JSON.stringify(detail === undefined ? { kind: "step", step, state } : { kind: "step", step, state, detail });
 
-const Oid = Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}([0-9a-f]{24})?$/));
-
-/** crates/ficus-core `CheckSpec`: a task's check, run after the root's. */
-const CheckSpec = Schema.Struct({
-  name: Schema.String,
-  run: Schema.String,
-  timeout_secs: Schema.optional(Schema.Number),
-});
-
-/** crates/ficus-core `ScoreRequest`. */
-export const ScoreRequest = Schema.Struct({
-  remote: Schema.String,
-  token: Schema.String,
-  base: Oid,
-  head: Oid,
-  // Optional: a tree Worker from before judges sends none.
-  intent: Schema.optional(Schema.String),
-  checks: Schema.optional(Schema.Array(CheckSpec)),
-});
-
-export interface ScoreRequest extends Schema.Schema.Type<typeof ScoreRequest> {}
-
-/** crates/ficus-core `RebaseRequest`. */
-export const RebaseRequest = Schema.Struct({
-  from: Schema.String,
-  from_token: Schema.String,
-  from_base: Oid,
-  from_head: Oid,
-  onto: Schema.String,
-  onto_token: Schema.String,
-  onto_head: Oid,
-  onto_branch: Schema.String,
-});
-
-export interface RebaseRequest extends Schema.Schema.Type<typeof RebaseRequest> {}
-
 /** `ficus-scorer prepare`: the workdir, and the hosts the root's `[fetch]` opens next. */
 const Prepared = Schema.Struct({ workdir: Schema.String, hosts: Schema.Array(Schema.String) });
-
-/** crates/ficus-core `RebaseReport`. */
-const RebaseReport = Schema.Struct({ commit: Oid, replayed: Schema.Number });
 
 /**
  * What an agent's workspace starts from: its attempt's remote and write token,
@@ -554,7 +516,7 @@ export class Sandbox extends DurableObject<Bindings> {
     const prepared = yield* this.#exec([SCORER, "prepare", attempt], say);
     const { workdir, hosts } = yield* this.#json(prepared, Prepared, "prepare");
 
-    // The root's own fetch hosts (crates, packages), read from the base
+    // The root's own fetch hosts (packages), read from the base
     // commit by `prepare`: open while its devenv builds and its fetch runs.
     for (const host of hosts) {
       yield* this.#route(host, { mode: "pass" });
@@ -582,7 +544,7 @@ export class Sandbox extends DurableObject<Bindings> {
 
     say(stepLine("judge", "active"));
 
-    return yield* this.#judge(run, score.intent ?? "").pipe(
+    return yield* this.#judge(run, score.intent).pipe(
       Effect.tap(() => Effect.sync(() => say(stepLine("judge", "complete")))),
       Effect.tapError((error) => Effect.sync(() => say(stepLine("judge", "error", error.message)))),
     );

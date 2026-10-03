@@ -24,7 +24,7 @@
  * outside commit (a mirror's `main`) made the head.
  *
  * The tree is a value: the shape `TreeObject` stores, decoded by `Tree`, the
- * same JSON the Rust tree wrote (legacy.ts reads the older names). Every
+ * same JSON every tree saved so far (legacy.ts reads the older names). Every
  * operation is a pure function that answers the changed tree, or a
  * `TreeError`.
  */
@@ -128,7 +128,7 @@ export const HistoryEntry = Schema.Struct({
 
 export type HistoryEntry = typeof HistoryEntry.Type;
 
-/** The tree, as stored. Maps are keyed by the id as text, as serde wrote them. */
+/** The tree, as stored. Maps are keyed by the id as text. */
 export const Tree = Schema.Struct({
   name: RepoName,
   head: NodeId,
@@ -175,7 +175,7 @@ export interface Release {
   readonly rollback: boolean;
 }
 
-/** Where an attempt stands in its task, as of now (`standings`). Encoded as serde wrote ficus-core's `Standing`. */
+/** Where an attempt stands in its task, as of now (`standings`), as the tree Worker answers it. */
 export type Standing =
   | "Best"
   | "Behind"

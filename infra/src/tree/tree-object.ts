@@ -7,7 +7,7 @@
  * between. Where a handler needs Artifacts both before and after a change,
  * it loads the tree again after the await rather than reusing its copy.
  *
- * Storage is the Rust Worker's, key for key: the tree and each report as
+ * Storage, key for key as trees already hold it: the tree and each report as
  * JSON text, ledgers, counters and the agents' bookkeeping as values.
  */
 import { DurableObject } from "cloudflare:workers";

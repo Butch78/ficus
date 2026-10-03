@@ -1,24 +1,23 @@
 # Ficus
 
-Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 2026-10-14.
+Git platform on Cloudflare Workers + Artifacts, all Effect TypeScript in `infra/`. Contest entry,
+deadline 2026-10-14.
 
-- Toolchain + every tool come from devenv (`devenv shell -- <cmd>` or direnv).
-- `just test` / `just fl` after Rust changes; `just build` and `just git-build` for the Workers.
-- `crates/ficus-core`: no Workers APIs, native-testable. Put logic here.
-- `crates/ficus-worker`: wasm32-unknown-unknown Worker.
-- `crates/ficus-git`: wasm32-unknown-emscripten Worker (experimental), a standalone
-  crate excluded from the workspace — has its own Cargo.lock. Bin target with empty `main`.
-- worker-build 0.8.7 is packaged in nix/packages.nix (nixpkgs has 0.8.5, no `--emscripten`).
+- Toolchain + every tool come from devenv (`devenv shell -- <cmd>` or direnv): bun, node, just,
+  actionlint, zizmor. No Rust any more (ported to Effect 2026-10-03; trees stored before still load).
+- `infra/src/core`: the domain, no Workers APIs, pure functions answering `Result` (bun-testable). Put logic
+  here. `infra/src/tree`: the tree Worker (`TreeObject` DO, Artifacts reads, scoring/rebase/agents
+  plumbing). `infra/src/scorer`: the `ficus-scorer` CLI, bundled by `scripts/build-scorer` and run by bun
+  in the sandbox image. The sandbox and agents import core's schemas; never copy them.
 - nixpkgs' wrangler/workerd caps `compatibility_date` at 2026-09-10.
-- On expanse-5950x the shared sccache daemon runs as gh-runner and cannot write a
-  root-owned target/: build as root with `RUSTC_WRAPPER=""`.
-- `ficus-core::tree`: the tree model (task → attempts → accept → node; closed attempts go to
+- `src/core/tree.ts`: the tree model (task → attempts → accept → node; closed attempts go to
   history; never a merge). A submitted attempt left behind is **rebased** first: the alarm replays its
-  commits onto the head in a fresh attempt (`rebase_start/done/failed/retry`) and scores it there;
+  commits onto the head in a fresh attempt (`rebaseStart/Done/Failed/Retry`) and scores it there;
   only a conflict sends it back to its agent to **retry** (`MAX_RETRIES` per task, then the
   owner decides). Attempts and nodes record `touched` paths, so `behind` can say what overlaps.
-  Tasks carry their own `checks` (run after the root's, never in the repo). `accept_next` takes the
-  oldest ready task. `release` is a pointer at a node (older node = rollback). Keep matches exhaustive.
+  Tasks carry their own `checks` (run after the root's, never in the repo). `acceptNext` takes the
+  oldest ready task. `release` is a pointer at a node (older node = rollback). Keep matches exhaustive
+  (`Phase` is a `Data.TaggedEnum`; stored enums stay externally tagged, `legacy.ts` renames old keys).
 - `infra/`: alchemy 2.0.0-beta.80 + Effect 4.0.0 + bun 1.4.2 (nix pin). `just infra-check`
   after TS changes. Unstable Effect modules (effect/http, …) are allowed: deps track the
   latest release, so bump them rather than avoid an API (`effecttsgo/unstable-api-usage` is off).
@@ -43,7 +42,7 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   `POST /trees/<t>/graft {source, branch?}` (imports an outside commit into `<t>-g<id>` as the new head;
   open attempts become behind and are rebased; `.github/workflows/graft.yml` follows GitHub's main) ·
   `GET /trees/<t>/{attempts,nodes}/<id>/{log,tree,file}?ref=&path=` (reads through Artifacts; the tree picks
-  the repo, `ficus-core::browse`; files leave as text/plain or octet-stream, never HTML).
+  the repo, `src/core/browse.ts`; files leave as text/plain or octet-stream, never HTML).
   The Api lists an org's trees (`GET /v1/orgs/<org>/trees`) from D1 (`ficus_tree`), recorded on each 2xx init.
 - Api D1: Drizzle 1.0 RC (pinned to alchemy's peer, `1.0.0-rc.5-ab785fc`). Ficus's tables are declared in
   `infra/src/api/schema.ts` and queried through `drizzle-orm/effect-d1` (`@effect/sql-d1`'s `D1Client`, provided
@@ -67,7 +66,7 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
 - Agents: `infra/src/agents` (Worker `ficus-agents-<stage>`), one `AgentActor` per agent attempt: pi-durable on
   Workers AI in two phases (a cheap scout plans, `@cf/moonshotai/kimi-k2.7-code` changes), Clef judging the plan
   and the diff (`gates.ts`). `POST /trees/<t>/tasks/<id>/agents {agents, model}` starts + forks attempts and keeps
-  each assignment; the TreeObject alarm (`tree_object/agents.rs`) hands them to the `AGENTS` binding, then polls
+  each assignment; the TreeObject alarm (`src/tree/agents.ts`) hands them to the `AGENTS` binding, then polls
   `GET /status`: submitted → the tree submits the attempt; stopped/failed/unassigned → abandons it with the
   agent's last words. Nothing calls the tree back (cross-Worker DO bindings both ways can't deploy on a fresh
   stage). The agent's workspace is a Sandbox: `POST /workspace` (egress: the attempt repo with Egress-added
@@ -79,7 +78,7 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   when they run out new ones fail with "There is no container instance that can be provided". pi's shell
   timeouts are seconds (`sandbox-env.ts` `timeoutMs`).
 - UI pages: tree (head, open tasks and how each stands, New task, accepted history); task (standings from
-  `ficus-core` `Tree::standings`, which shares `best_attempt()` with `accept`; the case for accepting; Start
+  `src/core/tree.ts` `standings`, which shares the winner with `accept`; the case for accepting; Start
   agents; work one yourself); attempt (timeline, actions, diff via `GET .../{attempts,nodes}/<id>/diff`, scoring
   ledger, the agent at work).
 - Tracing is Effect's: `infra/src/observability/tracer.ts` is an Effect `Tracer` layer that records every
@@ -87,9 +86,9 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   The Api and the UI provide it per request; name spans with `Effect.fn("Area.what")`, annotate with
   `Effect.annotateCurrentSpan`. Never call `cloudflare:workers` `tracing` directly.
 - Live progress: `POST /trees/<t>/init` with `Accept: application/x-ndjson` streams one JSON line per step
-  (`ficus-core::progress`: import → settle → lock → save, then the outcome, the answer the plain call gives);
-  without that header it answers as before. `TreeObject` holds `Rc<State>` so `init_streaming` can spawn the
-  work while the response streams. The Api passes the stream through and appends `record` after a 2xx outcome.
+  (`src/core/progress.ts`: import → settle → lock → save, then the outcome, the answer the plain call gives);
+  without that header it answers as before. `TreeObject`'s `#initStreaming` runs the
+  work under `waitUntil` while a TransformStream answers. The Api passes the stream through and appends `record` after a 2xx outcome.
   The UI's `InitForm` reads it via `/api/init` and ticks steps off (`lib/init-progress.ts`), shown with AI
   Elements' Task and ChainOfThought ported to Kumo (`components/elements/`, Apache-2.0, LICENSE there).
   Scoring streams the same way (Sandbox `/score` → `scoring:<attempt>` ledger, shown live on attempt pages).
@@ -117,9 +116,9 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   `ficus.toml` mirrors ci.yml. Attempts push `HEAD` (their default branch may not be `main`).
   `[[judge]]` in ficus.toml = a yes/no question on `{task, diff}` the Sandbox asks Clef (Workers AI binding)
   after the container is gone; counts as a check, and its mean confidence breaks cost ties at acceptance.
-  Image: `infra/src/sandbox/context` (nix + devenv; binary from `scripts/build-scorer`). Run
+  Image: `infra/src/sandbox/context` (nix + devenv + bun; `ficus-scorer.js` from `scripts/build-scorer`). Run
   `scripts/build-scorer` before `bun run deploy`: alchemy builds the image before its ScorerBinary step, so
-  otherwise the image copies a missing or stale binary.
+  otherwise the image copies a missing or stale bundle.
 - The deploy token needs Containers: Edit (registry credentials) on top of Workers, Workers AI, Artifacts.
 - `just e2e` (FICUS_API=https://ficus-dev.fruitcards.workers.dev) runs the full cycle live.
 - After a deploy, old isolates keep serving for a few seconds: wait before judging a change live
@@ -129,7 +128,7 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   containers via local Docker. Deploy only to verify what local can't (Artifacts, egress interception).
 - Debug from telemetry, not re-runs: `scripts/telemetry [minutes] [worker] [limit]` (Workers
   Observability; every Worker has logs + traces on). Egress logs one line per decision.
-- CI/CD (alchemy's guide): `.github/workflows/ci.yml` (Rust fmt/clippy/test, infra typecheck/lint/test,
+- CI/CD (alchemy's guide): `.github/workflows/ci.yml` (infra typecheck/lint/test,
   actionlint + zizmor) and `deploy.yml` (`pr-<n>` stage per same-repo PR with a GitHub.Comment and the
   e2e smoke, destroyed on close; `prod` from main). GitHub-HOSTED runners on purpose: public repo,
   so no self-hosted runners. Credentials as code: `infra/bootstrap.run.ts` (stage `bootstrap`, run

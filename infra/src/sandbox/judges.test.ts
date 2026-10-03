@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import * as Predicate from "effect/Predicate";
-import { decision, judged, judging } from "./judges.ts";
+import * as Schema from "effect/Schema";
+import { CheckRun, decision, judged, judging } from "./judges.ts";
 
-const judge = { name: "does_the_task", ask: "Does `diff` do `task`?", yes: null, no: null, pass_at: null };
+const judge = { name: "does_the_task", ask: "Does `diff` do `task`?" };
 
 describe("decision", () => {
   test("asks the judge's question, with its criteria when it has them", () => {
@@ -25,5 +26,13 @@ describe("judged", () => {
   test("passes at the judge's own pass_at", () => {
     expect(judged({ ...judge, pass_at: 0.8 }, 0.79, 1).passed).toBe(false);
     expect(judged({ ...judge, pass_at: 0.8 }, 0.8, 1).passed).toBe(true);
+  });
+});
+
+describe("CheckRun", () => {
+  test("decodes what `ficus-scorer check` prints: a judge without criteria or pass_at leaves them out", () => {
+    const printed = { report: { checks: [], cost: 3, touched: ["a.ts"] }, judges: [judge], diff: "+x" };
+
+    expect(Schema.decodeUnknownSync(CheckRun)(JSON.parse(JSON.stringify(printed))).judges).toEqual([judge]);
   });
 });

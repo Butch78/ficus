@@ -56,7 +56,7 @@ export const listDirectory = Effect.fn("Tree.listDirectory")(function* (
   return json({ repo: repoName, commit: committed(commit), path: names.join("/"), entries: sorted });
 });
 
-/** A commit as the Rust Worker served it: snake_case fields. */
+/** A commit as the tree Worker serves it: snake_case fields. */
 export const committed = (commit: ArtifactsCommitMetadata) => ({
   hash: commit.hash,
   tree_hash: commit.treeHash,

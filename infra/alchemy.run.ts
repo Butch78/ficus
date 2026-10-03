@@ -62,10 +62,10 @@ export default Alchemy.Stack(
       context: `${import.meta.dirname}/src/sandbox/context`,
       instances: 0,
       maxInstances: 20,
-      // A root's devenv shell plus its checks. Ficus's own (three Rust
-      // targets, bun, wasm tooling, a workspace build) fills standard-1's
-      // disk; standard-4 has the disk, and the cores to compile it. Billed
-      // while a sandbox runs: scoring, and agents' workspaces until idle.
+      // A root's devenv shell plus its checks. Ficus's own, when it was
+      // Rust, filled standard-1's disk; standard-4 stays until a TS-only
+      // root is seen to fit a smaller one. Billed while a sandbox runs:
+      // scoring, and agents' workspaces until idle.
       instanceType: "standard-4",
       observability: { logs: { enabled: true } },
       env: {
@@ -116,7 +116,7 @@ export default Alchemy.Stack(
       env: {
         ARTIFACTS: artifacts,
         // `TreeObject` is the Durable Object class src/tree/worker.ts exports;
-        // the same name the Rust Worker used, so trees and their storage carry over.
+        // the same name since the first deploy, so trees and their storage carry over.
         TREES: Cloudflare.DurableObject("TREES", { className: "TreeObject" }),
         // Sandboxes that score attempts: the `Sandbox` class in the sandbox Worker.
         // By literal name: `alchemy dev` cannot coerce a deploy-time Output

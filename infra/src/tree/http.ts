@@ -1,6 +1,6 @@
 /**
  * How the tree Worker answers: JSON for what it knows, plain text with a
- * status for what it refuses, the same as the Rust Worker answered.
+ * status for what it refuses.
  */
 import * as Schema from "effect/Schema";
 import type { BrowseError } from "../core/browse.ts";

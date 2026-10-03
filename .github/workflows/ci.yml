@@ -1,5 +1,5 @@
-# Every push and pull request: the Rust workspace, the infra TypeScript, and
-# these workflows themselves.
+# Every push and pull request: the infra TypeScript (everything Ficus runs),
+# and these workflows themselves.
 name: CI
 
 on:
@@ -17,31 +17,8 @@ concurrency:
 env:
   # secretspec asks agents why they read secrets; CI reads none of them.
   SECRETSPEC_REASON: "CI: build and test, no secrets"
-  # No shared sccache on hosted runners.
-  RUSTC_WRAPPER: ""
 
 jobs:
-  rust:
-    name: Rust
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/devenv
-      - name: Format
-        run: devenv shell -- cargo fmt --all --check
-      - name: Format (emscripten crate)
-        run: devenv shell -- cargo fmt --manifest-path crates/ficus-git/Cargo.toml --check
-      - name: Clippy (native, wasm32, emscripten)
-        run: |
-          devenv shell -- cargo clippy --workspace --exclude ficus-worker --all-targets -- -D warnings
-          devenv shell -- cargo clippy -p ficus-worker --target wasm32-unknown-unknown -- -D warnings
-          devenv shell -- cargo clippy --manifest-path crates/ficus-git/Cargo.toml --target wasm32-unknown-emscripten -- -D warnings
-      - name: Test
-        run: devenv shell -- just test
-
   infra:
     name: Infra
     runs-on: ubuntu-latest

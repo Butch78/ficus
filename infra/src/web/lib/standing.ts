@@ -1,5 +1,5 @@
 /**
- * An attempt's standing in its task's race (ficus-core `Standing`), in words, and
+ * An attempt's standing in its task's race (src/core/tree.ts `Standing`), in words, and
  * the case for accepting: which attempt it would take and why. Pure, so tests
  * hold the wording to the rule.
  */

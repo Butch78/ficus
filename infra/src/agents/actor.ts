@@ -61,6 +61,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { Type } from "typebox";
 import { Clef } from "../clef/clef.ts";
+import { LOCKED_PATHS } from "../core/scoring.ts";
 import { activity } from "./activity.ts";
 import { clip, describe, DIFF, effort, MAX_REJECTIONS, objections, type Objection, PLAN } from "./gates.ts";
 import { ContainerEnv, type SandboxStub } from "./sandbox-env.ts";
@@ -116,8 +117,6 @@ const STOPPED_KEY = "stopped";
 /** The plan `plan_change` accepted, for the diff gate. */
 const PLAN_KEY = "plan";
 
-/** The root's files, as `crates/ficus-core` `LOCKED_PATHS`: restored before scoring, so out of the diff. */
-const LOCKED_PATHS = ["ficus.toml", "devenv.nix", "devenv.yaml", "devenv.lock", ".envrc"] as const;
 
 type Gate = "plan" | "submit";
 
