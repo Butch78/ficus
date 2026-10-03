@@ -1,0 +1,60 @@
+# Ficus's own checks: what an attempt at this repo must pass to be accepted.
+# The same as .github/workflows/ci.yml, so the two can be compared until Ficus
+# replaces it (docs/self-hosting.md, step 1). Each runs in the root's devenv
+# shell, in a sandbox with the network off.
+
+# Before the network closes: the toolchains and caches devenv builds from,
+# and the crates and packages the checks compile against.
+[fetch]
+hosts = [
+  "static.rust-lang.org", # rust-overlay's toolchains
+  "crates.io",            # worker-build's crate (nix/packages.nix), and cargo's API
+  "index.crates.io",
+  "static.crates.io",
+  "registry.npmjs.org",
+]
+run = """
+cargo fetch --locked \
+  && cargo fetch --locked --manifest-path crates/ficus-git/Cargo.toml \
+  && cd infra && bun install --frozen-lockfile
+"""
+timeout_secs = 3600
+
+[[check]]
+name = "rust-fmt"
+run = "cargo fmt --all --check && cargo fmt --manifest-path crates/ficus-git/Cargo.toml --check"
+timeout_secs = 300
+
+[[check]]
+name = "rust-clippy"
+run = """
+export CARGO_NET_OFFLINE=true
+cargo clippy --workspace --exclude ficus-worker --all-targets -- -D warnings \
+  && cargo clippy -p ficus-worker --target wasm32-unknown-unknown -- -D warnings \
+  && cargo clippy --manifest-path crates/ficus-git/Cargo.toml --target wasm32-unknown-emscripten -- -D warnings
+"""
+timeout_secs = 3600
+
+[[check]]
+name = "rust-test"
+run = "CARGO_NET_OFFLINE=true just test"
+timeout_secs = 3600
+
+[[check]]
+name = "infra"
+run = "cd infra && bun run typecheck && bun run lint && bun run test"
+timeout_secs = 1800
+
+[[check]]
+name = "workflows"
+run = "actionlint && zizmor --offline --min-severity medium .github"
+timeout_secs = 300
+
+# A judge: a yes/no question about the attempt's diff, put to Clef with the
+# task's intent as `task`. It counts as a check; on equal cost, the attempt
+# the judges were surest of wins.
+[[judge]]
+name = "does_the_task"
+ask = "Does `diff` do everything `task` asks, without changing anything the task does not need?"
+yes = "The whole task is done, and nothing else is changed."
+no = "Part of the task is missing, or the diff changes unrelated code."

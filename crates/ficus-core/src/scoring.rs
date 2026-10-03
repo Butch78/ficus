@@ -405,6 +405,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ficus_own_ficus_toml_parses() {
+        let root = RootChecks::parse(include_str!("../../../ficus.toml")).unwrap();
+        assert!(root.fetch.hosts.contains(&"static.crates.io".to_owned()));
+        assert!(root.checks.iter().any(|check| check.name == "rust-test"));
+    }
+
+    #[test]
     fn a_root_opens_named_hosts_for_its_fetch_and_nothing_wider() {
         let root = RootChecks::parse(
             r#"

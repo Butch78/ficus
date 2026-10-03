@@ -214,12 +214,18 @@ pub struct Node {
     /// The repo holding `commit`: the tree's own repo for the root, the
     /// accepted's attempt repo for every node after it.
     pub repo: RepoName,
-    /// The attempt this node was accepted from; `None` only for the root.
+    /// The attempt this node was accepted from; `None` for the root and for
+    /// a graft (`grafted_from`).
     #[serde(alias = "fruit_of")]
     pub accepted_from: Option<AttemptId>,
-    /// Paths the accepted attempt changed against its parent; empty for the root.
+    /// Paths the accepted attempt changed against its parent; empty for the
+    /// root and for a graft.
     #[serde(default)]
     pub touched: Vec<String>,
+    /// Where a graft came from (`<remote>` or `<remote>#<branch>`): a commit
+    /// made outside the tree, such as a mirror's `main`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grafted_from: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -420,6 +426,8 @@ pub enum TreeError {
     TaskChecks(#[from] ChecksError),
     #[error("no node {0:?}")]
     UnknownNode(NodeId),
+    #[error("node id {0:?} was not reserved for a graft, or is taken")]
+    NotReserved(NodeId),
     #[error("the tree has run out of ids")]
     Full,
 }
@@ -458,6 +466,7 @@ impl Tree {
             repo: name.clone(),
             accepted_from: None,
             touched: Vec::new(),
+            grafted_from: None,
         };
         Ok(Self {
             name,
@@ -820,6 +829,45 @@ impl Tree {
         }
     }
 
+    /// Take a node id and repo name for an outside commit about to be
+    /// grafted: the import into `<tree>-g<id>` takes a while, and nothing
+    /// started meanwhile may take the name.
+    pub fn reserve_graft(&mut self) -> Result<(NodeId, RepoName), TreeError> {
+        let id = self.take_id()?;
+        let repo = RepoName::try_from(format!("{}-g{id}", self.name.as_str()))
+            .expect("init checked that the tree name leaves room for any id suffix");
+        Ok((NodeId(id), repo))
+    }
+
+    /// Make `commit`, imported into `repo` under a reserved `node`, the new
+    /// head on top of the current one. Every open attempt is then behind:
+    /// the machine rebases the submitted ones, as after an acceptance.
+    pub fn graft(
+        &mut self,
+        node: NodeId,
+        commit: Oid,
+        repo: RepoName,
+        source: impl Into<String>,
+    ) -> Result<(), TreeError> {
+        if node.0 >= self.next_id || self.nodes.contains_key(&node) {
+            return Err(TreeError::NotReserved(node));
+        }
+        self.nodes.insert(
+            node,
+            Node {
+                id: node,
+                parent: Some(self.head),
+                commit,
+                repo,
+                accepted_from: None,
+                touched: Vec::new(),
+                grafted_from: Some(source.into()),
+            },
+        );
+        self.head = node;
+        Ok(())
+    }
+
     /// Where a deployment should be, if a release has been made.
     pub fn released(&self) -> Option<&Node> {
         self.released.map(|id| {
@@ -941,6 +989,7 @@ impl Tree {
                 repo,
                 accepted_from: Some(accepted),
                 touched,
+                grafted_from: None,
             },
         );
         self.head = node;
@@ -1124,6 +1173,57 @@ mod tests {
         assert_eq!(
             tree.standings(TaskId(99)),
             Err(TreeError::UnknownTask(TaskId(99)))
+        );
+    }
+
+    #[test]
+    fn a_graft_becomes_the_head_and_leaves_open_attempts_behind() {
+        let mut tree = Tree::init(repo("t-site"), oid('a')).unwrap();
+        let task = tree.task_new("fix it", vec![]).unwrap();
+        let submitted = tree.start(task, "alpha").unwrap();
+        scored(&mut tree, submitted, oid('b'), passing(1));
+
+        let (node, graft_repo) = tree.reserve_graft().unwrap();
+        assert_eq!(graft_repo.as_str(), format!("t-site-g{}", node.0));
+        // An attempt started while the import runs takes another id.
+        let meanwhile = tree.start(task, "beta").unwrap();
+        assert_ne!(meanwhile.0, node.0);
+
+        tree.graft(
+            node,
+            oid('c'),
+            graft_repo.clone(),
+            "https://github.com/o/r#main",
+        )
+        .unwrap();
+        let head = tree.head();
+        assert_eq!(
+            (head.id, &head.commit, &head.repo),
+            (node, &oid('c'), &graft_repo)
+        );
+        assert_eq!(head.parent, Some(NodeId(0)));
+        assert_eq!(
+            head.grafted_from.as_deref(),
+            Some("https://github.com/o/r#main")
+        );
+
+        // Nothing accepts from the old head; the submitted attempt gets rebased.
+        assert_eq!(tree.accept(task), Err(TreeError::NothingToAccept(task)));
+        assert_eq!(
+            tree.rebaseable()
+                .map(|attempt| attempt.id)
+                .collect::<Vec<_>>(),
+            vec![submitted]
+        );
+
+        // A reservation is used once, and only a reservation can be used.
+        assert_eq!(
+            tree.graft(node, oid('d'), graft_repo.clone(), "again"),
+            Err(TreeError::NotReserved(node))
+        );
+        assert_eq!(
+            tree.graft(NodeId(999), oid('d'), graft_repo, "never reserved"),
+            Err(TreeError::NotReserved(NodeId(999)))
         );
     }
 

@@ -62,6 +62,14 @@ struct InitBody {
     branch: Option<String>,
 }
 
+/// An outside commit to graft: the head of `branch` (default: the remote's
+/// default branch) of a public HTTPS git remote.
+#[derive(Deserialize)]
+struct GraftBody {
+    source: String,
+    branch: Option<String>,
+}
+
 /// `intent` says what the task is for; `checks` say when it is done, on top
 /// of the root's. They run in the scorer, never from the repo.
 #[derive(Deserialize)]
@@ -176,6 +184,7 @@ impl DurableObject for TreeObject {
                 Ok(task) => self.start(task, req.json().await?).await,
                 Err(_) => Response::error("task id must be a number", 400),
             },
+            (Method::Post, ["graft"]) => self.graft(req.json().await?).await,
             (Method::Post, ["accept"]) => self.accept(None).await,
             (Method::Post, ["tasks", task, "accept"]) => match task.parse() {
                 Ok(task) => self.accept(Some(task)).await,
@@ -1125,6 +1134,73 @@ impl TreeObject {
         }))
     }
 
+    /// Import an outside commit (a mirror's `main`) into its own repo and
+    /// make it the head. Every open attempt is then behind; the alarm set
+    /// here rebases the submitted ones onto it. Grafting the head's own
+    /// commit again changes nothing.
+    async fn graft(&self, body: GraftBody) -> Result<Response> {
+        let Some(mut tree) = self.load().await? else {
+            return Response::error("no such tree", 404);
+        };
+        let (node, repo_name) = match tree.reserve_graft() {
+            Ok(reserved) => reserved,
+            Err(error) => return tree_error(&error),
+        };
+        // Saved before the import, so nothing started meanwhile takes the id.
+        self.save(&tree).await?;
+        let artifacts = self.artifacts()?;
+        if let Err(error) = artifacts
+            .import(&body.source, body.branch.as_deref(), &repo_name)
+            .await
+        {
+            return artifacts_error(&error);
+        }
+        let Some(head) = settled_head(&artifacts, &repo_name, &Progress::silent()).await? else {
+            return Response::error(
+                format!("the import into {} has not finished", repo_name.as_str()),
+                504,
+            );
+        };
+        // Like the root, a graft is only ever read through forks.
+        match artifacts.repo(&repo_name).await {
+            Ok(repo) => {
+                if let Err(error) = repo.revoke_active_tokens().await {
+                    return artifacts_error(&error);
+                }
+            }
+            Err(error) => return artifacts_error(&error),
+        }
+        let Some(mut tree) = self.load().await? else {
+            return Response::error("no such tree", 404);
+        };
+        if tree.head().commit == head {
+            return Response::from_json(&serde_json::json!({
+                "node": tree.head().id,
+                "commit": head.as_str(),
+                "grafted": false,
+            }));
+        }
+        let source = match &body.branch {
+            Some(branch) => format!("{}#{branch}", body.source),
+            None => body.source.clone(),
+        };
+        if let Err(error) = tree.graft(node, head.clone(), repo_name.clone(), source) {
+            return tree_error(&error);
+        }
+        self.save(&tree).await?;
+        let behind: Vec<_> = tree.all_behind().collect();
+        if !behind.is_empty() {
+            self.state.storage().set_alarm(Duration::ZERO).await?;
+        }
+        Response::from_json(&serde_json::json!({
+            "node": node,
+            "commit": head.as_str(),
+            "repo": repo_name.as_str(),
+            "grafted": true,
+            "behind": behind,
+        }))
+    }
+
     async fn abandon(&self, attempt: AttemptId, body: AbandonBody) -> Result<Response> {
         let Some(mut tree) = self.load().await? else {
             return Response::error("no such tree", 404);
@@ -1394,6 +1470,7 @@ fn tree_error(error: &TreeError) -> Result<Response> {
         | TreeError::EmptyIntent
         | TreeError::TaskChecks(_) => 400,
         TreeError::UnknownTask(_) | TreeError::UnknownAttempt(_) | TreeError::UnknownNode(_) => 404,
+        TreeError::NotReserved(_) => 409,
         TreeError::TaskDone(_)
         | TreeError::NotGrowing(_)
         | TreeError::NotChecking(_)
