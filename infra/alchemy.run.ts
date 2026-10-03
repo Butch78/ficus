@@ -88,9 +88,11 @@ export default Alchemy.Stack(
       context: `${import.meta.dirname}/src/sandbox/context`,
       instances: 0,
       maxInstances: 20,
-      // A root's devenv shell plus its checks: nix needs the disk and memory
-      // the basic tier does not have.
-      instanceType: "standard-1",
+      // A root's devenv shell plus its checks. Ficus's own (three Rust
+      // targets, bun, wasm tooling, a workspace build) fills standard-1's
+      // disk; standard-4 has the disk, and the cores to compile it. Billed
+      // while a sandbox runs: scoring, and agents' workspaces until idle.
+      instanceType: "standard-4",
       observability: { logs: { enabled: true } },
       env: {
         FICUS_SCORER_HASH: Output.map(scorerBinary.hash.output, (hash) => hash ?? "unhashed"),
