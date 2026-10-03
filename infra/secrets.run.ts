@@ -37,6 +37,7 @@ export default Alchemy.Stack(
 
     if (value === undefined) {
       const accountId = yield* Config.String("CLOUDFLARE_ACCOUNT_ID");
+
       const minted = yield* Cloudflare.ApiToken.AccountApiToken("DeployApiToken", {
         name: `ficus-deploy-${stage}`,
         accountId,
