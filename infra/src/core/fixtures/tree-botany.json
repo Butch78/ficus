@@ -1,0 +1,269 @@
+{
+  "name": "t",
+  "head": 9,
+  "next_id": 13,
+  "nodes": {
+    "0": {
+      "id": 0,
+      "parent": null,
+      "commit": "0000000000000000000000000000000000000000",
+      "repo": "t",
+      "fruit_of": null,
+      "touched": []
+    },
+    "9": {
+      "id": 9,
+      "parent": 0,
+      "commit": "1111111111111111111111111111111111111111",
+      "repo": "t-l4",
+      "fruit_of": 4,
+      "touched": [
+        "lib.rs"
+      ]
+    }
+  },
+  "buds": {
+    "1": {
+      "id": 1,
+      "intent": "a",
+      "state": {
+        "Fruited": {
+          "leaf": 4,
+          "node": 9
+        }
+      },
+      "checks": [
+        {
+          "name": "done",
+          "run": "true",
+          "timeout_secs": 5
+        }
+      ],
+      "regrowths": 0
+    },
+    "2": {
+      "id": 2,
+      "intent": "b",
+      "state": "Open",
+      "checks": [],
+      "regrowths": 0
+    },
+    "3": {
+      "id": 3,
+      "intent": "c",
+      "state": "Open",
+      "checks": [],
+      "regrowths": 1
+    }
+  },
+  "leaves": {
+    "4": {
+      "id": 4,
+      "bud": 1,
+      "agent": "x",
+      "base": 0,
+      "repo": "t-l4",
+      "state": {
+        "Fruit": {
+          "node": 9
+        }
+      },
+      "touched": [
+        "lib.rs"
+      ],
+      "transplant": null,
+      "transplant_of": null
+    },
+    "5": {
+      "id": 5,
+      "bud": 1,
+      "agent": "y",
+      "base": 0,
+      "repo": "t-l5",
+      "state": {
+        "Pruned": {
+          "reason": {
+            "Outgrown": {
+              "by": 4
+            }
+          }
+        }
+      },
+      "touched": [],
+      "transplant": null,
+      "transplant_of": null
+    },
+    "6": {
+      "id": 6,
+      "bud": 2,
+      "agent": "z",
+      "base": 0,
+      "repo": "t-l6",
+      "state": {
+        "Pruned": {
+          "reason": {
+            "Transplanted": {
+              "into": 10
+            }
+          }
+        }
+      },
+      "touched": [
+        "b.rs"
+      ],
+      "transplant": 10,
+      "transplant_of": null
+    },
+    "7": {
+      "id": 7,
+      "bud": 3,
+      "agent": "w",
+      "base": 0,
+      "repo": "t-l7",
+      "state": {
+        "Pruned": {
+          "reason": {
+            "Regrown": {
+              "into": 12
+            }
+          }
+        }
+      },
+      "touched": [],
+      "transplant": 11,
+      "transplant_of": null
+    },
+    "8": {
+      "id": 8,
+      "bud": 3,
+      "agent": "v",
+      "base": 0,
+      "repo": "t-l8",
+      "state": "Growing",
+      "touched": [],
+      "transplant": null,
+      "transplant_of": null
+    },
+    "10": {
+      "id": 10,
+      "bud": 2,
+      "agent": "z",
+      "base": 9,
+      "repo": "t-l10",
+      "state": {
+        "Ripening": {
+          "commit": "5555555555555555555555555555555555555555"
+        }
+      },
+      "touched": [],
+      "transplant": null,
+      "transplant_of": null
+    },
+    "11": {
+      "id": 11,
+      "bud": 3,
+      "agent": "w",
+      "base": 9,
+      "repo": "t-l11",
+      "state": {
+        "Pruned": {
+          "reason": {
+            "Withered": {
+              "note": "conflict in lib.rs"
+            }
+          }
+        }
+      },
+      "touched": [],
+      "transplant": null,
+      "transplant_of": 7
+    },
+    "12": {
+      "id": 12,
+      "bud": 3,
+      "agent": "w",
+      "base": 9,
+      "repo": "t-l12",
+      "state": {
+        "Pruned": {
+          "reason": {
+            "Withered": {
+              "note": "gave up"
+            }
+          }
+        }
+      },
+      "touched": [],
+      "transplant": null,
+      "transplant_of": null
+    }
+  },
+  "compost": [
+    {
+      "leaf": 5,
+      "bud": 1,
+      "agent": "y",
+      "reason": {
+        "Outgrown": {
+          "by": 4
+        }
+      },
+      "score": {
+        "checks_passed": 1,
+        "checks_total": 2,
+        "cost": 1,
+        "confidence": null
+      }
+    },
+    {
+      "leaf": 6,
+      "bud": 2,
+      "agent": "z",
+      "reason": {
+        "Transplanted": {
+          "into": 10
+        }
+      },
+      "score": {
+        "checks_passed": 2,
+        "checks_total": 2,
+        "cost": 9,
+        "confidence": null
+      }
+    },
+    {
+      "leaf": 11,
+      "bud": 3,
+      "agent": "w",
+      "reason": {
+        "Withered": {
+          "note": "conflict in lib.rs"
+        }
+      },
+      "score": null
+    },
+    {
+      "leaf": 7,
+      "bud": 3,
+      "agent": "w",
+      "reason": {
+        "Regrown": {
+          "into": 12
+        }
+      },
+      "score": null
+    },
+    {
+      "leaf": 12,
+      "bud": 3,
+      "agent": "w",
+      "reason": {
+        "Withered": {
+          "note": "gave up"
+        }
+      },
+      "score": null
+    }
+  ],
+  "released": 9
+}

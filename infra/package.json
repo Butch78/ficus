@@ -44,6 +44,7 @@
     "agents": "0.26.0",
     "alchemy": "2.0.0-beta.80",
     "better-auth": "1.7.7",
+    "diff": "9.0.0",
     "drizzle-orm": "1.0.0-rc.5-ab785fc",
     "effect": "4.0.0",
     "react": "19.3.0",
