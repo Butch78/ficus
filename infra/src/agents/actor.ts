@@ -47,10 +47,12 @@ import { CLOUDFLARE_PROVIDER_ID, createAI } from "agents/models/pi-ai";
 import type * as Decision from "effect/ai/Decision";
 import * as DecisionModel from "effect/ai/DecisionModel";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { Type } from "typebox";
 import { Clef } from "../clef/clef.ts";
 import { clip, describe, DIFF, effort, MAX_REJECTIONS, objections, type Objection, PLAN } from "./gates.ts";
+import { AUTO_MODEL, autoModel, settingsOf, withModels } from "./router.ts";
 import { ContainerEnv, type SandboxStub } from "./sandbox-env.ts";
 
 /** Where the attempt is checked out inside the agent's container: the Workspace's `ATTEMPT_DIR`. */
@@ -127,6 +129,9 @@ interface Preparation {
 
 interface Bindings {
   readonly AI: Ai;
+  /** The AI Gateway model calls go through; without one there is no Auto Router (router.ts). */
+  readonly AI_GATEWAY?: string;
+  readonly AUTO_ROUTER_POOL?: string;
   readonly WORKSPACES: DurableObjectNamespace;
   readonly TREES: DurableObjectNamespace;
 }
@@ -252,7 +257,18 @@ const changeRules = (plan: string): string =>
   ].join("\n");
 
 export class AgentActor extends DurableObject<Bindings> {
-  readonly #ai = createAI({ binding: this.env.AI });
+  /** The Auto Router's settings, when this deployment has an AI Gateway. */
+  readonly #router = Effect.runSync(Effect.option(settingsOf(this.env)));
+
+  readonly #ai = createAI(
+    Option.match(this.#router, {
+      onNone: () => ({ binding: this.env.AI }),
+      onSome: (router) => ({ binding: this.env.AI, id: router.gateway }),
+    }),
+  );
+
+  /** This attempt's conversation, as the Auto Router keys session affinity. */
+  readonly #session = this.ctx.id.name ?? this.ctx.id.toString();
 
   /** The attempt's container: one `Workspace` per agent. */
   readonly #sandbox: SandboxStub = this.env.WORKSPACES.get(
@@ -269,7 +285,12 @@ export class AgentActor extends DurableObject<Bindings> {
     harness: ({ storage, context }) => {
       const models = createModels();
 
-      models.setProvider(this.#ai.provider);
+      models.setProvider(
+        Option.match(this.#router, {
+          onNone: () => this.#ai.provider,
+          onSome: (router) => withModels(this.#ai.provider, [autoModel(this.#ai, this.#session, router)]),
+        }),
+      );
 
       const registry = createRegistry();
 
@@ -340,6 +361,13 @@ export class AgentActor extends DurableObject<Bindings> {
 
     const failed = (step: string) => (cause: unknown) =>
       new GrowRejected({ status: 500, message: `${step}: ${String(cause)}` });
+
+    if (assignment.model === AUTO_MODEL && Option.isNone(this.#router)) {
+      return yield* new GrowRejected({
+        status: 400,
+        message: `${AUTO_MODEL} needs an AI Gateway, and this deployment has none (AI_GATEWAY)`,
+      });
+    }
 
     const existing = yield* attempt(() => this.ctx.storage.get(ASSIGNMENT_KEY), failed("reading the assignment"));
 

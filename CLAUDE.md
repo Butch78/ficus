@@ -69,6 +69,10 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   a plain DO class) unless the body says `start_agent: false`; the Api does it (`src/api/agents.ts`), so the
   deploy order stays tree → agents → Api. The e2e opts out. Local dev cannot run it end to end:
   cross-script DO calls lose `ctx.id.name`, which pi's Lifecycle requires.
+- Models: the agents Worker's calls go through an alchemy `AI.Gateway` (logs, $10/day spend cap). An
+  attempt started with `model: "cloudflare/auto"` runs its change phase on AI Gateway's Auto Router
+  (`src/agents/router.ts`: a pi model on the Cloudflare provider, `cf-aig-session-id` = the attempt,
+  `cf-aig-allowed-models` = Workers AI pool, `AUTO_ROUTER_POOL` to override); otherwise Clef routes.
 - The deploy token needs Containers: Edit (registry credentials) on top of Workers, Workers AI, Artifacts.
 - `just e2e` (FICUS_API=https://ficus-dev.fruitcards.workers.dev) runs the full cycle live.
 - After a deploy, old isolates keep serving for a few seconds: wait before judging a change live

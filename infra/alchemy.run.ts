@@ -89,6 +89,14 @@ export default Alchemy.Stack(
       },
     });
 
+    // Every agent model call goes through this gateway: logs, and the Auto
+    // Router (`cloudflare/auto`, src/agents/router.ts) when an attempt asks
+    // for it. The spend cap bounds what a misrouted pool can cost a stage.
+    const gateway = yield* Cloudflare.AI.Gateway("Gateway", {
+      collectLogs: true,
+      spendLimits: { enabled: true, rules: [{ limit: 1000, limitType: "cost", window: "1 day" }] },
+    });
+
     // A pi agent per attempt. Async, not Effect-native: AgentActor is a plain
     // Durable Object class (pi's PiHarness installs itself on `this`), which
     // an Effect-native Worker cannot export. Its bindings name the other
@@ -102,6 +110,7 @@ export default Alchemy.Stack(
       workersDev: false,
       env: {
         AI: Cloudflare.Workers.AI(),
+        AI_GATEWAY: gateway.gatewayId,
         AGENTS: Cloudflare.DurableObject("AGENTS", { className: "AgentActor" }),
         WORKSPACES: Cloudflare.DurableObject("WORKSPACES", {
           className: "Workspace",
