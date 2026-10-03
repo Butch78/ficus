@@ -322,8 +322,12 @@ pub async fn fetch(workdir: &Path) -> Result<(), ScoreError> {
         };
         progress(ScoreStep::Devenv, state, None, None);
         if !built.passed {
+            let why = match failed_derivation(&built.tail) {
+                Some(drv) => why_not_built(&repo, &drv).await?,
+                None => String::new(),
+            };
             fetched = Err(format!(
-                "the root's devenv shell did not build:\n{}",
+                "the root's devenv shell did not build:\n{}{why}",
                 built.tail
             ));
         }
@@ -353,6 +357,26 @@ pub async fn fetch(workdir: &Path) -> Result<(), ScoreError> {
     }
     prepared.fetched = Some(fetched);
     write_prepared(workdir, &prepared).await
+}
+
+/// The derivation devenv says it could not build, from its output.
+fn failed_derivation(output: &str) -> Option<String> {
+    let start = output.find("Cannot build '")? + "Cannot build '".len();
+    let drv = &output[start..start + output[start..].find('\'')?];
+    (drv.starts_with("/nix/store/") && drv.ends_with(".drv")).then(|| drv.to_owned())
+}
+
+/// devenv says only that a dependency failed: build the shell again with
+/// nix itself, which names the dependency and prints its log.
+async fn why_not_built(repo: &Path, drv: &str) -> Result<String, ScoreError> {
+    let outputs = format!("{drv}^*");
+    let again = run(
+        repo,
+        &["nix", "build", "--no-link", "--print-build-logs", &outputs],
+        DEVENV_PREPARE_SECS,
+    )
+    .await?;
+    Ok(format!("\n\nnix build {drv}:\n{}", again.tail))
 }
 
 async fn read_prepared(workdir: &Path) -> Result<Prepared, ScoreError> {
@@ -912,6 +936,17 @@ mod tests {
         assert_eq!(numstat_line_cost("3\t2\tsrc/a.rs"), 5);
         assert_eq!(numstat_line_cost("-\t-\timage.png"), 1);
         assert_eq!(numstat_line_cost(""), 0);
+    }
+
+    #[test]
+    fn devenv_names_the_shell_it_could_not_build() {
+        let output = "  × Failed to realize shell derivation: error: Cannot build '/nix/store/xdmf-devenv-shell.drv'.\n    Reason: 1 dependency failed.";
+        assert_eq!(
+            failed_derivation(output).as_deref(),
+            Some("/nix/store/xdmf-devenv-shell.drv")
+        );
+        assert_eq!(failed_derivation("Cannot build 'x'"), None);
+        assert_eq!(failed_derivation("all fine"), None);
     }
 
     #[test]
