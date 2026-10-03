@@ -57,6 +57,7 @@ export default Alchemy.Stack(
             "Workers R2 Storage Write", // the alchemy state store's bucket
             "Secrets Store Write", // Cloudflare.state() binds the store's bearer each run
             "Workers Containers Write", // the sandbox's container application and image
+            "AI Gateway Write", // the agents' gateway: logs, spend cap, Auto Router
             "Workers Observability Write", // logs and traces on every Worker
             "D1 Write", // the accounts database and its migrations
             "Workers Tail Read", // deploy-time log streaming
