@@ -546,13 +546,49 @@ async fn run(dir: &Path, argv: &[&str], timeout_secs: u64) -> Result<Ran, ScoreE
     }
 }
 
-/// The last `TAIL_BYTES` of `text`, cut on a character boundary.
+/// Error lines from before the tail that a tail keeps, at most.
+const EARLIER_ERRORS: usize = 12;
+
+/// What a person needs from a command's output: its last `TAIL_BYTES`, cut
+/// on a character boundary, and before them the first error lines the cut
+/// dropped (nix prints why a build failed long before its last line).
+/// Terminal colours are stripped.
 fn tail(text: &str) -> String {
+    let text = strip_ansi(text);
     let mut start = text.len().saturating_sub(TAIL_BYTES);
     while !text.is_char_boundary(start) {
         start += 1;
     }
-    text[start..].to_owned()
+    let earlier: Vec<&str> = text[..start]
+        .lines()
+        .filter(|line| line.to_ascii_lowercase().contains("error"))
+        .take(EARLIER_ERRORS)
+        .map(|line| line.trim())
+        .map(|line| line.get(..300).unwrap_or(line))
+        .collect();
+    if earlier.is_empty() {
+        return text[start..].to_owned();
+    }
+    format!("{}\n…\n{}", earlier.join("\n"), &text[start..])
+}
+
+/// `text` without terminal escape sequences (`ESC [ ... letter`).
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// `git diff <flags> base head`, outside the locked files.
@@ -876,6 +912,21 @@ mod tests {
         assert_eq!(numstat_line_cost("3\t2\tsrc/a.rs"), 5);
         assert_eq!(numstat_line_cost("-\t-\timage.png"), 1);
         assert_eq!(numstat_line_cost(""), 0);
+    }
+
+    #[test]
+    fn a_tail_keeps_the_errors_its_cut_dropped_without_colours() {
+        let noise = "evaluating file x\n".repeat(TAIL_BYTES / 10);
+        let text = format!(
+            "\u{1b}[31;1merror:\u{1b}[0m cannot download bun-linux-x64.zip\n{noise}Reason: 1 dependency failed\n"
+        );
+        let kept = tail(&text);
+        assert!(
+            kept.starts_with("error: cannot download bun-linux-x64.zip\n…\n"),
+            "{kept}"
+        );
+        assert!(kept.ends_with("Reason: 1 dependency failed\n"));
+        assert!(!kept.contains('\u{1b}'));
     }
 
     #[test]

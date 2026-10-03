@@ -71,6 +71,8 @@ export const NIX_HOSTS = [
   "api.github.com",
   "codeload.github.com",
   "objects.githubusercontent.com",
+  // Where github.com now redirects release downloads (a devenv's fetchurl).
+  "release-assets.githubusercontent.com",
 ] as const;
 
 /**
