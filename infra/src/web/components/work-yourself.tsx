@@ -25,7 +25,7 @@ const commands = (attempt: typeof Yours.Type) =>
     `cd attempt-${attempt.attempt}`,
     `git config http.extraHeader "Authorization: Bearer ${attempt.token}"`,
     "# make the change, then:",
-    `git commit -am "${attempt.agent}: ..." && git push origin HEAD:main`,
+    `git commit -am "${attempt.agent}: ..." && git push origin HEAD`,
   ].join("\n");
 
 export function WorkYourself({ org, tree, task }: { readonly org: string; readonly tree: string; readonly task: number }) {
