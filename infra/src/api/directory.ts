@@ -1,5 +1,5 @@
 /**
- * Each organization's trees, in D1 (`ficus_tree`, migration 0002).
+ * Each organization's trees, in D1 (`ficus_tree`, migrations 0002 and 0003).
  *
  * A tree lives in its own Durable Object, which knows nothing of its
  * siblings; the Api is the one place that sees every init go by, so it
