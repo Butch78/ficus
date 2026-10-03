@@ -18,9 +18,11 @@ import * as Schema from "effect/Schema";
 import { change, parsePath, parseRef, Subject, view } from "../core/browse.ts";
 import { applyStep, closeLedger, CONTENT_TYPE as PROGRESS, emptyLedger, type InitStep, Ledger, outcomeBody, outcomeLine, parseLine, stepLine, type StepState, textOf } from "../core/progress.ts";
 import { CheckSpec, RebaseReport, type RebaseRequest, ScoreReport, scoreOf, type ScoreRequest } from "../core/scoring.ts";
+import type { DeployParams } from "../core/deploy.ts";
 import * as T from "../core/tree.ts";
 import { AttemptId, NodeId, Oid, RepoName, TaskId, type TreeError } from "../core/values.ts";
 import * as Agents from "./agents.ts";
+import * as Deploys from "./deploys.ts";
 import * as Artifacts from "./artifacts.ts";
 import { answerRefused, artifactsRefused, browseRefused, json, refuse, Refused, text, treeRefused } from "./http.ts";
 import { committed, diffTrees, listDirectory, readFile } from "./reads.ts";
@@ -31,6 +33,8 @@ export interface Bindings {
   readonly ARTIFACTS: Artifacts;
   readonly SANDBOX: DurableObjectNamespace;
   readonly AGENTS: DurableObjectNamespace;
+  /** The `Deploy` Workflow (src/deploys); absent on a stage that does not deploy. */
+  readonly DEPLOYS?: Workflow<DeployParams>;
 }
 
 const TREE_KEY = "tree";
@@ -172,6 +176,8 @@ export class TreeObject extends DurableObject<Bindings> {
         return yield* this.#showBehind();
       case "release":
         return yield* this.#showRelease();
+      case "deploys":
+        return json(yield* Deploys.list(this.ctx.storage, this.env.DEPLOYS));
       case "attempts/:id":
         return yield* this.#showAttempt(yield* idOf(AttemptId, id, "attempt"));
       case "tasks/:id":
@@ -729,7 +735,15 @@ export class TreeObject extends DurableObject<Bindings> {
 
     yield* this.#save(released.tree);
 
-    return json({ release: released.release, commit: node?.commit, repo: node?.repo });
+    const deploy =
+      node === undefined
+        ? undefined
+        : // The release stands either way: a deploy that did not start is said, not a failed release.
+          yield* Deploys.start(this.ctx.storage, this.env.DEPLOYS, { tree: T.name(released.tree), node: node.id, repo: node.repo, commit: node.commit }).pipe(
+            Effect.catchTag("Tree.Refused", (refused) => Effect.succeed({ error: refused.message })),
+          );
+
+    return json({ release: released.release, commit: node?.commit, repo: node?.repo, deploy: deploy ?? null });
   });
 
   readonly #abandon = Effect.fn("Tree.abandon")(function* (this: TreeObject, attempt: AttemptId, body: typeof AbandonBody.Type) {

@@ -8,12 +8,16 @@
  * Also rebase an attempt: replay its commits onto a newer head in a fresh
  * attempt, so the checks can run there. Conflicts are reported, never
  * resolved: that is the agent's job, with the history in hand.
+ *
+ * And deploy a released node: clone its commit and run the `[deploy]` its own
+ * `ficus.toml` names.
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import { DeployPrepared, type DeployRef, type DeployReport } from "../core/deploy.ts";
 import { stepLine, type ScoreStep, type StepState } from "../core/progress.ts";
 import {
   AttemptRef,
@@ -25,6 +29,8 @@ import {
   checkTimeoutSecs,
   clipDiff,
   decodeRoot,
+  DeploySpec,
+  deployTimeoutSecs,
   FetchSpec,
   LOCKED_PATHS,
   type RebaseRef,
@@ -376,4 +382,67 @@ export const rebase = Effect.fn("Scorer.rebase")(function* (root: string, job: R
   yield* removeAll(workdir);
 
   return { commit, replayed } satisfies RebaseReport;
+});
+
+const DEPLOY_FILE = "deploy.json";
+
+/** What `deployPrepare` leaves in the workdir for `deploy`. */
+const PreparedDeploy = Schema.Struct({
+  in_devenv: Schema.Boolean,
+  /** The released commit's own `[deploy]`; absent when it has none. */
+  deploy: Schema.optionalKey(DeploySpec),
+});
+
+/**
+ * Phase one of a deploy, with the network open to the node's repo: clone the
+ * released commit into a fresh workdir under `root` and read its own
+ * `ficus.toml`. Answers the workdir, whether it deploys at all, and the hosts
+ * its `[deploy]` opens for phase two.
+ */
+export const deployPrepare = Effect.fn("Scorer.deployPrepare")(function* (root: string, ref: DeployRef) {
+  const workdir = join(root, `deploy-${ref.commit}`);
+  const repo = join(workdir, "node");
+
+  yield* removeAll(workdir);
+  yield* Effect.tryPromise({ try: () => mkdir(workdir, { recursive: true }), catch: io("making the workdir") });
+  yield* git(workdir, "clone", ["clone", "--quiet", "--no-checkout", ref.remote, repo]);
+  yield* git(repo, "checkout", ["checkout", "--quiet", "--detach", ref.commit]);
+
+  const hasToml = yield* succeeds(repo, ["cat-file", "-e", "HEAD:ficus.toml"]);
+  const deploy = hasToml ? (yield* Effect.fromResult(parseRoot(yield* git(repo, "read ficus.toml", ["show", "HEAD:ficus.toml"])))).deploy : undefined;
+  const inDevenv = yield* succeeds(repo, ["cat-file", "-e", "HEAD:devenv.nix"]);
+  const prepared: typeof PreparedDeploy.Type = deploy === undefined ? { in_devenv: inDevenv } : { in_devenv: inDevenv, deploy };
+
+  yield* Effect.tryPromise({ try: () => writeFile(join(workdir, DEPLOY_FILE), JSON.stringify(prepared)), catch: io("writing the prepared deploy") });
+
+  return DeployPrepared.make({ workdir, deploys: deploy !== undefined, hosts: deploy?.hosts ?? [] });
+});
+
+/**
+ * Phase two, with the network open to the `[deploy]` hosts, the nix caches
+ * and the Cloudflare API (credentials added by the sandbox): build the root's
+ * devenv shell and run its deploy in it.
+ */
+export const deploy = Effect.fn("Scorer.deploy")(function* (workdir: string) {
+  const text = yield* Effect.tryPromise({ try: () => readFile(join(workdir, DEPLOY_FILE), "utf8"), catch: io("reading the prepared deploy") });
+  const prepared = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(PreparedDeploy))(text).pipe(Effect.mapError(io("decoding the prepared deploy")));
+  const repo = join(workdir, "node");
+
+  if (prepared.deploy === undefined) {
+    return { deployed: false, passed: true, millis: 0, tail: "the released commit's ficus.toml has no [deploy]" } satisfies DeployReport;
+  }
+
+  if (prepared.in_devenv) {
+    const built = yield* run(repo, ["devenv", "--quiet", "shell", "--", "true"], DEVENV_PREPARE_SECS);
+
+    if (!built.passed) {
+      return { deployed: true, passed: false, millis: built.millis, tail: `the root's devenv shell did not build:\n${built.tail}` } satisfies DeployReport;
+    }
+  }
+
+  const ran = yield* run(repo, inShell(prepared.in_devenv, prepared.deploy.run), deployTimeoutSecs(prepared.deploy));
+
+  yield* removeAll(workdir);
+
+  return { deployed: true, passed: ran.passed, millis: ran.millis, tail: ran.tail } satisfies DeployReport;
 });

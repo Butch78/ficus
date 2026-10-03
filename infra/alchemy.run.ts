@@ -16,6 +16,10 @@
 //                                  pi on Workers AI, working in a sandbox,
 //                                  Clef at its handovers; the tree
 //                                  dispatches and polls them
+//   Deploys  src/deploys/worker.ts Effect-native: the `Deploy` Workflow, one
+//                                  instance per release, running the root's
+//                                  `[deploy]` in a sandbox. Only on a stage
+//                                  given FICUS_DEPLOY_TOKEN
 //
 //   The web UI is a stack of its own (web.run.ts), deployed after this one
 //   to the same stage; it binds `Api` by reference.
@@ -25,10 +29,13 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
 import * as Drizzle from "alchemy/Drizzle";
-import * as Output from "alchemy/Output";
+import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { COMPATIBILITY, OBSERVABILITY } from "./src/platform.ts";
+import * as Option from "effect/Option";
+import DeploysWorker from "./src/deploys/worker.ts";
+import { artifactsNamespace, COMPATIBILITY, OBSERVABILITY } from "./src/platform.ts";
+import { SandboxWorker } from "./src/sandbox/stack.ts";
 
 export default Alchemy.Stack(
   "Ficus",
@@ -39,49 +46,7 @@ export default Alchemy.Stack(
   Effect.gen(function* () {
     const { stage } = yield* Alchemy.Stack;
 
-    // The scorer: ficus-scorer (src/scorer, bundled, run by bun) in an image
-    // with nix + devenv. The bundle's hash rides into the container's env so
-    // a new scorer redeploys the container. That edge does not order the image build
-    // after this one (the image builds in an earlier phase), so run
-    // scripts/build-scorer before deploying, as deploy.yml does; this build
-    // then finds it up to date.
-    const scorerBinary = yield* Command.Build("ScorerBinary", {
-      cwd: "..",
-      command: "scripts/build-scorer",
-      outdir: "infra/src/sandbox/context",
-      memo: {
-        include: ["infra/src/scorer/**", "infra/src/core/**", "infra/package.json", "infra/bun.lock", "scripts/build-scorer"],
-        lockfile: false,
-      },
-    });
-
-    const sandboxContainer = Cloudflare.Container("SandboxContainer", {
-      name: `ficus-sandbox-${stage}`,
-      // The Durable Object class in src/sandbox/sandbox.ts that drives it.
-      className: "Sandbox",
-      context: `${import.meta.dirname}/src/sandbox/context`,
-      instances: 0,
-      maxInstances: 20,
-      // A root's devenv shell plus its checks. Ficus's own, when it was
-      // Rust, filled standard-1's disk; standard-4 stays until a TS-only
-      // root is seen to fit a smaller one. Billed while a sandbox runs:
-      // scoring, and agents' workspaces until idle.
-      instanceType: "standard-4",
-      observability: { logs: { enabled: true } },
-      env: {
-        FICUS_SCORER_HASH: Output.map(scorerBinary.hash.output, (hash) => hash ?? "unhashed"),
-      },
-    });
-
-    const sandbox = yield* Cloudflare.Worker("Sandbox", {
-      name: `ficus-sandbox-${stage}`,
-      main: "./src/sandbox/worker.ts",
-      compatibility: COMPATIBILITY,
-      observability: OBSERVABILITY,
-      workersDev: false,
-      // Workers AI, for Clef: the root's judges are asked from here.
-      env: { SANDBOX: sandboxContainer, AI: Cloudflare.Workers.AI() },
-    });
+    const sandbox = yield* SandboxWorker;
 
     // Agents: one AgentActor per attempt an agent works, a pi agent on Workers
     // AI (Clef judges its plan and diff) working in its own sandbox. Internal:
@@ -103,7 +68,23 @@ export default Alchemy.Stack(
     });
 
     // One namespace per stage; Artifacts creates it with the first repo.
-    const artifacts = yield* Cloudflare.Artifacts.Namespace("Artifacts", { namespace: `ficus-${stage}` });
+    const artifacts = yield* artifactsNamespace;
+
+    // Deploys: a stage given a deploy token runs the root's `[deploy]` when a
+    // tree releases a node (src/deploys); one without it never deploys.
+    const deployToken = yield* Config.option(Config.Redacted("FICUS_DEPLOY_TOKEN"));
+    let deploys = {};
+
+    if (Option.isSome(deployToken)) {
+      const host = yield* DeploysWorker;
+
+      deploys = {
+        // The `Deploy` Workflow the deploys Worker hosts, by literal script
+        // name like SANDBOX, with the same deploy-order edge.
+        DEPLOYS: Cloudflare.Workflow("Deploy", { className: "Deploy", scriptName: `ficus-deploys-${stage}` }),
+        FICUS_DEPLOYS_SCRIPT: host.workerName,
+      };
+    }
 
     const worker = yield* Cloudflare.Worker("Worker", {
       name: `ficus-${stage}`,
@@ -128,6 +109,7 @@ export default Alchemy.Stack(
         // literal name like SANDBOX, with the same deploy-order edge.
         AGENTS: Cloudflare.DurableObject("AGENTS", { className: "AgentActor", scriptName: `ficus-agents-${stage}` }),
         FICUS_AGENTS_SCRIPT: agents.workerName,
+        ...deploys,
       },
     });
 

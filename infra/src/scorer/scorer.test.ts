@@ -8,7 +8,7 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import { scoreOf, type AttemptRef, type CheckSpec } from "../core/scoring.ts";
 import { Oid } from "../core/values.ts";
-import { check, failedDerivation, fetch, numstatCost, prepare, rebase, score } from "./scorer.ts";
+import { check, deploy, deployPrepare, failedDerivation, fetch, numstatCost, prepare, rebase, score } from "./scorer.ts";
 import { isInputProblem, type ScoreError, tail, TAIL_CHARS } from "./shell.ts";
 
 const scratch: Array<string> = [];
@@ -317,5 +317,33 @@ describe("rebasing", () => {
     expect(error.message).toContain("greeting.txt");
     expect(isInputProblem(error)).toBe(true);
     expect(gitIn(grown.fresh, ["rev-parse", "main"])).toBe(grown.newHead);
+  });
+});
+
+describe("deploying", () => {
+  test("runs the released commit's own [deploy], having named its hosts", async () => {
+    const repo = fixture();
+    const released = repo.commit([["ficus.toml", `${ROOT}\n[deploy]\nrun = "echo deployed $(cat greeting.txt)"\nhosts = ["registry.npmjs.org"]\n`], ["greeting.txt", "hello\n"]]);
+    const prepared = await ok(deployPrepare(repo.work, { remote: repo.origin, commit: released }));
+
+    expect([prepared.deploys, prepared.hosts]).toEqual([true, ["registry.npmjs.org"]]);
+
+    const report = await ok(deploy(prepared.workdir));
+
+    expect([report.deployed, report.passed]).toEqual([true, true]);
+    expect(report.tail).toContain("deployed hello");
+  });
+
+  test("a root without [deploy] deploys nothing, and a failing deploy says why", async () => {
+    const repo = fixture();
+    const plain = repo.commit([["ficus.toml", ROOT], ["greeting.txt", "hello\n"]]);
+
+    expect(await ok(deployPrepare(repo.work, { remote: repo.origin, commit: plain }).pipe(Effect.flatMap((prepared) => deploy(prepared.workdir))))).toMatchObject({ deployed: false });
+
+    const broken = repo.commit([["ficus.toml", `${ROOT}\n[deploy]\nrun = "echo no token >&2; exit 3"\n`]]);
+    const report = await ok(deployPrepare(repo.work, { remote: repo.origin, commit: broken }).pipe(Effect.flatMap((prepared) => deploy(prepared.workdir))));
+
+    expect([report.deployed, report.passed]).toEqual([true, false]);
+    expect(report.tail).toContain("no token");
   });
 });

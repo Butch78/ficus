@@ -19,6 +19,14 @@
  *   ficus-scorer hosts <checkout>
  *       the hosts its committed ficus.toml's `[fetch]` names, as JSON
  *
+ * Two deploy phases, for a released node:
+ *
+ *   ficus-scorer deploy-prepare '<DeployRef JSON>'   network: Artifacts
+ *       clones the released commit, reads its `[deploy]`; prints
+ *       {"workdir": "...", "deploys": bool, "hosts": [...]}
+ *   ficus-scorer deploy <workdir>      network: nix caches, those hosts, the Cloudflare API
+ *       builds the root's devenv shell and runs its deploy; prints a DeployReport
+ *
  * Exit 0 with JSON on stdout on success; 2 when the attempt or root cannot
  * be scored or the replay conflicts (retrying will not help); 1 for anything
  * else. The reason is on stderr either way.
@@ -31,8 +39,9 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { DeployRef } from "../core/deploy.ts";
 import { AttemptRef, RebaseRef } from "../core/scoring.ts";
-import { check, fetch, fetchHosts, prepare, rebase } from "./scorer.ts";
+import { check, deploy, deployPrepare, fetch, fetchHosts, prepare, rebase } from "./scorer.ts";
 import { isInputProblem, ScoreError } from "./shell.ts";
 import * as Workspace from "./workspace.ts";
 
@@ -40,7 +49,7 @@ import * as Workspace from "./workspace.ts";
 const WORK_ROOT = "/work/score";
 
 const USAGE =
-  "usage: ficus-scorer prepare '<AttemptRef JSON>' | fetch <workdir> | check <workdir> | hosts <checkout> | rebase '<RebaseRef JSON>' | fs <op> | exec";
+  "usage: ficus-scorer prepare '<AttemptRef JSON>' | fetch <workdir> | check <workdir> | hosts <checkout> | rebase '<RebaseRef JSON>' | deploy-prepare '<DeployRef JSON>' | deploy <workdir> | fs <op> | exec";
 
 const unreadable = (what: string) => (issue: { readonly message: string }) =>
   new ScoreError({ kind: "Io", message: `the ${what} is not JSON of the expected shape: ${issue.message}` });
@@ -48,6 +57,8 @@ const unreadable = (what: string) => (issue: { readonly message: string }) =>
 const decodeAttempt = Schema.decodeUnknownEffect(Schema.fromJsonString(AttemptRef));
 
 const decodeRebase = Schema.decodeUnknownEffect(Schema.fromJsonString(RebaseRef));
+
+const decodeDeploy = Schema.decodeUnknownEffect(Schema.fromJsonString(DeployRef));
 
 /** What a scoring command prints on success, as JSON. */
 const command = (args: ReadonlyArray<string>): Effect.Effect<string, ScoreError> | undefined => {
@@ -80,6 +91,16 @@ const command = (args: ReadonlyArray<string>): Effect.Effect<string, ScoreError>
         Effect.flatMap((job) => rebase(WORK_ROOT, job)),
         Effect.map((report) => JSON.stringify(report)),
       );
+
+    case "deploy-prepare":
+      return decodeDeploy(argument).pipe(
+        Effect.mapError(unreadable("deploy")),
+        Effect.flatMap((ref) => deployPrepare(WORK_ROOT, ref)),
+        Effect.map((prepared) => JSON.stringify(prepared)),
+      );
+
+    case "deploy":
+      return deploy(argument).pipe(Effect.map((report) => JSON.stringify(report)));
 
     default:
       return undefined;

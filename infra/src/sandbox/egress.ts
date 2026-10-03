@@ -13,6 +13,8 @@
  *                cannot reach any other repo or keep access after the
  *                sandbox revokes it. Scoring lists one repo; a rebase
  *                lists two: the behind attempt to read and the fresh one to push.
+ * - `cloudflare`: the Cloudflare API, for a deploy: forward, with the deploy
+ *                token in place of whatever credentials the container sent.
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
 import * as Schema from "effect/Schema";
@@ -26,6 +28,7 @@ export const EgressProps = Schema.Union([
   Schema.Struct({ mode: Schema.Literal("pass") }),
   Schema.Struct({ mode: Schema.Literal("deny") }),
   Schema.Struct({ mode: Schema.Literal("artifacts"), repos: Schema.Array(RepoGrant) }),
+  Schema.Struct({ mode: Schema.Literal("cloudflare"), token: Schema.String }),
 ]);
 
 export type EgressProps = Schema.Schema.Type<typeof EgressProps>;
@@ -59,6 +62,15 @@ export class Egress extends WorkerEntrypoint<object, EgressProps> {
         const authorized = new Request(request);
 
         authorized.headers.set("authorization", `Bearer ${grant.token}`);
+
+        return fetch(authorized);
+      }
+
+      case "cloudflare": {
+        // Whatever the container sent (a placeholder) is replaced: the token never reaches it.
+        const authorized = new Request(request);
+
+        authorized.headers.set("authorization", `Bearer ${props.token}`);
 
         return fetch(authorized);
       }

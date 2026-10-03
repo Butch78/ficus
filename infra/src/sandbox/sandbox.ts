@@ -25,6 +25,14 @@
  *     the behind commits onto the head and pushes. Nothing from either repo
  *     is run. The answer is the RebaseReport, or 422 on a conflict.
  *
+ *   POST /deploy  (a DeployRequest plus the Cloudflare credentials, from the
+ *                 Deploy Workflow, src/deploys)
+ *     the released node's repo (read, token added by Egress) and the nix
+ *     caches; `ficus-scorer deploy-prepare` clones the commit and reads its
+ *     own `[deploy]`; then its hosts and the Cloudflare API (token added by
+ *     Egress: the container sees a placeholder) while `ficus-scorer deploy`
+ *     runs it. The answer is the DeployReport.
+ *
  *   `/score` with `Accept: application/x-ndjson` answers with a stream
  *   instead (src/core/progress.ts): each step as it happens, the
  *   sandbox's own and `ficus-scorer`'s, then the outcome: what the plain
@@ -48,6 +56,7 @@ import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as DecisionModel from "effect/ai/DecisionModel";
 import { Clef } from "../clef/clef.ts";
+import { DeployPrepared, DeployReport, DeployRequest } from "../core/deploy.ts";
 import { RebaseReport, RebaseRequest, ScoreRequest } from "../core/scoring.ts";
 import type { EgressProps } from "./egress.ts";
 import { type CheckOutcome, CheckRun, judged, judging } from "./judges.ts";
@@ -94,6 +103,19 @@ const EXEC_ENV = {
 } as const;
 
 const SCORER = "/usr/local/bin/ficus-scorer";
+
+/** The Cloudflare API, which a deploy reaches through Egress with the deploy token added. */
+const CLOUDFLARE_API = "api.cloudflare.com";
+
+/** What a deploy's command sees as its token: Egress replaces it on the way out. */
+const TOKEN_PLACEHOLDER = "ficus-egress-adds-the-deploy-token";
+
+/** A deploy: the released node, and the Cloudflare account and token it deploys with. The token goes to Egress only. */
+const DeployCall = Schema.Struct({
+  ...DeployRequest.fields,
+  account_id: Schema.String,
+  cloudflare_token: Schema.String,
+});
 
 /** `ficus-scorer`'s progress lines on stderr (src/scorer/scorer.ts `PROGRESS_PREFIX`). */
 const PROGRESS_PREFIX = "ficus-progress ";
@@ -233,6 +255,10 @@ export class Sandbox extends DurableObject<Bindings> {
 
       case "/rebase": {
         return respond(this.#rebase(request));
+      }
+
+      case "/deploy": {
+        return respond(this.#deploy(request));
       }
 
       default: {
@@ -489,6 +515,51 @@ export class Sandbox extends DurableObject<Bindings> {
     return report;
   });
 
+  /** Deploy a released node: clone its commit, then run its own `[deploy]` with the Cloudflare API open. */
+  readonly #deploy = Effect.fn("Sandbox.deploy")(function* (this: Sandbox, request: Request) {
+    const call = yield* this.#body(request, DeployCall, "deploy");
+    const repo = repoOf(call.remote);
+    const ref = JSON.stringify({ remote: call.remote, commit: call.commit });
+
+    yield* this.#ready();
+    yield* this.#route(repo.host, { mode: "artifacts", repos: [{ repoPath: repo.repoPath, token: call.token }] });
+
+    for (const host of NIX_HOSTS) {
+      yield* this.#route(host, { mode: "pass" });
+    }
+
+    const trusted = yield* this.#exec(["/usr/local/bin/ficus-trust-egress"]);
+
+    if (trusted.exitCode !== 0) {
+      return yield* failure(503, `trusting the egress CA: ${trusted.stderr.trim()}`);
+    }
+
+    const prepared = yield* this.#json(yield* this.#exec([SCORER, "deploy-prepare", ref]), DeployPrepared, "deploy-prepare");
+
+    if (!prepared.deploys) {
+      yield* Effect.promise(() => this.#container().destroy());
+
+      return DeployReport.make({ deployed: false, passed: true, millis: 0, tail: "the released commit's ficus.toml has no [deploy]" });
+    }
+
+    for (const host of prepared.hosts) {
+      yield* this.#route(host, { mode: "pass" });
+    }
+
+    yield* this.#route(CLOUDFLARE_API, { mode: "cloudflare", token: call.cloudflare_token });
+
+    const deployed = yield* this.#exec([SCORER, "deploy", prepared.workdir], quiet, {
+      CLOUDFLARE_ACCOUNT_ID: call.account_id,
+      CLOUDFLARE_API_TOKEN: TOKEN_PLACEHOLDER,
+    });
+
+    const report = yield* this.#json(deployed, DeployReport, "deploy");
+
+    yield* Effect.promise(() => this.#container().destroy());
+
+    return report;
+  });
+
   readonly #score = Effect.fn("Sandbox.score")(function* (this: Sandbox, request: Request, say: Report) {
     const score = yield* this.#body(request, ScoreRequest, "score");
     const repo = repoOf(score.remote);
@@ -625,12 +696,17 @@ export class Sandbox extends DurableObject<Bindings> {
    * Run `argv`. Its stderr is read as it is written: progress lines go to
    * `report` at once, the rest is kept as the command's error text.
    */
-  readonly #exec = Effect.fn("Sandbox.exec")(function* (this: Sandbox, argv: ReadonlyArray<string>, report: Report = quiet) {
+  readonly #exec = Effect.fn("Sandbox.exec")(function* (
+    this: Sandbox,
+    argv: ReadonlyArray<string>,
+    report: Report = quiet,
+    cloudflare?: { readonly CLOUDFLARE_ACCOUNT_ID: string; readonly CLOUDFLARE_API_TOKEN: string },
+  ) {
     const container = this.#container();
 
     return yield* Effect.tryPromise({
       try: async () => {
-        const running = await container.exec([...argv], { env: { ...EXEC_ENV }, stdout: "pipe", stderr: "pipe" });
+        const running = await container.exec([...argv], { env: { ...EXEC_ENV, ...cloudflare }, stdout: "pipe", stderr: "pipe" });
         const kept: Array<string> = [];
 
         const [stdout] = await Promise.all([

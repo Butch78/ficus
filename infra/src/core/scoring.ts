@@ -10,7 +10,7 @@
  * the container. A `[[judge]]` is a yes/no question about the diff, asked of
  * Clef by the sandbox once the container is gone. Both count the same
  * towards a score. Its `[fetch]` names the hosts its checks need before the
- * network closes.
+ * network closes. Its `[deploy]` says how a released node is deployed.
  */
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -81,11 +81,34 @@ export const FetchSpec = Schema.Struct({
 
 export type FetchSpec = typeof FetchSpec.Type;
 
+/** A deploy that runs longer than this fails, unless `ficus.toml` says otherwise. */
+export const DEFAULT_DEPLOY_TIMEOUT_SECS = 1800;
+
+/**
+ * The root's `[deploy]`: how a node is deployed once the tree releases it.
+ * Unlike the checks it is read from the released commit itself, which has
+ * been accepted. `run` runs in a sandbox that may reach `hosts`, the nix
+ * caches, and the Cloudflare API, whose credentials the sandbox adds: the
+ * command sees a placeholder `CLOUDFLARE_API_TOKEN`, never the token.
+ */
+export const DeploySpec = Schema.Struct({
+  /** A bash command, run from the repo root inside the root's devenv shell when it has one. */
+  run: Schema.String,
+  /** Hostnames, exactly, as for `[fetch]`. */
+  hosts: Schema.optionalKey(Schema.Array(Schema.String)),
+  timeout_secs: Schema.optionalKey(Seconds),
+});
+
+export type DeploySpec = typeof DeploySpec.Type;
+
+export const deployTimeoutSecs = (deploy: DeploySpec) => deploy.timeout_secs ?? DEFAULT_DEPLOY_TIMEOUT_SECS;
+
 /** The root's `ficus.toml`, as TOML parses it. */
 export const RootChecks = Schema.Struct({
   check: Schema.optionalKey(Schema.Array(CheckSpec)),
   judge: Schema.optionalKey(Schema.Array(JudgeSpec)),
   fetch: Schema.optionalKey(FetchSpec),
+  deploy: Schema.optionalKey(DeploySpec),
 });
 
 export type RootChecks = typeof RootChecks.Type;
@@ -102,6 +125,8 @@ export const ChecksErrorKind = Schema.Literals([
   "FetchHost",
   "TooManyHosts",
   "EmptyFetch",
+  "DeployHost",
+  "EmptyDeploy",
 ]);
 
 export class ChecksError extends Schema.TaggedError<ChecksError>()("Checks.Error", {
@@ -167,22 +192,42 @@ const checkJudges = (checks: ReadonlyArray<CheckSpec>, judges: ReadonlyArray<Jud
     }
   });
 
-const checkFetch = (fetch: FetchSpec | undefined) =>
+/** A section's hosts: at most `MAX_FETCH_HOSTS`, each a plain hostname. */
+const checkHosts = (section: "fetch" | "deploy", hosts: ReadonlyArray<string>) =>
   Result.gen(function* () {
-    const hosts = fetch?.hosts ?? [];
-
     if (hosts.length > MAX_FETCH_HOSTS) {
-      return yield* refuse("TooManyHosts", `[fetch] opens more than ${MAX_FETCH_HOSTS} hosts`);
+      return yield* refuse("TooManyHosts", `[${section}] opens more than ${MAX_FETCH_HOSTS} hosts`);
     }
 
     const badHost = hosts.find((host) => !isHostname(host));
 
     if (badHost !== undefined) {
-      return yield* refuse("FetchHost", `[fetch] host ${JSON.stringify(badHost)} is not a hostname (lowercase, no wildcards, ports or schemes)`);
+      return yield* refuse(
+        section === "fetch" ? "FetchHost" : "DeployHost",
+        `[${section}] host ${JSON.stringify(badHost)} is not a hostname (lowercase, no wildcards, ports or schemes)`,
+      );
     }
+  });
+
+const checkFetch = (fetch: FetchSpec | undefined) =>
+  Result.gen(function* () {
+    yield* checkHosts("fetch", fetch?.hosts ?? []);
 
     if (fetch?.run?.trim() === "") {
       return yield* refuse("EmptyFetch", "[fetch] has an empty `run`");
+    }
+  });
+
+const checkDeploy = (deploy: DeploySpec | undefined) =>
+  Result.gen(function* () {
+    if (deploy === undefined) {
+      return;
+    }
+
+    yield* checkHosts("deploy", deploy.hosts ?? []);
+
+    if (deploy.run.trim() === "") {
+      return yield* refuse("EmptyDeploy", "[deploy] has an empty `run`");
     }
   });
 
@@ -202,6 +247,7 @@ export const checkRoot = (root: RootChecks) =>
     yield* validateChecks(checks);
     yield* checkJudges(checks, judges);
     yield* checkFetch(root.fetch);
+    yield* checkDeploy(root.deploy);
 
     return root;
   });

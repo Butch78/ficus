@@ -119,6 +119,15 @@ deadline 2026-10-14.
   Image: `infra/src/sandbox/context` (nix + devenv + bun; `ficus-scorer.js` from `scripts/build-scorer`). Run
   `scripts/build-scorer` before `bun run deploy`: alchemy builds the image before its ScorerBinary step, so
   otherwise the image copies a missing or stale bundle.
+- Deploys: `[deploy] {run, hosts?, timeout_secs?}` in ficus.toml, read from the released commit itself (accepted, so
+  trusted). `POST /trees/<t>/release` starts one `Deploy` Workflow instance (`<tree>-deploy-<n>`, `src/deploys`: an
+  Effect-native alchemy Worker, `Cloudflare.Workflow` + `Workflows.task`) and records it; `GET /trees/<t>/deploys`
+  reads each instance's status. The Workflow mints a read token and asks a Sandbox `POST /deploy`: `ficus-scorer
+  deploy-prepare` (clone, read `[deploy]`) → its hosts + `api.cloudflare.com` open (Egress `cloudflare` mode puts the
+  deploy token in `Authorization`; the container's `CLOUDFLARE_API_TOKEN` is a placeholder) → `ficus-scorer deploy`.
+  Only a stage deployed with `FICUS_DEPLOY_TOKEN` (and `CLOUDFLARE_ACCOUNT_ID`) gets the deploys Worker and the tree's
+  `DEPLOYS` binding; elsewhere releases do not deploy. A deploy that builds container images still needs Docker,
+  which a sandbox lacks: push the image to registry.cloudflare.com first (alchemy deploys a prepushed `image` as-is).
 - The deploy token needs Containers: Edit (registry credentials) on top of Workers, Workers AI, Artifacts.
 - `just e2e` (FICUS_API=https://ficus-dev.fruitcards.workers.dev) runs the full cycle live.
 - After a deploy, old isolates keep serving for a few seconds: wait before judging a change live

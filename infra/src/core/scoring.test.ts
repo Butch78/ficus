@@ -8,6 +8,8 @@ import {
   checkRoot,
   decodeRoot,
   DEFAULT_CHECK_TIMEOUT_SECS,
+  DEFAULT_DEPLOY_TIMEOUT_SECS,
+  deployTimeoutSecs,
   DEFAULT_PASS_AT,
   JUDGE_DIFF_CHARS,
   MAX_FETCH_HOSTS,
@@ -74,6 +76,16 @@ describe("a root's ficus.toml", () => {
 
     expect(refusal(`[fetch]\nhosts = [${many}]\n[[check]]\nname = "t"\nrun = "true"\n`)).toBe("TooManyHosts");
     expect(refusal('[fetch]\nrun = " "\n[[check]]\nname = "t"\nrun = "true"\n')).toBe("EmptyFetch");
+  });
+
+  test("says how a released node deploys, opening named hosts", () => {
+    const root = ok(parse('[deploy]\nrun = "bun run deploy"\nhosts = ["registry.npmjs.org"]\n[[check]]\nname = "t"\nrun = "true"\n'));
+
+    expect(root.deploy).toEqual({ run: "bun run deploy", hosts: ["registry.npmjs.org"] });
+    expect(deployTimeoutSecs(root.deploy ?? { run: "" })).toBe(DEFAULT_DEPLOY_TIMEOUT_SECS);
+    expect(refusal('[deploy]\nrun = "x"\nhosts = ["*.example.com"]\n[[check]]\nname = "t"\nrun = "true"\n')).toBe("DeployHost");
+    expect(refusal('[deploy]\nrun = " "\n[[check]]\nname = "t"\nrun = "true"\n')).toBe("EmptyDeploy");
+    expect(refusal('[deploy]\nhosts = []\n[[check]]\nname = "t"\nrun = "true"\n')).toBe("Unparsable");
   });
 
   test("checks take the default timeout unless they name one", () => {
