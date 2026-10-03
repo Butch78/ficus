@@ -5,5 +5,8 @@
 # interception on (the CA does not exist before that).
 set -eu
 mkdir -p /work /run
+# POSIX shared memory: the container has no /dev/shm, and Python's
+# multiprocessing (nixpkgs' cargo vendoring, for one) needs it for semaphores.
+mkdir -p /dev/shm && chmod 1777 /dev/shm
 touch /run/ficus-ready
 exec sleep infinity
