@@ -58,9 +58,9 @@ export default Alchemy.Stack(
       },
     });
 
-    // The scorer: ficus-scorer (static musl) in an image with nix + devenv.
-    // The binary's hash rides into the container's env so a new binary
-    // redeploys the container. That edge does not order the image build
+    // The scorer: ficus-scorer (src/scorer, bundled, run by bun) in an image
+    // with nix + devenv. The bundle's hash rides into the container's env so
+    // a new scorer redeploys the container. That edge does not order the image build
     // after this one (the image builds in an earlier phase), so run
     // scripts/build-scorer before deploying, as deploy.yml does; this build
     // then finds it up to date.
@@ -69,14 +69,7 @@ export default Alchemy.Stack(
       command: "scripts/build-scorer",
       outdir: "infra/src/sandbox/context",
       memo: {
-        include: [
-          "crates/ficus-scorer/**",
-          "crates/ficus-core/**",
-          "Cargo.toml",
-          "Cargo.lock",
-          "rust-toolchain.toml",
-          "scripts/build-scorer",
-        ],
+        include: ["infra/src/scorer/**", "infra/src/core/**", "infra/package.json", "infra/bun.lock", "scripts/build-scorer"],
         lockfile: false,
       },
     });
