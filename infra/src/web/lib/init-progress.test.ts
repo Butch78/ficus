@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { apply, connected, description, label, PLANT_STEPS, type PlantProgress, refused, split, started } from "./plant-progress.ts";
+import { apply, connected, description, label, INIT_STEPS, type InitProgress, refused, split, started } from "./init-progress.ts";
 
-// The lines a plant from GitHub streamed on pr-1, in order.
-const PLANT = [
+// The lines an init from GitHub streamed on pr-1, in order.
+const INIT = [
   '{"kind":"step","step":"import","state":"active","detail":"https://github.com/Butch78/ficus"}',
   '{"kind":"step","step":"import","state":"complete"}',
   '{"kind":"step","step":"settle","state":"active"}',
@@ -16,20 +16,20 @@ const PLANT = [
   '{"kind":"step","step":"record","state":"complete"}',
 ];
 
-const statuses = (progress: PlantProgress) => PLANT_STEPS.map((step) => progress.steps.get(step)?.status);
+const statuses = (progress: InitProgress) => INIT_STEPS.map((step) => progress.steps.get(step)?.status);
 
-describe("a plant's progress", () => {
+describe("an init's progress", () => {
   test("starts with the membership check, the rest to come", () => {
     expect(statuses(started(0))).toEqual(["active", "pending", "pending", "pending", "pending", "pending"]);
   });
 
   test("ticks steps off as their lines arrive", () => {
-    let progress: PlantProgress = connected(started(0), 10);
+    let progress: InitProgress = connected(started(0), 10);
 
-    progress = apply(progress, PLANT[0] ?? "", 20);
+    progress = apply(progress, INIT[0] ?? "", 20);
     expect(statuses(progress)).toEqual(["complete", "active", "pending", "pending", "pending", "pending"]);
 
-    progress = PLANT.slice(1, 4).reduce((current, line) => apply(current, line, 30), progress);
+    progress = INIT.slice(1, 4).reduce((current, line) => apply(current, line, 30), progress);
     expect(progress.steps.get("settle")).toEqual({
       status: "active",
       detail: "still importing, check 1 of 30",
@@ -37,15 +37,15 @@ describe("a plant's progress", () => {
       endedAt: undefined,
     });
 
-    progress = PLANT.slice(4).reduce((current, line) => apply(current, line, 40), progress);
+    progress = INIT.slice(4).reduce((current, line) => apply(current, line, 40), progress);
     expect(statuses(progress)).toEqual(["complete", "complete", "complete", "complete", "complete", "complete"]);
     expect(progress.outcome).toEqual({ succeeded: true, message: "" });
   });
 
   test("a refusal in the outcome carries its reason", () => {
-    const progress = apply(connected(started(0), 1), '{"kind":"outcome","status":409,"body":"tree already planted"}', 2);
+    const progress = apply(connected(started(0), 1), '{"kind":"outcome","status":409,"body":"tree already initialized"}', 2);
 
-    expect(progress.outcome).toEqual({ succeeded: false, message: "tree already planted" });
+    expect(progress.outcome).toEqual({ succeeded: false, message: "tree already initialized" });
   });
 
   test("a failed step and a refusal before streaming", () => {

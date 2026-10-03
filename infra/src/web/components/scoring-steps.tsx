@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * A leaf's scoring as its sandbox reports it: every step, or (compact) just
+ * An attempt's scoring as its sandbox reports it: every step, or (compact) just
  * the one running now. The page refreshes the ledger; this keeps the running
  * step's clock moving in between.
  */

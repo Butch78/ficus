@@ -34,7 +34,7 @@ export default async function Home({ searchParams }: { readonly searchParams: Pr
       </div>
       <FailureBanner error={error} />
       {organizations.length === 0 ? (
-        <Empty title="No organizations yet" description="Create one to plant trees in." />
+        <Empty title="No organizations yet" description="Create one to init trees in." />
       ) : (
         <LayerCard>
           <LayerCardPrimary className="p-0">

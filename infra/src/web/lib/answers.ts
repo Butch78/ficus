@@ -1,8 +1,8 @@
 /**
  * What the Api answers, decoded at the boundary. The tree shapes are
  * ficus-core's serde output (crates/ficus-core/src/tree.rs): enums are
- * externally tagged, so a unit variant is a bare string ("Growing") and a
- * struct variant an object with one key ({ "Ripe": { ... } }).
+ * externally tagged, so a unit variant is a bare string ("Working") and a
+ * struct variant an object with one key ({ "Scored": { ... } }).
  */
 import * as Schema from "effect/Schema";
 
@@ -10,88 +10,117 @@ const Id = Schema.Number;
 
 const Oid = Schema.String;
 
-export const Score = Schema.Struct({ checks_passed: Schema.Number, checks_total: Schema.Number, cost: Schema.Number });
+export const Score = Schema.Struct({
+  checks_passed: Schema.Number,
+  checks_total: Schema.Number,
+  cost: Schema.Number,
+  /** The judges' mean confidence, in thousandths; null when the root has no judges. */
+  confidence: Schema.optional(Schema.NullOr(Schema.Number)),
+});
 
 export type Score = typeof Score.Type;
 
-export const PruneReason = Schema.Union([
-  Schema.Struct({ Outgrown: Schema.Struct({ by: Id }) }),
-  Schema.Struct({ Regrown: Schema.Struct({ into: Id }) }),
-  Schema.Struct({ Withered: Schema.Struct({ note: Schema.String }) }),
+export const CloseReason = Schema.Union([
+  Schema.Struct({ Lost: Schema.Struct({ to: Id }) }),
+  Schema.Struct({ Retried: Schema.Struct({ into: Id }) }),
+  Schema.Struct({ Rebased: Schema.Struct({ into: Id }) }),
+  Schema.Struct({ Abandoned: Schema.Struct({ note: Schema.String }) }),
 ]);
 
-export type PruneReason = typeof PruneReason.Type;
+export type CloseReason = typeof CloseReason.Type;
 
-export const LeafState = Schema.Union([
-  Schema.Literal("Growing"),
-  Schema.Struct({ Ripening: Schema.Struct({ commit: Oid }) }),
-  Schema.Struct({ Ripe: Schema.Struct({ commit: Oid, score: Score }) }),
-  Schema.Struct({ Fruit: Schema.Struct({ node: Id }) }),
-  Schema.Struct({ Pruned: Schema.Struct({ reason: PruneReason }) }),
+export const AttemptState = Schema.Union([
+  Schema.Literal("Working"),
+  Schema.Struct({ Checking: Schema.Struct({ commit: Oid }) }),
+  Schema.Struct({ Scored: Schema.Struct({ commit: Oid, score: Score }) }),
+  Schema.Struct({ Accepted: Schema.Struct({ node: Id }) }),
+  Schema.Struct({ Closed: Schema.Struct({ reason: CloseReason }) }),
 ]);
 
-export type LeafState = typeof LeafState.Type;
+export type AttemptState = typeof AttemptState.Type;
 
-export const Leaf = Schema.Struct({
+export const Attempt = Schema.Struct({
   id: Id,
-  bud: Id,
+  task: Id,
   agent: Schema.String,
   base: Id,
   repo: Schema.String,
-  state: LeafState,
+  state: AttemptState,
+  /** Paths it changed against its base, once scored. */
+  touched: Schema.optional(Schema.Array(Schema.String)),
+  /** The fresh attempt a rebase of this one is in flight into. */
+  rebase: Schema.optional(Schema.NullOr(Id)),
+  /** The behind attempt this one is a rebase of. */
+  rebase_of: Schema.optional(Schema.NullOr(Id)),
 });
 
-export type Leaf = typeof Leaf.Type;
+export type Attempt = typeof Attempt.Type;
 
-export const BudState = Schema.Union([
+export const TaskState = Schema.Union([
   Schema.Literal("Open"),
-  Schema.Struct({ Fruited: Schema.Struct({ leaf: Id, node: Id }) }),
+  Schema.Struct({ Done: Schema.Struct({ attempt: Id, node: Id }) }),
 ]);
 
-export const Bud = Schema.Struct({ id: Id, intent: Schema.String, state: BudState });
+/** A task's own check (ficus-core `CheckSpec`): run after the root's. */
+export const TaskCheck = Schema.Struct({ name: Schema.String, run: Schema.String, timeout_secs: Schema.optional(Schema.NullOr(Schema.Number)) });
 
-export type Bud = typeof Bud.Type;
+export const Task = Schema.Struct({
+  id: Id,
+  intent: Schema.String,
+  state: TaskState,
+  checks: Schema.optional(Schema.Array(TaskCheck)),
+  retries: Schema.optional(Schema.Number),
+});
+
+export type Task = typeof Task.Type;
 
 export const TreeNode = Schema.Struct({
   id: Id,
   parent: Schema.NullOr(Id),
   commit: Oid,
   repo: Schema.String,
-  fruit_of: Schema.NullOr(Id),
+  accepted_from: Schema.NullOr(Id),
+  touched: Schema.optional(Schema.Array(Schema.String)),
 });
 
 export type TreeNode = typeof TreeNode.Type;
 
-export const Compost = Schema.Struct({
-  leaf: Id,
-  bud: Id,
+export const HistoryEntry = Schema.Struct({
+  attempt: Id,
+  task: Id,
   agent: Schema.String,
-  reason: PruneReason,
+  reason: CloseReason,
   score: Schema.NullOr(Score),
 });
 
-export type Compost = typeof Compost.Type;
+export type HistoryEntry = typeof HistoryEntry.Type;
 
 /** `GET /v1/orgs/<org>/trees/<tree>`. Maps are keyed by the id as text. */
 export const Tree = Schema.Struct({
   name: Schema.String,
   head: Id,
   nodes: Schema.Record(Schema.String, TreeNode),
-  buds: Schema.Record(Schema.String, Bud),
-  leaves: Schema.Record(Schema.String, Leaf),
-  compost: Schema.Array(Compost),
+  tasks: Schema.Record(Schema.String, Task),
+  attempts: Schema.Record(Schema.String, Attempt),
+  history: Schema.Array(HistoryEntry),
+  /** The node a deployment follows; null until the first release. */
+  released: Schema.optional(Schema.NullOr(Id)),
 });
 
 export type Tree = typeof Tree.Type;
 
 export const CheckOutcome = Schema.Struct({
   name: Schema.String,
+  /** The root's `ficus.toml` check, or the task's own. */
+  origin: Schema.optional(Schema.Literals(["root", "task"])),
   passed: Schema.Boolean,
   millis: Schema.Number,
   tail: Schema.String,
+  /** A judge's probability of yes, in thousandths; absent for a command. */
+  confidence: Schema.optional(Schema.Number),
 });
 
-/** ficus-core `Ledger`: an operation's steps as they went (a leaf's scoring). */
+/** ficus-core `Ledger`: an operation's steps as they went (an attempt's scoring). */
 export const Ledger = Schema.Struct({
   entries: Schema.Array(
     Schema.Struct({
@@ -107,11 +136,11 @@ export const Ledger = Schema.Struct({
 
 export type Ledger = typeof Ledger.Type;
 
-/** `GET .../leaves/<leaf>`: the leaf and, once scored, its report. */
-export const LeafDetail = Schema.Struct({
-  leaf: Leaf,
+/** `GET .../attempts/<attempt>`: the attempt and, once scored, its report. */
+export const AttemptDetail = Schema.Struct({
+  attempt: Attempt,
   report: Schema.NullOr(Schema.Struct({ checks: Schema.Array(CheckOutcome), cost: Schema.Number })),
-  /** Its scoring steps, live while it ripens; absent for a leaf never scored. */
+  /** Its scoring steps, live while its checks run; absent for an attempt never scored. */
   scoring: Schema.optional(Schema.NullOr(Ledger)),
 });
 
@@ -130,7 +159,7 @@ export const Commit = Schema.Struct({
 
 export type Commit = typeof Commit.Type;
 
-/** `GET .../{leaves,nodes}/<id>/log`. */
+/** `GET .../{attempts,nodes}/<id>/log`. */
 export const Log = Schema.Struct({ repo: Schema.String, ref: Schema.String, commits: Schema.Array(Commit) });
 
 export const TreeEntry = Schema.Struct({
@@ -142,7 +171,7 @@ export const TreeEntry = Schema.Struct({
 
 export type TreeEntry = typeof TreeEntry.Type;
 
-/** `GET .../{leaves,nodes}/<id>/tree?path=`. */
+/** `GET .../{attempts,nodes}/<id>/tree?path=`. */
 export const Directory = Schema.Struct({
   repo: Schema.String,
   commit: Commit,
@@ -153,8 +182,8 @@ export const Directory = Schema.Struct({
 export type Directory = typeof Directory.Type;
 
 /** `GET /v1/orgs/<org>/trees`. */
-export const PlantedTrees = Schema.Struct({
-  trees: Schema.Array(Schema.Struct({ name: Schema.String, plantedAt: Schema.Number })),
+export const Trees = Schema.Struct({
+  trees: Schema.Array(Schema.Struct({ name: Schema.String, createdAt: Schema.Number })),
 });
 
 /** Better Auth's `GET /api/auth/organization/list`, the fields the UI shows. */
@@ -165,39 +194,43 @@ export const Session = Schema.NullOr(
   Schema.Struct({ user: Schema.Struct({ id: Schema.String, email: Schema.String, name: Schema.String }) }),
 );
 
-/** ficus-core `Standing`: where a leaf stands if its bud were harvested now. */
+/** ficus-core `Standing`: where an attempt stands if its task were accepted now. */
 export const Standing = Schema.Union([
-  Schema.Literals(["Winner", "Stale", "Growing", "Ripening"]),
+  Schema.Literals(["Best", "Behind", "Working", "Checking"]),
   Schema.Struct({ Outscored: Schema.Struct({ by: Id }) }),
   Schema.Struct({ Failing: Schema.Struct({ checks_passed: Schema.Number, checks_total: Schema.Number }) }),
-  Schema.Struct({ Fruit: Schema.Struct({ node: Id }) }),
-  Schema.Struct({ Pruned: Schema.Struct({ reason: PruneReason }) }),
+  Schema.Struct({ Accepted: Schema.Struct({ node: Id }) }),
+  Schema.Struct({ Closed: Schema.Struct({ reason: CloseReason }) }),
 ]);
 
 export type Standing = typeof Standing.Type;
 
-const Report = Schema.Struct({ checks: Schema.Array(CheckOutcome), cost: Schema.Number });
+const Report = Schema.Struct({
+  checks: Schema.Array(CheckOutcome),
+  cost: Schema.Number,
+  touched: Schema.optional(Schema.Array(Schema.String)),
+});
 
 export type Report = typeof Report.Type;
 
-/** `GET .../buds/<bud>`: the race. */
-export const BudRace = Schema.Struct({
-  bud: Bud,
+/** `GET .../tasks/<task>`: the race. */
+export const TaskRace = Schema.Struct({
+  task: Task,
   head: Id,
-  leaves: Schema.Array(
+  attempts: Schema.Array(
     Schema.Struct({
-      leaf: Leaf,
+      attempt: Attempt,
       standing: Standing,
       report: Schema.NullOr(Report),
       scoring: Schema.optional(Schema.NullOr(Ledger)),
-      /** The model of the agent growing it; null for a leaf a person grows. */
+      /** The model of the agent working it; null for an attempt a person works. */
       agent: Schema.optional(Schema.NullOr(Schema.String)),
     }),
   ),
-  compost: Schema.Array(Compost),
+  history: Schema.Array(HistoryEntry),
 });
 
-export type BudRace = typeof BudRace.Type;
+export type TaskRace = typeof TaskRace.Type;
 
 const DiffLine = Schema.Struct({ kind: Schema.Literals(["context", "added", "removed"]), text: Schema.String });
 
@@ -227,7 +260,7 @@ export const FileDiff = Schema.Struct({
 
 export type FileDiff = typeof FileDiff.Type;
 
-/** `GET .../{leaves,nodes}/<id>/diff`. */
+/** `GET .../{attempts,nodes}/<id>/diff`. */
 export const Diff = Schema.Struct({
   repo: Schema.String,
   base: Schema.String,
@@ -238,29 +271,33 @@ export const Diff = Schema.Struct({
 
 export type Diff = typeof Diff.Type;
 
-/** `POST .../buds`. */
-export const BudCreated = Schema.Struct({ bud: Id });
+/** `POST .../tasks`. */
+export const TaskCreated = Schema.Struct({ task: Id });
 
-/** `POST .../buds/<bud>/harvest`. */
-export const Harvested = Schema.Struct({ fruit: Id, node: Id });
+/** `POST .../tasks/<task>/accept`. */
+export const Acceptance = Schema.Struct({ accepted: Id, node: Id });
 
-
-/** `POST .../buds/<bud>/leaves` and `.../regrow`: a leaf to push to, with its write token. */
-export const Growing = Schema.Struct({
-  leaf: Id,
-  bud: Id,
+/**
+ * `POST .../tasks/<task>/attempts` and `.../retry`: an attempt to push to,
+ * with its write token. An agent's retry has no token: the agent holds it.
+ */
+export const Started = Schema.Struct({
+  attempt: Id,
+  task: Id,
   agent: Schema.String,
   remote: Schema.String,
-  token: Schema.String,
+  token: Schema.optional(Schema.String),
   base_commit: Schema.String,
 });
 
-export type Growing = typeof Growing.Type;
+export type Started = typeof Started.Type;
 
-/** `GET .../leaves/<leaf>/agent`: the agent growing it (src/agents/actor.ts `#status`). */
+/** `GET .../attempts/<attempt>/agent`: the agent working it (src/agents/actor.ts `#status`). */
 export const AgentStatus = Schema.Struct({
   state: Schema.Literals(["working", "submitted", "stopped", "failed", "unassigned"]),
   reason: Schema.optional(Schema.String),
+  /** `scout` reads and plans; `change` makes the change and submits it. */
+  phase: Schema.optional(Schema.Literals(["scout", "change"])),
   model: Schema.String,
   calls: Schema.Array(
     Schema.Struct({
@@ -275,5 +312,5 @@ export const AgentStatus = Schema.Struct({
 
 export type AgentStatus = typeof AgentStatus.Type;
 
-/** `POST .../buds/<bud>/grow`. */
-export const Grown = Schema.Struct({ leaves: Schema.Array(Id) });
+/** `POST .../tasks/<task>/agents`. */
+export const AgentsStarted = Schema.Struct({ attempts: Schema.Array(Id) });

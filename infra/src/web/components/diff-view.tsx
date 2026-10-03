@@ -100,7 +100,7 @@ export function DiffView({ diff }: { readonly diff: Diff }) {
   );
 
   if (diff.files.length === 0) {
-    return <Empty size="sm" title="No changes yet" description="This is the same as the commit it grew from." />;
+    return <Empty size="sm" title="No changes yet" description="This is the same as the commit it started from." />;
   }
 
   return (

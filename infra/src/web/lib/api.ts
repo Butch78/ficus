@@ -83,8 +83,8 @@ const get = <S extends Schema.Constraint>(schema: S, path: string) =>
 const tree = (org: string, name: string) =>
   `/v1/orgs/${encodeURIComponent(org)}/trees/${encodeURIComponent(name)}`;
 
-/** A leaf or a node: the two things whose repos can be read. */
-export type Subject = { readonly kind: "leaves" | "nodes"; readonly id: number };
+/** An attempt or a node: the two things whose repos can be read. */
+export type Subject = { readonly kind: "attempts" | "nodes"; readonly id: number };
 
 const reading = (subject: Subject, what: "log" | "tree" | "file", query: URLSearchParams) =>
   `/${subject.kind}/${subject.id}/${what}?${query.toString()}`;
@@ -96,18 +96,18 @@ export const organizations = get(Answers.Organizations, "/api/auth/organization/
 export const createOrganization = (name: string, slug: string) =>
   send("POST", "/api/auth/organization/create", JSON.stringify({ name, slug }));
 
-export const trees = (org: string) => get(Answers.PlantedTrees, `/v1/orgs/${encodeURIComponent(org)}/trees`);
+export const trees = (org: string) => get(Answers.Trees, `/v1/orgs/${encodeURIComponent(org)}/trees`);
 
 /** Progress lines, one JSON object each (crates/ficus-core/src/progress.rs). */
 export const PROGRESS = "application/x-ndjson";
 
 /**
- * Plant, streaming its progress: the Api's response, unread, once it has
- * accepted the plant. As the `ficus.plant` span, marked with `operation` and
+ * Init, streaming its progress: the Api's response, unread, once it has
+ * accepted the init. As the `ficus.init` span, marked with `operation` and
  * the organization, which is how its Cloudflare trace is found again
  * (lib/trace.ts) to show what happened.
  */
-export const plant = Effect.fn("ficus.plant")(function* (org: string, name: string, source: string, operation: string) {
+export const init = Effect.fn("ficus.init")(function* (org: string, name: string, source: string, operation: string) {
   yield* Effect.annotateCurrentSpan({ [OPERATION_ATTRIBUTE]: operation, [ORG_ATTRIBUTE]: org, "ficus.tree": name });
 
   const upstream = yield* Upstream;
@@ -120,7 +120,7 @@ export const plant = Effect.fn("ficus.plant")(function* (org: string, name: stri
   const response = yield* Effect.tryPromise({
     try: () =>
       upstream.api.fetch(
-        new Request(new URL(`${tree(org, name)}/plant`, upstream.origin), {
+        new Request(new URL(`${tree(org, name)}/init`, upstream.origin), {
           method: "POST",
           headers,
           body: JSON.stringify({ source }),
@@ -140,8 +140,8 @@ export const plant = Effect.fn("ficus.plant")(function* (org: string, name: stri
 
 export const showTree = (org: string, name: string) => get(Answers.Tree, tree(org, name));
 
-export const showLeaf = (org: string, name: string, leaf: number) =>
-  get(Answers.LeafDetail, `${tree(org, name)}/leaves/${leaf}`);
+export const showAttempt = (org: string, name: string, attempt: number) =>
+  get(Answers.AttemptDetail, `${tree(org, name)}/attempts/${attempt}`);
 
 export const log = (org: string, name: string, subject: Subject, limit: number) =>
   get(Answers.Log, tree(org, name) + reading(subject, "log", new URLSearchParams({ limit: String(limit) })));
@@ -173,32 +173,32 @@ const marked = <A, E, R>(name: string, org: string, operation: string, change: E
     Effect.withSpan(`ficus.${name}`),
   );
 
-export const showBud = (org: string, name: string, bud: number) =>
-  get(Answers.BudRace, `${tree(org, name)}/buds/${bud}`);
+export const showTask = (org: string, name: string, task: number) =>
+  get(Answers.TaskRace, `${tree(org, name)}/tasks/${task}`);
 
 export const diff = (org: string, name: string, subject: Subject) =>
   get(Answers.Diff, `${tree(org, name)}/${subject.kind}/${subject.id}/diff`);
 
-export const createBud = (org: string, name: string, intent: string, operation: string) =>
-  marked("bud", org, operation, post(Answers.BudCreated, `${tree(org, name)}/buds`, JSON.stringify({ intent })));
+export const createTask = (org: string, name: string, intent: string, operation: string) =>
+  marked("task", org, operation, post(Answers.TaskCreated, `${tree(org, name)}/tasks`, JSON.stringify({ intent })));
 
-export const harvest = (org: string, name: string, bud: number, operation: string) =>
-  marked("harvest", org, operation, post(Answers.Harvested, `${tree(org, name)}/buds/${bud}/harvest`, "{}"));
+export const accept = (org: string, name: string, task: number, operation: string) =>
+  marked("accept", org, operation, post(Answers.Acceptance, `${tree(org, name)}/tasks/${task}/accept`, "{}"));
 
-export const sprout = (org: string, name: string, bud: number, agent: string, operation: string) =>
-  marked("sprout", org, operation, post(Answers.Growing, `${tree(org, name)}/buds/${bud}/leaves`, JSON.stringify({ agent })));
+export const start = (org: string, name: string, task: number, agent: string, operation: string) =>
+  marked("start", org, operation, post(Answers.Started, `${tree(org, name)}/tasks/${task}/attempts`, JSON.stringify({ agent })));
 
-export const regrow = (org: string, name: string, leaf: number, operation: string) =>
-  marked("regrow", org, operation, post(Answers.Growing, `${tree(org, name)}/leaves/${leaf}/regrow`, "{}"));
+export const retry = (org: string, name: string, attempt: number, operation: string) =>
+  marked("retry", org, operation, post(Answers.Started, `${tree(org, name)}/attempts/${attempt}/retry`, "{}"));
 
-export const wither = (org: string, name: string, leaf: number, note: string, operation: string) =>
-  marked("wither", org, operation, send("POST", `${tree(org, name)}/leaves/${leaf}/wither`, JSON.stringify({ note })));
+export const abandon = (org: string, name: string, attempt: number, note: string, operation: string) =>
+  marked("abandon", org, operation, send("POST", `${tree(org, name)}/attempts/${attempt}/abandon`, JSON.stringify({ note })));
 
-export const submit = (org: string, name: string, leaf: number, operation: string) =>
-  marked("submit", org, operation, send("POST", `${tree(org, name)}/leaves/${leaf}/ripe`, "{}"));
+export const submit = (org: string, name: string, attempt: number, operation: string) =>
+  marked("submit", org, operation, send("POST", `${tree(org, name)}/attempts/${attempt}/submit`, "{}"));
 
-export const growWithAgents = (org: string, name: string, bud: number, agents: number, model: string, operation: string) =>
-  marked("grow", org, operation, post(Answers.Grown, `${tree(org, name)}/buds/${bud}/grow`, JSON.stringify({ agents, model })));
+export const startAgents = (org: string, name: string, task: number, agents: number, model: string, operation: string) =>
+  marked("agents", org, operation, post(Answers.AgentsStarted, `${tree(org, name)}/tasks/${task}/agents`, JSON.stringify({ agents, model })));
 
-export const agentStatus = (org: string, name: string, leaf: number) =>
-  get(Answers.AgentStatus, `${tree(org, name)}/leaves/${leaf}/agent`);
+export const agentStatus = (org: string, name: string, attempt: number) =>
+  get(Answers.AgentStatus, `${tree(org, name)}/attempts/${attempt}/agent`);

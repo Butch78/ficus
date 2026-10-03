@@ -1,7 +1,7 @@
 //! A TreeObject operation's progress, streamed to a caller that asked for it
 //! (`ficus_core::progress` is the wire format).
 
-use ficus_core::progress::{Line, InitStep, StepState, outcome_body};
+use ficus_core::progress::{InitStep, Line, StepState, outcome_body};
 use futures_channel::mpsc::UnboundedSender;
 use worker::Response;
 

@@ -8,7 +8,7 @@
 import * as Result from "effect/Result";
 import { redirect } from "next/navigation";
 import * as Api from "../lib/api.ts";
-import { attempt } from "../lib/run.ts";
+import { run } from "../lib/run.ts";
 
 /** A text field; an uploaded file in its place reads as empty. */
 const field = (form: FormData, name: string) => {
@@ -30,7 +30,7 @@ const slugOf = (name: string) =>
 export async function createOrganization(form: FormData) {
   const name = field(form, "name");
   const slug = slugOf(name);
-  const outcome = await attempt(Api.createOrganization(name, slug));
+  const outcome = await run(Api.createOrganization(name, slug));
 
   redirect(back("/", outcome, `/orgs/${slug}`));
 }
@@ -56,61 +56,61 @@ const landed = (page: string, op: string, operation: string, outcome: Result.Res
   return `${next}?${query.toString()}`;
 };
 
-export async function createBud(form: FormData) {
+export async function createTask(form: FormData) {
   const [org, tree] = [field(form, "org"), field(form, "tree")];
   const operation = crypto.randomUUID();
-  const outcome = await attempt(Api.createBud(org, tree, field(form, "intent"), operation));
+  const outcome = await run(Api.createTask(org, tree, field(form, "intent"), operation));
   const page = treePage(org, tree);
 
-  redirect(landed(page, "bud", operation, outcome, Result.isSuccess(outcome) ? `${page}/buds/${outcome.success.bud}` : page));
+  redirect(landed(page, "task", operation, outcome, Result.isSuccess(outcome) ? `${page}/tasks/${outcome.success.task}` : page));
 }
 
-export async function harvestBud(form: FormData) {
-  const [org, tree, bud] = [field(form, "org"), field(form, "tree"), id(form, "bud")];
+export async function acceptTask(form: FormData) {
+  const [org, tree, task] = [field(form, "org"), field(form, "tree"), id(form, "task")];
   const operation = crypto.randomUUID();
-  const outcome = await attempt(Api.harvest(org, tree, bud, operation));
+  const outcome = await run(Api.accept(org, tree, task, operation));
 
-  redirect(landed(`${treePage(org, tree)}/buds/${bud}`, "harvest", operation, outcome));
+  redirect(landed(`${treePage(org, tree)}/tasks/${task}`, "accept", operation, outcome));
 }
 
-export async function regrowLeaf(form: FormData) {
-  const [org, tree, leaf] = [field(form, "org"), field(form, "tree"), id(form, "leaf")];
+export async function retryAttempt(form: FormData) {
+  const [org, tree, attempt] = [field(form, "org"), field(form, "tree"), id(form, "attempt")];
   const operation = crypto.randomUUID();
-  const outcome = await attempt(Api.regrow(org, tree, leaf, operation));
-  const page = `${treePage(org, tree)}/leaves/${leaf}`;
+  const outcome = await run(Api.retry(org, tree, attempt, operation));
+  const page = `${treePage(org, tree)}/attempts/${attempt}`;
 
   redirect(
-    landed(page, "regrow", operation, outcome, Result.isSuccess(outcome) ? `${treePage(org, tree)}/leaves/${outcome.success.leaf}` : page),
+    landed(page, "retry", operation, outcome, Result.isSuccess(outcome) ? `${treePage(org, tree)}/attempts/${outcome.success.attempt}` : page),
   );
 }
 
-export async function witherLeaf(form: FormData) {
-  const [org, tree, leaf] = [field(form, "org"), field(form, "tree"), id(form, "leaf")];
+export async function abandonAttempt(form: FormData) {
+  const [org, tree, attempt] = [field(form, "org"), field(form, "tree"), id(form, "attempt")];
   const operation = crypto.randomUUID();
-  const note = field(form, "note") || "withered from the UI";
-  const outcome = await attempt(Api.wither(org, tree, leaf, note, operation));
+  const note = field(form, "note") || "abandoned from the UI";
+  const outcome = await run(Api.abandon(org, tree, attempt, note, operation));
 
-  redirect(landed(`${treePage(org, tree)}/leaves/${leaf}`, "wither", operation, outcome));
+  redirect(landed(`${treePage(org, tree)}/attempts/${attempt}`, "abandon", operation, outcome));
 }
 
-export async function submitLeaf(form: FormData) {
-  const [org, tree, leaf] = [field(form, "org"), field(form, "tree"), id(form, "leaf")];
+export async function submitAttempt(form: FormData) {
+  const [org, tree, attempt] = [field(form, "org"), field(form, "tree"), id(form, "attempt")];
   const operation = crypto.randomUUID();
-  const outcome = await attempt(Api.submit(org, tree, leaf, operation));
+  const outcome = await run(Api.submit(org, tree, attempt, operation));
 
-  redirect(landed(`${treePage(org, tree)}/leaves/${leaf}`, "submit", operation, outcome));
+  redirect(landed(`${treePage(org, tree)}/attempts/${attempt}`, "submit", operation, outcome));
 }
 
 /** The model agents run unless the person picks another (src/agents/actor.ts `DEFAULT_MODEL`). */
 const DEFAULT_MODEL = "@cf/moonshotai/kimi-k2.7-code";
 
-export async function growWithAgents(form: FormData) {
-  const [org, tree, bud] = [field(form, "org"), field(form, "tree"), id(form, "bud")];
+export async function startAgents(form: FormData) {
+  const [org, tree, task] = [field(form, "org"), field(form, "tree"), id(form, "task")];
   const operation = crypto.randomUUID();
 
-  const outcome = await attempt(
-    Api.growWithAgents(org, tree, bud, id(form, "agents") || 3, field(form, "model") || DEFAULT_MODEL, operation),
+  const outcome = await run(
+    Api.startAgents(org, tree, task, id(form, "agents") || 3, field(form, "model") || DEFAULT_MODEL, operation),
   );
 
-  redirect(landed(`${treePage(org, tree)}/buds/${bud}`, "grow", operation, outcome));
+  redirect(landed(`${treePage(org, tree)}/tasks/${task}`, "agents", operation, outcome));
 }

@@ -11,51 +11,51 @@ import * as Api from "../../../../../lib/api.ts";
 import { load } from "../../../../../lib/run.ts";
 import { glance } from "../../../../../lib/standing.ts";
 import { short } from "../../../../../lib/view.ts";
-import { createBud } from "../../../../actions.ts";
+import { createTask } from "../../../../actions.ts";
 
 export const dynamic = "force-dynamic";
 
 interface Props {
   readonly params: Promise<{ org: string; tree: string }>;
-  /** `planted` + `trace`: a plant just landed; `op`/`trace`/`error`: another change did. */
-  readonly searchParams: Promise<{ planted?: string; trace?: string; op?: string; error?: string }>;
+  /** `initialized` + `trace`: an init just landed; `op`/`trace`/`error`: another change did. */
+  readonly searchParams: Promise<{ initialized?: string; trace?: string; op?: string; error?: string }>;
 }
 
 const GLANCE_WORDS = {
-  winner: "ready to harvest",
+  winner: "ready to accept",
   passing: "passing",
-  ripening: "checks running",
-  growing: "growing",
+  checking: "checks running",
+  working: "working",
   failing: "failing",
-  stale: "stale",
-  fruit: "fruit",
-  pruned: "pruned",
+  behind: "behind",
+  accepted: "accepted",
+  closed: "closed",
 } as const;
 
 export default async function TreePage({ params, searchParams }: Props) {
-  const [{ org, tree: name }, { planted, trace, op, error }] = await Promise.all([params, searchParams]);
+  const [{ org, tree: name }, { initialized, trace, op, error }] = await Promise.all([params, searchParams]);
   const tree = await load(Api.showTree(org, name));
   const base = `/orgs/${org}/trees/${name}`;
-  const buds = Object.values(tree.buds).toSorted((a, b) => b.id - a.id);
-  const open = buds.filter((bud) => bud.state === "Open");
-  const races = await Promise.all(open.map((bud) => load(Api.showBud(org, name, bud.id))));
-  const harvested = buds.flatMap((bud) => (bud.state === "Open" ? [] : [{ bud, ...bud.state.Fruited }]));
+  const tasks = Object.values(tree.tasks).toSorted((a, b) => b.id - a.id);
+  const open = tasks.filter((task) => task.state === "Open");
+  const races = await Promise.all(open.map((task) => load(Api.showTask(org, name, task.id))));
+  const accepted = tasks.flatMap((task) => (task.state === "Open" ? [] : [{ task, ...task.state.Done }]));
   const head = tree.nodes[String(tree.head)];
-  const headLeaf = head?.fruit_of === null || head === undefined ? undefined : tree.leaves[String(head.fruit_of)];
-  const inFlight = races.some((race) => race.leaves.some(({ standing }) => standing === "Growing" || standing === "Ripening"));
+  const headAttempt = head?.accepted_from === null || head === undefined ? undefined : tree.attempts[String(head.accepted_from)];
+  const inFlight = races.some((race) => race.attempts.some(({ standing }) => standing === "Working" || standing === "Checking"));
 
   return (
     <>
       <PageHeader trail={[["Organizations", "/"], [org, `/orgs/${org}`]]} title={name}>
-        <AutoRefresh active={inFlight} what="leaves are growing or being checked" />
+        <AutoRefresh active={inFlight} what="attempts are working or being checked" />
       </PageHeader>
-      {planted === undefined ? null : (
+      {initialized === undefined ? null : (
         <>
-          <Banner title={`Planted ${name}`} description={`Its root is the default branch of ${planted}, at node 0.`} />
-          {trace === undefined ? null : <ActivityPanel org={org} operation={trace} title={`Plant ${name}`} refused={false} />}
+          <Banner title={`Initialized ${name}`} description={`Its root is the default branch of ${initialized}, at node 0.`} />
+          {trace === undefined ? null : <ActivityPanel org={org} operation={trace} title={`Init ${name}`} refused={false} />}
         </>
       )}
-      {planted === undefined ? <OperationOutcome org={org} op={op} trace={trace} error={error} /> : null}
+      {initialized === undefined ? <OperationOutcome org={org} op={op} trace={trace} error={error} /> : null}
       <Glossary />
 
       <LayerCard>
@@ -68,9 +68,9 @@ export default async function TreePage({ params, searchParams }: Props) {
                   Node {head.id} at <Text variant="mono">{short(head.commit)}</Text>
                 </Text>
                 <Text variant="secondary" size="xs">
-                  {headLeaf === undefined
-                    ? "The root, as planted."
-                    : `The fruit of leaf ${headLeaf.id} (${headLeaf.agent}): "${tree.buds[String(headLeaf.bud)]?.intent ?? ""}".`}
+                  {headAttempt === undefined
+                    ? "The root, as initialized."
+                    : `Accepted from attempt ${headAttempt.id} (${headAttempt.agent}): "${tree.tasks[String(headAttempt.task)]?.intent ?? ""}".`}
                 </Text>
               </span>
               <span className="flex gap-3">
@@ -83,18 +83,18 @@ export default async function TreePage({ params, searchParams }: Props) {
       </LayerCard>
 
       <LayerCard>
-        <LayerCardSecondary>Open buds: work in progress</LayerCardSecondary>
+        <LayerCardSecondary>Open tasks: work in progress</LayerCardSecondary>
         <LayerCardPrimary className="flex flex-col gap-3">
           {open.length === 0 ? (
             <Text variant="secondary" size="sm">
-              Nothing open. Say what you want changed, and agents grow leaves for it.
+              Nothing open. Say what you want changed, and agents work attempts at it.
             </Text>
           ) : null}
           {races.map((race) => (
-            <div key={race.bud.id} className="flex flex-wrap items-center justify-between gap-2 border-b border-kumo-hairline pb-2">
-              <Link href={`${base}/buds/${race.bud.id}`}>{race.bud.intent}</Link>
+            <div key={race.task.id} className="flex flex-wrap items-center justify-between gap-2 border-b border-kumo-hairline pb-2">
+              <Link href={`${base}/tasks/${race.task.id}`}>{race.task.intent}</Link>
               <span className="flex flex-wrap gap-1">
-                {race.leaves.length === 0 ? <Badge variant="outline">no leaves yet</Badge> : null}
+                {race.attempts.length === 0 ? <Badge variant="outline">no attempts yet</Badge> : null}
                 {glance(race).map(({ tone, count }) => (
                   <Badge key={tone} variant={TONE_BADGE[tone]} appearance="dot">
                     {count} {GLANCE_WORDS[tone]}
@@ -103,29 +103,29 @@ export default async function TreePage({ params, searchParams }: Props) {
               </span>
             </div>
           ))}
-          <form action={createBud} className="flex flex-wrap items-end gap-2">
+          <form action={createTask} className="flex flex-wrap items-end gap-2">
             <input type="hidden" name="org" value={org} />
             <input type="hidden" name="tree" value={name} />
-            <Input name="intent" label="New bud" placeholder="What should change? e.g. slugify should drop punctuation" className="min-w-96" required />
-            <SubmitButton pending="Creating…">Create bud</SubmitButton>
+            <Input name="intent" label="New task" placeholder="What should change? e.g. slugify should drop punctuation" className="min-w-96" required />
+            <SubmitButton pending="Creating…">Create task</SubmitButton>
           </form>
         </LayerCardPrimary>
       </LayerCard>
 
       <LayerCard>
-        <LayerCardSecondary>Harvested: the trunk's history</LayerCardSecondary>
+        <LayerCardSecondary>Accepted: the trunk's history</LayerCardSecondary>
         <LayerCardPrimary className="flex flex-col gap-2">
-          {harvested.length === 0 ? <Empty size="sm" title="Nothing harvested yet" /> : null}
-          {harvested.map(({ bud, leaf, node }) => (
-            <div key={bud.id} className="flex flex-wrap items-center justify-between gap-2">
-              <Link href={`${base}/buds/${bud.id}`}>{bud.intent}</Link>
+          {accepted.length === 0 ? <Empty size="sm" title="Nothing accepted yet" /> : null}
+          {accepted.map(({ task, attempt, node }) => (
+            <div key={task.id} className="flex flex-wrap items-center justify-between gap-2">
+              <Link href={`${base}/tasks/${task.id}`}>{task.intent}</Link>
               <Text variant="secondary" as="span" size="sm">
-                leaf {leaf} ({tree.leaves[String(leaf)]?.agent ?? "?"}) → <Link href={`${base}/nodes/${node}`}>node {node}</Link>
+                attempt {attempt} ({tree.attempts[String(attempt)]?.agent ?? "?"}) → <Link href={`${base}/nodes/${node}`}>node {node}</Link>
               </Text>
             </div>
           ))}
           <Text variant="secondary" size="xs">
-            The root is <Link href={`${base}/nodes/0`}>node 0</Link>. {tree.compost.length} earlier attempts are in the compost, on their buds' pages.
+            The root is <Link href={`${base}/nodes/0`}>node 0</Link>. {tree.history.length} earlier attempts are in the history, on their tasks' pages.
           </Text>
         </LayerCardPrimary>
       </LayerCard>

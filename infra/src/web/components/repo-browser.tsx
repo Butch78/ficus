@@ -1,5 +1,5 @@
 /**
- * A leaf's or node's repo, read through Artifacts by the tree Worker: recent
+ * An attempt's or node's repo, read through Artifacts by the tree Worker: recent
  * history, one directory, and optionally one file in it, all at the same
  * commit. `?path=` picks the directory, `?file=` a file (and its directory).
  */

@@ -1,8 +1,8 @@
 // The web UI stack: src/web, a vinext app (Next.js's App Router on Vite) on
 // Workers, in front of the Ficus stack's Api.
 //
-//   Web   src/web   sign in, organizations, trees (buds -> leaves -> fruit),
-//                   each leaf's state and scoring report, and its repo
+//   Web   src/web   sign in, organizations, trees (tasks -> attempts -> accepted),
+//                   each attempt's state and scoring report, and its repo
 //                   (history, directories, files) read through Artifacts
 //
 // A stack of its own, deployed after alchemy.run.ts to the same stage: it
@@ -70,7 +70,7 @@ export default Alchemy.Stack(
 UI: ${web.url}
 API: ${api.url}
 
-Deployed from this pull request by \`deploy.yml\`; destroyed when it closes. Sign up on the UI, create an organization, and plant a tree from any public HTTPS git remote to browse it.`,
+Deployed from this pull request by \`deploy.yml\`; destroyed when it closes. Sign up on the UI, create an organization, and init a tree from any public HTTPS git remote to browse it.`,
       });
     }
 

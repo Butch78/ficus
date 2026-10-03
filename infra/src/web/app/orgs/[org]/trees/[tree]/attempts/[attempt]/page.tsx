@@ -19,50 +19,50 @@ import { ScoringSteps } from "../../../../../../../components/scoring-steps.tsx"
 import { StandingBadge } from "../../../../../../../components/standing-badge.tsx";
 import { SubmitButton } from "../../../../../../../components/submit-button.tsx";
 import * as Api from "../../../../../../../lib/api.ts";
-import { attempt, load } from "../../../../../../../lib/run.ts";
+import { load, run } from "../../../../../../../lib/run.ts";
 import { say } from "../../../../../../../lib/standing.ts";
 import { timeline } from "../../../../../../../lib/timeline.ts";
-import { regrowLeaf, submitLeaf, witherLeaf } from "../../../../../../actions.ts";
+import { retryAttempt, submitAttempt, abandonAttempt } from "../../../../../../actions.ts";
 
 export const dynamic = "force-dynamic";
 
 interface Props {
-  readonly params: Promise<{ org: string; tree: string; leaf: string }>;
+  readonly params: Promise<{ org: string; tree: string; attempt: string }>;
   readonly searchParams: Promise<{ path?: string; file?: string; op?: string; trace?: string; error?: string }>;
 }
 
-function Hidden({ org, tree, leaf }: { readonly org: string; readonly tree: string; readonly leaf: number }) {
+function Hidden({ org, tree, attempt }: { readonly org: string; readonly tree: string; readonly attempt: number }) {
   return (
     <>
       <input type="hidden" name="org" value={org} />
       <input type="hidden" name="tree" value={tree} />
-      <input type="hidden" name="leaf" value={leaf} />
+      <input type="hidden" name="attempt" value={attempt} />
     </>
   );
 }
 
-export default async function LeafPage({ params, searchParams }: Props) {
-  const [{ org, tree, leaf: raw }, { path, file, op, trace, error }] = await Promise.all([params, searchParams]);
-  const leaf = Number(raw);
+export default async function AttemptPage({ params, searchParams }: Props) {
+  const [{ org, tree, attempt: raw }, { path, file, op, trace, error }] = await Promise.all([params, searchParams]);
+  const attempt = Number(raw);
 
-  if (!Number.isInteger(leaf) || leaf < 0) {
+  if (!Number.isInteger(attempt) || attempt < 0) {
     notFound();
   }
 
-  const detail = await load(Api.showLeaf(org, tree, leaf));
+  const detail = await load(Api.showAttempt(org, tree, attempt));
 
   const [race, change, agent] = await Promise.all([
-    load(Api.showBud(org, tree, detail.leaf.bud)),
-    attempt(Api.diff(org, tree, { kind: "leaves", id: leaf })),
-    attempt(Api.agentStatus(org, tree, leaf)),
+    load(Api.showTask(org, tree, detail.attempt.task)),
+    run(Api.diff(org, tree, { kind: "attempts", id: attempt })),
+    run(Api.agentStatus(org, tree, attempt)),
   ]);
 
-  const standing = race.leaves.find((entry) => entry.leaf.id === leaf)?.standing ?? "Growing";
+  const standing = race.attempts.find((entry) => entry.attempt.id === attempt)?.standing ?? "Working";
   const base = `/orgs/${org}/trees/${tree}`;
-  const state = detail.leaf.state;
+  const state = detail.attempt.state;
   // Still in the race: it can be withdrawn, and moved on.
   const { tone } = say(standing);
-  const live = tone !== "fruit" && tone !== "pruned";
+  const live = tone !== "accepted" && tone !== "closed";
 
   return (
     <>
@@ -71,44 +71,44 @@ export default async function LeafPage({ params, searchParams }: Props) {
           ["Organizations", "/"],
           [org, `/orgs/${org}`],
           [tree, base],
-          [`bud ${detail.leaf.bud}`, `${base}/buds/${detail.leaf.bud}`],
+          [`task ${detail.attempt.task}`, `${base}/tasks/${detail.attempt.task}`],
         ]}
-        title={`leaf ${leaf}: ${detail.leaf.agent}`}
+        title={`attempt ${attempt}: ${detail.attempt.agent}`}
       >
         <StandingBadge standing={standing} />
-        <AutoRefresh active={standing === "Growing" || standing === "Ripening"} what="this leaf is still moving" />
+        <AutoRefresh active={standing === "Working" || standing === "Checking"} what="this attempt is still moving" />
       </PageHeader>
       <Text size="sm">{say(standing).sentence}</Text>
       <Text variant="secondary" size="sm">
-        For: {race.bud.intent}
+        For: {race.task.intent}
       </Text>
       <OperationOutcome org={org} op={op} trace={trace} error={error} />
 
       <ChainOfThought>
-        {timeline(state, detail.leaf.base).map((moment) => (
+        {timeline(state, detail.attempt.base).map((moment) => (
           <ChainOfThoughtStep key={moment.label} status={moment.status} label={moment.label} />
         ))}
       </ChainOfThought>
 
       {live ? (
         <span className="flex flex-wrap items-end gap-3">
-          {state === "Growing" ? (
-            <form action={submitLeaf}>
-              <Hidden org={org} tree={tree} leaf={leaf} />
+          {state === "Working" ? (
+            <form action={submitAttempt}>
+              <Hidden org={org} tree={tree} attempt={attempt} />
               <SubmitButton pending="Submitting…">Submit for scoring</SubmitButton>
             </form>
           ) : null}
-          {standing === "Stale" ? (
-            <form action={regrowLeaf}>
-              <Hidden org={org} tree={tree} leaf={leaf} />
-              <SubmitButton pending="Regrowing…">Regrow on the head</SubmitButton>
+          {standing === "Behind" ? (
+            <form action={retryAttempt}>
+              <Hidden org={org} tree={tree} attempt={attempt} />
+              <SubmitButton pending="Retrying…">Retry on the head</SubmitButton>
             </form>
           ) : null}
-          <form action={witherLeaf} className="flex flex-wrap items-end gap-2">
-            <Hidden org={org} tree={tree} leaf={leaf} />
-            <Input name="note" label="Withdraw it" placeholder="why (kept in the compost)" size="sm" />
+          <form action={abandonAttempt} className="flex flex-wrap items-end gap-2">
+            <Hidden org={org} tree={tree} attempt={attempt} />
+            <Input name="note" label="Withdraw it" placeholder="why (kept in the history)" size="sm" />
             <SubmitButton pending="Withering…" variant="secondary-destructive">
-              Wither
+              Abandon
             </SubmitButton>
           </form>
         </span>
@@ -147,7 +147,7 @@ export default async function LeafPage({ params, searchParams }: Props) {
         <LayerCardPrimary className="flex flex-col gap-2">
           {detail.report === null ? (
             <Text variant="secondary" size="sm">
-              Not scored yet: the root's checks run once the leaf is submitted.
+              Not scored yet: the root's checks run once the attempt is submitted.
             </Text>
           ) : (
             detail.report.checks.map((check) => (
@@ -171,7 +171,7 @@ export default async function LeafPage({ params, searchParams }: Props) {
       <Text variant="heading" as="h3">
         Files
       </Text>
-      <RepoBrowser org={org} tree={tree} subject={{ kind: "leaves", id: leaf }} here={`${base}/leaves/${leaf}`} path={path ?? ""} file={file} />
+      <RepoBrowser org={org} tree={tree} subject={{ kind: "attempts", id: attempt }} here={`${base}/attempts/${attempt}`} path={path ?? ""} file={file} />
     </>
   );
 }

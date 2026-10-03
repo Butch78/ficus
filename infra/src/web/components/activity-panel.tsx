@@ -4,7 +4,7 @@
  * What an operation did, from its Cloudflare trace, shown like an agent's
  * task (AI Elements' Task and ChainOfThought, ported to Kumo): one line,
  * which opens to the steps in words, which open to the raw spans. Traces arrive about 15-20 seconds after the work, so it waits,
- * then fills in, then stops once the trace has stopped growing.
+ * then fills in, then stops once the trace has stopped working.
  */
 import { Badge, LayerCard, Loader, Text } from "@cloudflare/kumo";
 import { CheckCircleIcon, WarningCircleIcon } from "@phosphor-icons/react";
@@ -59,7 +59,7 @@ type View =
 interface Props {
   readonly org: string;
   readonly operation: string;
-  /** What the operation was, as its one line: "Plant site". */
+  /** What the operation was, as its one line: "Init site". */
   readonly title: string;
   /** Whether the Api accepted it; a refusal still has a trace worth reading. */
   readonly refused: boolean;
@@ -144,7 +144,7 @@ export function ActivityPanel({ org, operation, title, refused }: Props) {
   );
 }
 
-/** Polls /api/activity until the operation's trace has stopped growing. */
+/** Polls /api/activity until the operation's trace has stopped working. */
 function useTrace(org: string, operation: string) {
   const [view, setView] = useState<View>({ kind: "waiting" });
 

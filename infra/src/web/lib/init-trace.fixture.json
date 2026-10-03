@@ -762,7 +762,7 @@
       "type": "span",
       "service": "ficus-pr-1",
       "spanName": "POST",
-      "transactionName": "POST http://tree/trees/site/plant",
+      "transactionName": "POST http://tree/trees/site/init",
       "startTime": 1790973663148,
       "endTime": 1790973667607
     }
@@ -775,7 +775,7 @@
       "type": "span",
       "service": "ficus-pr-1",
       "spanName": "fetch",
-      "transactionName": "fetch /trees/site/plant",
+      "transactionName": "fetch /trees/site/init",
       "startTime": 1790973662835,
       "endTime": 1790973667520
     }
@@ -801,7 +801,7 @@
       "type": "span",
       "service": "ficus-pr-1",
       "spanName": "POST",
-      "transactionName": "POST http://tree/trees/site/plant",
+      "transactionName": "POST http://tree/trees/site/init",
       "startTime": 1790973662793,
       "endTime": 1790973667520
     }
@@ -814,7 +814,7 @@
       "type": "span",
       "service": "ficus-api-pr-1",
       "spanName": "fetch",
-      "transactionName": "fetch /trees/site/plant",
+      "transactionName": "fetch /trees/site/init",
       "startTime": 1790973662753,
       "endTime": 1790973667521
     }
@@ -944,7 +944,7 @@
       "type": "span",
       "service": "ficus-api-pr-1",
       "spanName": "POST",
-      "transactionName": "POST https://ficus-web-pr-1.example.workers.dev/v1/orgs/acme/trees/site/plant",
+      "transactionName": "POST https://ficus-web-pr-1.example.workers.dev/v1/orgs/acme/trees/site/init",
       "startTime": 1790973662682,
       "endTime": 1790973667557
     }
@@ -957,7 +957,7 @@
       "type": "span",
       "service": "ficus-web-pr-1",
       "spanName": "fetch",
-      "transactionName": "fetch /v1/orgs/acme/trees/site/plant",
+      "transactionName": "fetch /v1/orgs/acme/trees/site/init",
       "startTime": 1790973662654,
       "endTime": 1790973667560
     }
@@ -969,8 +969,8 @@
       "parentSpanId": "25067d7803d4da83",
       "type": "span",
       "service": "ficus-web-pr-1",
-      "spanName": "ficus.plant",
-      "transactionName": "ficus.plant",
+      "spanName": "ficus.init",
+      "transactionName": "ficus.init",
       "startTime": 1790973662654,
       "endTime": 1790973667562
     }

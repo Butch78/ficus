@@ -55,33 +55,37 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   `border-kumo-*`), no palette colors, no `dark:` (`src/web/kumo-styling.test.ts` enforces it). Server
   components take compound parts (`Table.Row`, `LayerCard.Primary`, ...) from `components/kumo.ts`: on a
   client reference, `Table.Row` is undefined (React error #130).
-- Agents: `infra/src/agents` (Worker `ficus-agents-<stage>`), one `AgentActor` (pi-durable on Workers AI,
-  default `@cf/moonshotai/kimi-k2.7-code`) per agent leaf. `POST /trees/<t>/buds/<b>/grow {agents, model}`
-  sprouts + forks and keeps each assignment; the TreeObject alarm (`tree_object/agents.rs`) hands them to the
-  `AGENTS` binding, then polls `GET /status`: submitted → the tree submits the leaf; stopped/failed → withers it
-  with the agent's last words. Nothing calls the tree back (cross-Worker DO bindings both ways can't deploy on
-  a fresh stage). The agent's workspace is a Sandbox: `POST /workspace` (egress: leaf repo with Egress-added
-  token + nix caches), `/fs/<op>` and `/exec` run `ficus-scorer fs|exec` (request on stdin). Egress routes
-  belong to the Sandbox DO instance: `#open` reopens them from storage on each new instance.
-  `/grow` answers at once and opens the workspace in a detached fiber (placing a container can take
-  minutes; the tree's alarm must not wait). Once a leaf leaves Growing the tree `POST /stop`s its agent,
-  which aborts pi and `DELETE /workspace`s: an idle workspace holds one of the Sandbox class's instances,
-  and when they run out new ones fail with "There is no container instance that can be provided".
-- UI pages: tree = garden (head, open buds' races, New bud, harvests); bud = the race (standings from
-  `ficus-core` `Tree::standings`, which shares `winner()` with `harvest`; harvest case; Grow with agents; grow
-  it yourself); leaf = timeline, actions, diff (`GET .../{leaves,nodes}/<id>/diff`), scoring ledger, agent at work.
+- Agents: `infra/src/agents` (Worker `ficus-agents-<stage>`), one `AgentActor` per agent attempt: pi-durable on
+  Workers AI in two phases (a cheap scout plans, `@cf/moonshotai/kimi-k2.7-code` changes), Clef judging the plan
+  and the diff (`gates.ts`). `POST /trees/<t>/tasks/<id>/agents {agents, model}` starts + forks attempts and keeps
+  each assignment; the TreeObject alarm (`tree_object/agents.rs`) hands them to the `AGENTS` binding, then polls
+  `GET /status`: submitted → the tree submits the attempt; stopped/failed/unassigned → abandons it with the
+  agent's last words. Nothing calls the tree back (cross-Worker DO bindings both ways can't deploy on a fresh
+  stage). The agent's workspace is a Sandbox: `POST /workspace` (egress: the attempt repo with Egress-added
+  token + nix caches; the Sandbox checks the attempt out), `/fs/<op>` and `/exec` run `ficus-scorer fs|exec`
+  (request on stdin). Egress routes belong to the Sandbox DO instance: `#open` reopens them from storage on each
+  new instance. `/grow` answers at once and opens the workspace in a detached fiber (placing a container can
+  take minutes; the tree's alarm must not wait). Once an attempt stops working the tree `POST /stop`s its agent,
+  which aborts pi and `DELETE /workspace`s: an idle workspace holds one of the Sandbox class's instances, and
+  when they run out new ones fail with "There is no container instance that can be provided". pi's shell
+  timeouts are seconds (`sandbox-env.ts` `timeoutMs`).
+- UI pages: tree (head, open tasks and how each stands, New task, accepted history); task (standings from
+  `ficus-core` `Tree::standings`, which shares `best_attempt()` with `accept`; the case for accepting; Start
+  agents; work one yourself); attempt (timeline, actions, diff via `GET .../{attempts,nodes}/<id>/diff`, scoring
+  ledger, the agent at work).
 - Tracing is Effect's: `infra/src/observability/tracer.ts` is an Effect `Tracer` layer that records every
   `Effect.fn`/`withSpan` as a Cloudflare span (scalar annotations → attributes), nested with the platform's own.
   The Api and the UI provide it per request; name spans with `Effect.fn("Area.what")`, annotate with
   `Effect.annotateCurrentSpan`. Never call `cloudflare:workers` `tracing` directly.
-- Live progress: `POST /trees/<t>/plant` with `Accept: application/x-ndjson` streams one JSON line per step
+- Live progress: `POST /trees/<t>/init` with `Accept: application/x-ndjson` streams one JSON line per step
   (`ficus-core::progress`: import → settle → lock → save, then the outcome, the answer the plain call gives);
-  without that header it answers as before. `TreeObject` holds `Rc<State>` so `plant_streaming` can spawn the
+  without that header it answers as before. `TreeObject` holds `Rc<State>` so `init_streaming` can spawn the
   work while the response streams. The Api passes the stream through and appends `record` after a 2xx outcome.
-  The UI's `PlantForm` reads it via `/api/plant` and ticks steps off (`lib/plant-progress.ts`), shown with AI
+  The UI's `InitForm` reads it via `/api/init` and ticks steps off (`lib/init-progress.ts`), shown with AI
   Elements' Task and ChainOfThought ported to Kumo (`components/elements/`, Apache-2.0, LICENSE there).
+  Scoring streams the same way (Sandbox `/score` → `scoring:<attempt>` ledger, shown live on attempt pages).
 - "What happened" panel: the UI shows an operation's trace like an agent's tool call: one line
-  (`✓ Plant site · 3.7 s`) → steps in words (`lib/activity.ts` `sentence()`/`narrate()`, keyed on span names;
+  (`✓ Init site · 3.7 s`) → steps in words (`lib/activity.ts` `sentence()`/`narrate()`, keyed on span names;
   add a case when you add a span worth telling) → the raw spans. Same-account service bindings share one trace
   (UI → Api → tree Worker → TreeObject → Artifacts/D1). A Worker can't read its trace id, so an operation is an
   `Effect.fn("ficus.<op>")` annotated with `ficus.operation` (uuid) + `ficus.org`; `/api/activity` (members only)

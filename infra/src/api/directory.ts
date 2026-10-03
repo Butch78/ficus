@@ -2,16 +2,16 @@
  * Each organization's trees, in D1 (`ficus_tree`, migration 0002).
  *
  * A tree lives in its own Durable Object, which knows nothing of its
- * siblings; the Api is the one place that sees every plant go by, so it
- * keeps the directory. A tree is listed once a plant answered 2xx (planted,
+ * siblings; the Api is the one place that sees every init go by, so it
+ * keeps the directory. A tree is listed once an init answered 2xx (initialized,
  * or created empty and awaiting its root push).
  */
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
-export const PlantedTree = Schema.Struct({ name: Schema.String, plantedAt: Schema.Number });
+export const ListedTree = Schema.Struct({ name: Schema.String, createdAt: Schema.Number });
 
-export type PlantedTree = typeof PlantedTree.Type;
+export type ListedTree = typeof ListedTree.Type;
 
 export class DirectoryFailure extends Schema.TaggedError<DirectoryFailure>()("Directory.Failure", {
   message: Schema.String,
@@ -28,7 +28,7 @@ export const record = Effect.fn("Directory.record")(function* (
   yield* Effect.tryPromise({
     try: () =>
       db
-        .prepare(`insert or ignore into "ficus_tree" ("organizationId", "name", "plantedAt") values (?, ?, ?)`)
+        .prepare(`insert or ignore into "ficus_tree" ("organizationId", "name", "createdAt") values (?, ?, ?)`)
         .bind(organizationId, tree, now)
         .run(),
     catch: failure("could not record the tree"),
@@ -39,13 +39,13 @@ export const list = Effect.fn("Directory.list")(function* (db: D1Database, organ
   const result = yield* Effect.tryPromise({
     try: () =>
       db
-        .prepare(`select "name", "plantedAt" from "ficus_tree" where "organizationId" = ? order by "name"`)
+        .prepare(`select "name", "createdAt" from "ficus_tree" where "organizationId" = ? order by "name"`)
         .bind(organizationId)
         .all(),
     catch: failure("could not list trees"),
   });
 
-  return yield* Schema.decodeUnknownEffect(Schema.Array(PlantedTree))(result.results).pipe(
+  return yield* Schema.decodeUnknownEffect(Schema.Array(ListedTree))(result.results).pipe(
     Effect.mapError(failure("unexpected rows in ficus_tree")),
   );
 });

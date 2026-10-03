@@ -40,13 +40,13 @@ pub enum InitStep {
     Save,
 }
 
-/// The steps of scoring a leaf, in a sandbox, in order.
+/// The steps of scoring an attempt, in a sandbox, in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScoreStep {
     /// Start the sandbox's container, with the internet off.
     Sandbox,
-    /// Clone the leaf, through the sandbox's egress.
+    /// Clone the attempt, through the sandbox's egress.
     Clone,
     /// Put the root's locked files (its checks, its devenv) back.
     Restore,

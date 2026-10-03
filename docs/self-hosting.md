@@ -11,35 +11,41 @@ without a flag day.
 
 Ficus does not have branches and pull requests. It has a tree, and that changes some of the mapping.
 
-| GitHub                         | Ficus today                                                                 |
-| ------------------------------ | --------------------------------------------------------------------------- |
-| repository, `main`             | a tree `ficus` in organization `ficus`; the head node is `main`             |
-| issue (actionable)             | a bud: an intent, with no diff yet                                          |
-| branch + pull request          | a leaf: its own Artifacts repo, forked from the head, with a write token    |
-| required checks                | the root's `ficus.toml`, run in a sandbox on `ripe`; the leaf cannot edit it |
-| merge                          | harvest: the cheapest leaf that passes becomes fruit, the new head          |
-| merge conflict, rebase         | regrow: a stale leaf starts again from the new head, with the compost       |
-| closed, unmerged pull requests | compost: who tried, why it lost, how it scored                              |
-| PR page, checks tab            | the web UI's leaf page: state, scoring report, repo browser                 |
+| GitHub                         | Ficus today                                                                       |
+| ------------------------------ | --------------------------------------------------------------------------------- |
+| repository, `main`             | a tree `ficus` in organization `ficus`; the head node is `main`                   |
+| issue (actionable)             | a task: an intent, with checks of its own if it needs them, and no diff yet       |
+| branch + pull request          | an attempt: its own Artifacts repo, forked from the head, with a write token      |
+| required checks                | the root's `ficus.toml` (and the task's checks), run in a sandbox on `submit`     |
+| merge                          | accept: the cheapest attempt that passes every check becomes the new head        |
+| rebase                         | rebase: the tree replays a behind attempt onto the new head, without its agent    |
+| merge conflict                 | retry: an attempt whose rebase conflicts starts again from the head, with history |
+| closed, unmerged pull requests | history: who tried, why it closed, how it scored                                  |
+| PR page, checks tab            | the web UI's attempt page: state, scoring report and steps, diff, repo browser    |
+| deployment                     | release: a pointer at a node; pointing it back is a rollback                      |
 
 Two consequences shape the plan:
 
-- **No merge, so no merge queue.** "Merge when green" is harvest, and it is already serialized per
-  tree by `TreeObject`. Conflicts become regrows, so a busy repo leans on regrow working well.
-- **Harvest picks, people approve.** Harvest takes the cheapest passing leaf. For agent swarms that
+- **No merge, so no merge queue.** "Merge when green" is accept, and it is already serialized per
+  tree by `TreeObject`. Every other submitted attempt is then behind: the tree rebases it onto the
+  new head and scores it again, and only a conflict goes back to its agent to retry. A busy repo
+  leans on rebases applying cleanly.
+- **Accept picks, people approve.** Accept takes the cheapest passing attempt. For agent swarms that
   is the point. For a project people maintain, someone has to say yes first, and nothing in
   `ficus-core::tree` models that yet.
 
 ## What works today
 
-- Plant from GitHub: `POST /trees/<t>/plant {source: "https://github.com/Butch78/ficus"}` imports
+- Init from GitHub: `POST /trees/<t>/init {source: "https://github.com/Butch78/ficus"}` imports
   the repo through Artifacts.
-- Leaves over plain git (`http.extraHeader` bearer token), scoring with the root's own checks in
-  containers with the internet off, cost-ranked harvest, regrow, compost.
+- Attempts over plain git (`http.extraHeader` bearer token), scoring with the root's own checks and
+  the task's in containers with the internet off, judges asked of Clef, cost-ranked accept, automatic
+  rebase of behind attempts, retry, history, and a release pointer.
 - Accounts, organizations, and API keys (Better Auth), one tenant per organization.
-- The web UI (`infra/src/web`): plant, write buds, grow leaves with agents (pi on Workers AI, each in
-  its own sandbox) or by hand, watch each race live (agents' tool calls, scoring steps as they run),
-  review a leaf's diff, harvest with the reason shown, regrow and wither; browse any leaf's or node's
+- The web UI (`infra/src/web`): init, write tasks, start agents on them (pi on Workers AI, each in
+  its own sandbox) or work an attempt by hand, watch each task live (agents' tool calls, scoring steps
+  as they run),
+  review an attempt's diff, accept with the reason shown, retry and abandon; browse any attempt's or node's
   repo through Artifacts; replay any change's Cloudflare trace.
 - A `pr-<n>` stage per pull request, Api and UI, with an end-to-end smoke test of each.
 
@@ -49,64 +55,65 @@ Roughly in the order they block self-hosting:
 
 1. **Checks for this repo.** There is no `ficus.toml` at the root. Its checks are `just fl`,
    `just test`, and `just infra-check`, and they need crates.io, the npm registry, and the
-   devenv/nix caches. Egress only lets the prepare phase reach the leaf repo and the nix caches, so
+   devenv/nix caches. Egress only lets the prepare phase reach the attempt repo and the nix caches, so
    cargo and bun cannot fetch anything. A cold devenv for this repo is also far heavier than the
    demo root's, so `standard-1` and the scorer's timeouts need measuring.
-2. **A stable trunk remote.** Each harvest makes the fruit leaf's repo the new head, so `main`'s
-   clone URL changes on every harvest. The Artifacts binding has no ref-update or push method, so
+2. **A stable trunk remote.** Each accept makes the accepted attempt's repo the new head, so `main`'s
+   clone URL changes on every accept. The Artifacts binding has no ref-update or push method, so
    keeping one trunk repo fast-forwarded means a sandbox pushing to it (with a token Egress adds) on
-   harvest.
-3. **Following an outside `main`.** A tree is planted once. While GitHub stays the source of truth,
-   its `main` moves without a harvest. Ficus needs a graft: import an outside commit as a new head
-   node, marking open leaves stale like a harvest would.
-4. **Review.** Leaf and node diffs, the harvest's reason and every leaf's standing are in the UI
-   now. There are no comments, and no approval gate on harvest. Org roles exist in Better Auth
-   (owner, admin, member), but the Api does not check them, so any member can harvest.
-5. **A CLI.** Every action is in the UI now (bud, grow with agents or by hand, submit, harvest,
-   regrow, wither). People who live in a terminal need a `ficus` CLI (`sprout`, `push`, `ripe`)
+   accept.
+3. **Following an outside `main`.** A tree is initialized once. While GitHub stays the source of truth,
+   its `main` moves without an acceptance. Ficus needs a graft: import an outside commit as a new
+   head node, leaving open attempts behind (and so rebased) as an acceptance does.
+4. **Review.** Attempt and node diffs, the case for accepting and every attempt's standing are in the UI
+   now. There are no comments, and no approval gate on accept. Org roles exist in Better Auth
+   (owner, admin, member), but the Api does not check them, so any member can accept.
+5. **A CLI.** Every action is in the UI now (task, agents or an attempt by hand, submit, accept,
+   retry, abandon). People who live in a terminal need a `ficus` CLI (`start`, `push`, `submit`)
    that wraps the curl and git steps `scripts/e2e` does by hand.
-6. **CI on push.** Scoring runs on `ripe`, which freezes the leaf. That suits agents, but people
-   expect feedback while they are still working. Two parts: an event when a leaf repo is pushed
+6. **CI on push.** Scoring runs on `submit`, which freezes the attempt. That suits agents, but people
+   expect feedback while they are still working. Two parts: an event when an attempt repo is pushed
    (the Artifacts binding exposes no push notification, so polling `log` is the stopgap), and a preview
-   score that does not freeze the leaf.
+   score that does not freeze the attempt.
 7. **Events and webhooks.** `TreeObject` changes state silently. Every integration below needs a
-   stream of leaf-ripened, harvested, and regrown events, delivered from a Queue as HMAC-signed
+   stream of attempt-scored, accepted, rebased, and retried events, delivered from a Queue as HMAC-signed
    webhooks.
 8. **Deploys.** `deploy.yml` deploys `pr-<n>` and `prod` from GitHub. On Ficus that becomes a
-   per-leaf preview stage after scoring and `prod` after harvest: a deploy phase in `ficus.toml`,
+   per-attempt preview stage after scoring and `prod` following the release pointer (`POST
+   /trees/<t>/release`, which exists; nothing deploys from it yet): a deploy phase in `ficus.toml`,
    run in a sandbox, with the Cloudflare token added by Egress so it never enters the container.
    Secrets need a per-tree home (Secrets Store), replacing repository secrets.
 9. **Mirror to and from GitHub during the transition.**
-   - Ficus → GitHub: after each harvest, push the head to GitHub `main` (from a sandbox, token added
+   - Ficus → GitHub: after each accept, push the head to GitHub `main` (from a sandbox, token added
      by Egress). Branch protection then allows only the mirror to push.
-   - GitHub → Ficus: a GitHub App turns each pull request into a leaf (import the PR's head, sprout,
+   - GitHub → Ficus: a GitHub App turns each pull request into an attempt (import the PR's head, start,
      submit) and reports the score back as a check run. Outside contributors keep using GitHub, and
      maintainers see Ficus's verdict there.
-10. **Issues.** A bud is an actionable intent. An issue is also a bug report, a question, or a
-    discussion. Buds need listing and creation in the UI, comments, and labels before issues move.
+10. **Issues.** A task is an actionable intent. An issue is also a bug report, a question, or a
+    discussion. Tasks need listing and creation in the UI, comments, and labels before issues move.
     Until then issues stay on GitHub.
 11. **Durability.** Tree state lives in one Durable Object's storage, and code in Artifacts. There is
-    no export of a tree's history (buds, compost, reports). The tree directory in D1 (added with the
-    UI) only lists trees planted after it shipped.
+    no export of a tree's history (tasks, history, reports). The tree directory in D1 (added with the
+    UI) only lists trees initialized after it shipped.
 
 ## The path
 
 Each step is useful on its own and can be reverted without losing work.
 
-1. **Shadow checks** (gaps 1, 3). Add `ficus.toml` and the Egress allowances. Plant a `ficus` tree
+1. **Shadow checks** (gaps 1, 3). Add `ficus.toml` and the Egress allowances. Init a `ficus` tree
    and graft GitHub `main` into it on every push. Exit criterion: on ten consecutive pull requests,
-   a leaf's score agrees with `ci.yml`.
-2. **Shadow review** (gaps 9 inbound, 7, 6). The GitHub App mirrors every pull request into a leaf
+   an attempt's score agrees with `ci.yml`.
+2. **Shadow review** (gaps 9 inbound, 7, 6). The GitHub App mirrors every pull request into an attempt
    and posts the score as a check run, required but not yet sole. Events start here, because the
    App needs them.
-3. **Review in Ficus** (gaps 4, 5). Diffs, comments, an approval gate on harvest that checks Better
-   Auth roles, and leaf actions in the UI and CLI. Maintainers review on the leaf page and keep
+3. **Review in Ficus** (gaps 4, 5). Diffs, comments, an approval gate on accept that checks Better
+   Auth roles, and attempt actions in the UI and CLI. Maintainers review on the attempt page and keep
    merging on GitHub.
-4. **Flip** (gaps 2, 9 outbound, 8). Harvest becomes the merge. The mirror pushes the head to GitHub
-   `main`, and branch protection admits only the mirror. Post-harvest deploys replace `deploy.yml`'s
-   `prod` job, and per-leaf preview stages replace `pr-<n>`. The trunk remote is the clone URL in the
+4. **Flip** (gaps 2, 9 outbound, 8). Accept becomes the merge. The mirror pushes the head to GitHub
+   `main`, and branch protection admits only the mirror. Post-accept deploys replace `deploy.yml`'s
+   `prod` job, and per-attempt preview stages replace `pr-<n>`. The trunk remote is the clone URL in the
    README.
-5. **Issues** (gap 10). Move open issues to buds once buds have comments, and close GitHub issues
+5. **Issues** (gap 10). Move open issues to tasks once tasks have comments, and close GitHub issues
    to new reports.
 6. **GitHub as a mirror only** (gap 11). With tree export and backups in place, the GitHub repo is a
    read-only mirror plus the inbound bridge for outside contributors. Turning that off is a separate
@@ -118,15 +125,15 @@ One per gap above, so each can be picked up alone:
 
 - [ ] `ficus.toml` for this repo, Egress prepare-phase allowances for crates.io, npm, and the devenv
       caches, and measured scorer timeouts and instance type.
-- [ ] Trunk repo: fast-forward a stable Artifacts repo per tree on harvest, from a sandbox.
+- [ ] Trunk repo: fast-forward a stable Artifacts repo per tree on accept, from a sandbox.
 - [ ] `POST /trees/<t>/graft {source, branch}`: import an outside commit as the new head node.
-- [x] Leaf and node diffs, rendered on their pages.
-- [ ] Comments on leaves and buds; approval-gated harvest that checks Better Auth org roles in the Api.
-- [x] UI actions (bud, grow with agents, sprout, ripe, harvest, regrow, wither).
+- [x] Attempt and node diffs, rendered on their pages.
+- [ ] Comments on attempts and tasks; approval-gated accept that checks Better Auth org roles in the Api.
+- [x] UI actions (task, start agents, start by hand, submit, accept, retry, abandon).
 - [ ] A `ficus` CLI.
-- [ ] Push detection for leaf repos (poll `log` until Artifacts has events) and non-freezing preview scores.
+- [ ] Push detection for attempt repos (poll `log` until Artifacts has events) and non-freezing preview scores.
 - [ ] Tree events to a Queue; signed webhook deliveries with retries.
-- [ ] Deploy phase in `ficus.toml`; per-tree secrets; per-leaf preview stages.
-- [ ] GitHub mirror out (head → `main` on harvest) and GitHub App in (pull request → leaf → check run).
-- [ ] Buds in the UI, with comments and labels; an issue → bud importer.
-- [ ] Tree export (JSON of nodes, buds, leaves, compost, reports) and backfill of the D1 tree directory.
+- [ ] Deploy phase in `ficus.toml`; per-tree secrets; per-attempt preview stages.
+- [ ] GitHub mirror out (head → `main` on accept) and GitHub App in (pull request → attempt → check run).
+- [ ] Tasks in the UI, with comments and labels; an issue → task importer.
+- [ ] Tree export (JSON of nodes, tasks, attempts, history, reports) and backfill of the D1 tree directory.

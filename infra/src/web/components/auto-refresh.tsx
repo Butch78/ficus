@@ -2,7 +2,7 @@
 
 /**
  * Re-renders the page every few seconds while something on it is still in
- * flight (an agent growing, checks running), and says so.
+ * flight (an agent working, checks running), and says so.
  */
 import { Loader, Text } from "@cloudflare/kumo";
 import { useRouter } from "next/navigation";

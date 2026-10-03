@@ -1,5 +1,5 @@
 /**
- * A leaf's scoring, said as it goes: the steps its sandbox streams
+ * An attempt's scoring, said as it goes: the steps its sandbox streams
  * (crates/ficus-core/src/progress.rs `ScoreStep`), in words. Pure.
  */
 import type { StepStatus } from "../components/elements/chain-of-thought.tsx";
@@ -9,8 +9,8 @@ type Entry = Ledger["entries"][number];
 
 const WORDS = {
   sandbox: ["Starting a sandbox, the internet off", "Started a sandbox, the internet off"],
-  clone: ["Cloning the leaf", "Cloned the leaf"],
-  restore: ["Putting the root's checks back", "Put the root's checks back: the leaf cannot change them"],
+  clone: ["Cloning the attempt", "Cloned the attempt"],
+  restore: ["Putting the root's checks back", "Put the root's checks back: the attempt cannot change them"],
   devenv: ["Building the root's devenv shell (slow the first time)", "Built the root's devenv shell"],
   cost: ["Measuring the change", "Measured the change"],
 } as const;

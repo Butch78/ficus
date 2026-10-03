@@ -131,13 +131,13 @@ const forwardToTree = Effect.fn("Api.forwardToTree")(function* (
     catch: (cause) => fail(502, `the tree service is unreachable: ${String(cause)}`),
   });
 
-  if (request.method !== "POST" || route.rest !== "/plant" || !response.ok) {
+  if (request.method !== "POST" || route.rest !== "/init" || !response.ok) {
     return response;
   }
 
-  // A plant the tree service accepted puts the tree in the directory. The
-  // plant itself has happened either way, so a failure to record it is
-  // logged rather than turned into a failed plant.
+  // An init the tree service accepted puts the tree in the directory. The
+  // init itself has happened either way, so a failure to record it is
+  // logged rather than turned into a failed init.
   const record = Directory.record(env.AUTH_DB, organization.id, route.tree, Date.now()).pipe(
     Effect.as(Progress.stepLine("record", "complete")),
     Effect.catchTag("Directory.Failure", (error) =>
@@ -147,7 +147,7 @@ const forwardToTree = Effect.fn("Api.forwardToTree")(function* (
 
   const streamed = response.headers.get("content-type")?.startsWith(Progress.CONTENT_TYPE) ?? false;
 
-  // A streamed plant answers 200 before it is done: record it once its
+  // A streamed init answers 200 before it is done: record it once its
   // outcome says it succeeded, as the stream's last step.
   if (streamed && response.body !== null) {
     // The request's services (the tracer among them), for after it returns.

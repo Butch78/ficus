@@ -1,5 +1,5 @@
 /**
- * A plant as it happens: the progress lines the tree streams
+ * An init as it happens: the progress lines the tree streams
  * (crates/ficus-core/src/progress.rs, plus the Api's `record`), folded into
  * the state of each step the person sees. Pure, so it tests without a stream.
  */
@@ -7,14 +7,14 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type { StepStatus } from "../components/elements/chain-of-thought.tsx";
 
-/** A plant from a remote, in order: the UI's own check first, the Api's record last. */
-export const PLANT_STEPS = ["membership", "import", "settle", "lock", "save", "record"] as const;
+/** An init from a remote, in order: the UI's own check first, the Api's record last. */
+export const INIT_STEPS = ["membership", "import", "settle", "lock", "save", "record"] as const;
 
-export type PlantStep = (typeof PLANT_STEPS)[number];
+export type InitStep = (typeof INIT_STEPS)[number];
 
-const isPlantStep = Schema.is(Schema.Literals(PLANT_STEPS));
+const isInitStep = Schema.is(Schema.Literals(INIT_STEPS));
 
-/** The answer a streamed plant ends with: text, an `{error}`, or the tree. */
+/** The answer a streamed init ends with: text, an `{error}`, or the tree. */
 const ErrorBody = Schema.Struct({ error: Schema.String });
 
 const OutcomeBody = Schema.Union([Schema.String, ErrorBody, Schema.Struct({})]);
@@ -46,25 +46,25 @@ export interface StepProgress {
   readonly endedAt: number | undefined;
 }
 
-export interface PlantProgress {
-  readonly steps: ReadonlyMap<PlantStep, StepProgress>;
-  /** Set by the last line: whether the plant happened, and if not, why. */
+export interface InitProgress {
+  readonly steps: ReadonlyMap<InitStep, StepProgress>;
+  /** Set by the last line: whether the init happened, and if not, why. */
   readonly outcome: { readonly succeeded: boolean; readonly message: string } | undefined;
 }
 
 const pending: StepProgress = { status: "pending", detail: undefined, startedAt: undefined, endedAt: undefined };
 
 /** Before the Api answers: checking membership, everything else to come. */
-export const started = (now: number): PlantProgress => ({
-  steps: new Map(PLANT_STEPS.map((step) => [step, step === "membership" ? { ...pending, status: "active", startedAt: now } : pending])),
+export const started = (now: number): InitProgress => ({
+  steps: new Map(INIT_STEPS.map((step) => [step, step === "membership" ? { ...pending, status: "active", startedAt: now } : pending])),
   outcome: undefined,
 });
 
 const update = (
-  progress: PlantProgress,
-  step: PlantStep,
+  progress: InitProgress,
+  step: InitStep,
   change: (current: StepProgress) => StepProgress,
-): PlantProgress => {
+): InitProgress => {
   const steps = new Map(progress.steps);
 
   steps.set(step, change(steps.get(step) ?? pending));
@@ -73,7 +73,7 @@ const update = (
 };
 
 /** The Api began streaming: it only does once it has checked membership. */
-export const connected = (progress: PlantProgress, now: number): PlantProgress =>
+export const connected = (progress: InitProgress, now: number): InitProgress =>
   update(progress, "membership", (current) => ({ ...current, status: "complete", endedAt: now }));
 
 const messageOf = (body: OutcomeBody) => {
@@ -85,7 +85,7 @@ const messageOf = (body: OutcomeBody) => {
 };
 
 /** One line of the stream, applied. Lines this UI does not know are skipped. */
-export const apply = (progress: PlantProgress, text: string, now: number): PlantProgress =>
+export const apply = (progress: InitProgress, text: string, now: number): InitProgress =>
   Option.match(decodeLine(text), {
     onNone: () => progress,
     onSome: (line) => {
@@ -95,7 +95,7 @@ export const apply = (progress: PlantProgress, text: string, now: number): Plant
         return { ...progress, outcome: { succeeded, message: succeeded ? "" : messageOf(line.body) } };
       }
 
-      if (!isPlantStep(line.step)) {
+      if (!isInitStep(line.step)) {
         return progress;
       }
 
@@ -108,8 +108,8 @@ export const apply = (progress: PlantProgress, text: string, now: number): Plant
     },
   });
 
-/** A plant that failed before streaming (no membership, the Api unreachable). */
-export const refused = (progress: PlantProgress, message: string, now: number): PlantProgress => ({
+/** An init that failed before streaming (no membership, the Api unreachable). */
+export const refused = (progress: InitProgress, message: string, now: number): InitProgress => ({
   ...update(progress, "membership", (current) => ({ ...current, status: "error" as const, endedAt: now })),
   outcome: { succeeded: false, message },
 });
@@ -128,7 +128,7 @@ export interface Context {
 }
 
 /** What a step says: what it will do or is doing, and what it did. */
-export const label = (step: PlantStep, status: StepStatus, { org, source }: Context) => {
+export const label = (step: InitStep, status: StepStatus, { org, source }: Context) => {
   const done = status === "complete";
 
   switch (step) {
@@ -152,7 +152,7 @@ export const label = (step: PlantStep, status: StepStatus, { org, source }: Cont
  * wait, the commit it landed at. The import's own detail is its source, which
  * its label already says.
  */
-export const description = (step: PlantStep, { status, detail }: StepProgress) => {
+export const description = (step: InitStep, { status, detail }: StepProgress) => {
   if (detail === undefined || (step === "import" && status !== "error")) {
     return undefined;
   }

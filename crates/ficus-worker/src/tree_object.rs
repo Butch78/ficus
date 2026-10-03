@@ -458,7 +458,10 @@ impl TreeObject {
             onto_head: job.onto_head.clone(),
             onto_branch: onto.default_branch,
         };
-        let outcome = match self.ask_sandbox(&fresh.repo, "rebase", &request, None).await {
+        let outcome = match self
+            .ask_sandbox(&fresh.repo, "rebase", &request, None)
+            .await
+        {
             SandboxOutcome::Report(report) => RebaseOutcome::Report(report),
             SandboxOutcome::Unscorable(reason) => RebaseOutcome::Conflict(reason),
             SandboxOutcome::Failed(reason) => RebaseOutcome::Failed(reason),
@@ -838,12 +841,7 @@ impl TreeObject {
 
     /// Import `source` as the tree's root repo and init the tree on its head,
     /// telling `progress` each step as it starts and ends.
-    async fn init(
-        &self,
-        name: RepoName,
-        body: InitBody,
-        progress: &Progress,
-    ) -> Result<Response> {
+    async fn init(&self, name: RepoName, body: InitBody, progress: &Progress) -> Result<Response> {
         if self.load().await?.is_some() {
             return Response::error("tree already initialized", 409);
         }

@@ -5,7 +5,7 @@ import { DiffView } from "../../../../../../../components/diff-view.tsx";
 import { PageHeader } from "../../../../../../../components/page-header.tsx";
 import { RepoBrowser } from "../../../../../../../components/repo-browser.tsx";
 import * as Api from "../../../../../../../lib/api.ts";
-import { attempt } from "../../../../../../../lib/run.ts";
+import { run } from "../../../../../../../lib/run.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -23,8 +23,8 @@ export default async function NodePage({ params, searchParams }: Props) {
   }
 
   const base = `/orgs/${org}/trees/${tree}`;
-  // The root grew from nothing; every other node is a harvest, with a change.
-  const change = node === 0 ? undefined : await attempt(Api.diff(org, tree, { kind: "nodes", id: node }));
+  // The root started from nothing; every other node is an acceptance, with a change.
+  const change = node === 0 ? undefined : await run(Api.diff(org, tree, { kind: "nodes", id: node }));
 
   return (
     <>

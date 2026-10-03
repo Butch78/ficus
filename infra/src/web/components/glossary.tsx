@@ -1,16 +1,16 @@
 import { Text } from "@cloudflare/kumo";
 import { CollapsibleRoot, CollapsiblePanel, CollapsibleTrigger } from "./kumo.ts";
 
-/** Ficus's words, said in the ones a person already has. */
+/** Ficus's words, and what each does. */
 const WORDS = [
   ["Tree", "a repository, with its history of accepted changes (the trunk)."],
-  ["Bud", "a task: what you want, said as intent, not a diff."],
-  ["Leaf", "one attempt at a bud, by an agent (or you), in its own copy of the repo."],
-  ["Ripening", "a submitted leaf, frozen while the repo's own checks run in a sandbox."],
-  ["Harvest", "accepting a bud: the leaf that passes every check with the smallest change becomes the new head."],
-  ["Fruit", "a harvested leaf: a node of the trunk."],
-  ["Regrow", "start a leaf again from the new head when it grew from an old one; there are no merges."],
-  ["Compost", "attempts that lost, with why: the next attempt starts from them."],
+  ["Task", "what you want changed, said as intent, optionally with checks of its own."],
+  ["Attempt", "one go at a task, by an agent or by you, in its own copy of the repo."],
+  ["Submit", "freeze an attempt: the repo's own checks run on it in a sandbox."],
+  ["Accept", "the attempt that passes every check with the smallest change becomes the new head."],
+  ["Rebase", "replay a behind attempt's commits onto the new head, automatically; there are no merges."],
+  ["Retry", "start an attempt again from the new head when its rebase conflicts."],
+  ["History", "closed attempts and why they closed: the next attempt starts from them."],
 ] as const;
 
 export function Glossary() {

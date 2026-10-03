@@ -26,7 +26,7 @@ const upstream = async () => {
 };
 
 /** The program's outcome, failures included: for pages that show them in place. */
-export const attempt = async <A>(program: Effect.Effect<A, ApiError, Upstream>) =>
+export const run = async <A>(program: Effect.Effect<A, ApiError, Upstream>) =>
   Effect.runPromise(
     program.pipe(
       Effect.result,
@@ -39,7 +39,7 @@ export const attempt = async <A>(program: Effect.Effect<A, ApiError, Upstream>) 
 
 /** The program's value; a signed-out caller is sent to sign in, a missing thing is a 404. */
 export const load = async <A>(program: Effect.Effect<A, ApiError, Upstream>) => {
-  const outcome = await attempt(program);
+  const outcome = await run(program);
 
   if (Result.isSuccess(outcome)) {
     return outcome.success;

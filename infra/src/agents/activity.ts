@@ -49,8 +49,8 @@ const about = (tool: string, args: ToolCall["arguments"]) => {
   switch (tool) {
     case "bash":
       return commandOf(args).pipe(Option.map(({ command }) => command));
-    case "submit_leaf":
-      return Option.some("submit the leaf for scoring");
+    case "submit_attempt":
+      return Option.some("submit the attempt for scoring");
     default:
       return pathOf(args).pipe(Option.map(({ path }) => path));
   }

@@ -8,7 +8,7 @@ import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import { steps } from "../../../lib/activity.ts";
 import * as Api from "../../../lib/api.ts";
-import { attempt } from "../../../lib/run.ts";
+import { run } from "../../../lib/run.ts";
 import { operationTrace } from "../../../lib/trace.ts";
 
 const OPERATION = /^[0-9a-f-]{36}$/;
@@ -22,7 +22,7 @@ export const GET = async (request: Request) => {
     return Response.json({ error: "org and op are required" }, { status: 400 });
   }
 
-  const member = await attempt(Api.trees(org));
+  const member = await run(Api.trees(org));
 
   if (Result.isFailure(member)) {
     return Response.json({ error: member.failure.message }, { status: member.failure.status });

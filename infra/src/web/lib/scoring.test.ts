@@ -10,7 +10,7 @@ const entry = (step: string, state: "active" | "complete" | "error", item?: stri
 describe("scoring, in words", () => {
   test("says each step while it runs and once it is done", () => {
     expect(scoringLabel(entry("devenv", "active"))).toBe("Building the root's devenv shell (slow the first time)");
-    expect(scoringLabel(entry("restore", "complete"))).toBe("Put the root's checks back: the leaf cannot change them");
+    expect(scoringLabel(entry("restore", "complete"))).toBe("Put the root's checks back: the attempt cannot change them");
     expect(scoringLabel(entry("check", "active", "tests"))).toBe("Running check tests, no network");
     expect(scoringLabel(entry("check", "error", "tests"))).toBe("Check tests failed");
   });

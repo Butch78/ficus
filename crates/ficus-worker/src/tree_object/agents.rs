@@ -151,7 +151,10 @@ impl TreeObject {
 
     /// The model the agent working `attempt` runs; `None` for an attempt no agent worked.
     pub(super) async fn agent_model(&self, attempt: AttemptId) -> Result<Option<String>> {
-        self.state.storage().get::<String>(&model_key(attempt)).await
+        self.state
+            .storage()
+            .get::<String>(&model_key(attempt))
+            .await
     }
 
     async fn tending(&self) -> Result<Vec<Tended>> {
@@ -172,7 +175,8 @@ impl TreeObject {
         let Some(tree) = self.load().await? else {
             return Response::error("no such tree", 404);
         };
-        let (Some(model), Some(entry)) = (self.agent_model(attempt).await?, tree.attempt(attempt)) else {
+        let (Some(model), Some(entry)) = (self.agent_model(attempt).await?, tree.attempt(attempt))
+        else {
             return Response::error("no agent worked this attempt", 404);
         };
         let mut status = self
@@ -221,8 +225,11 @@ impl TreeObject {
                         still.push(tended);
                     }
                     Some(reason) => {
-                        self.give_up(tended.attempt, format!("the agent could not start: {reason}"))
-                            .await?
+                        self.give_up(
+                            tended.attempt,
+                            format!("the agent could not start: {reason}"),
+                        )
+                        .await?
                     }
                 }
                 continue;
@@ -234,7 +241,10 @@ impl TreeObject {
             {
                 Ok(mut answer) => answer.json().await?,
                 Err(error) => {
-                    worker::console_error!("asking the agent of attempt {}: {error}", tended.attempt);
+                    worker::console_error!(
+                        "asking the agent of attempt {}: {error}",
+                        tended.attempt
+                    );
                     still.push(tended);
                     continue;
                 }
@@ -259,8 +269,11 @@ impl TreeObject {
                     self.stop(&tended).await;
                 }
                 "unassigned" => {
-                    self.give_up(tended.attempt, "the agent never got its assignment".to_owned())
-                        .await?;
+                    self.give_up(
+                        tended.attempt,
+                        "the agent never got its assignment".to_owned(),
+                    )
+                    .await?;
                     self.stop(&tended).await;
                 }
                 "failed" => {

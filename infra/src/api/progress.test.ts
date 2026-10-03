@@ -18,7 +18,7 @@ describe("succeeded", () => {
   test("is a 2xx outcome line, and nothing else", () => {
     expect(succeeded('{"kind":"outcome","status":200,"body":{}}')).toBe(true);
     expect(succeeded('{"kind":"outcome","status":202,"body":{}}')).toBe(true);
-    expect(succeeded('{"kind":"outcome","status":409,"body":"tree already planted"}')).toBe(false);
+    expect(succeeded('{"kind":"outcome","status":409,"body":"tree already initialized"}')).toBe(false);
     expect(succeeded('{"kind":"step","step":"save","state":"complete"}')).toBe(false);
     expect(succeeded("not json")).toBe(false);
   });
@@ -35,7 +35,7 @@ describe("afterSuccess", () => {
   });
 
   test("appends nothing after a refusal", async () => {
-    const refused = '{"kind":"outcome","status":409,"body":"tree already planted"}\n';
+    const refused = '{"kind":"outcome","status":409,"body":"tree already initialized"}\n';
 
     expect(await new Response(afterSuccess(stream(refused), recorded)).text()).toBe(refused);
   });

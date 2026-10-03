@@ -2,10 +2,10 @@
  * How the tree reads on a page: plain functions over the decoded shapes, so
  * they test without a Worker.
  */
-import type { Bud, Leaf, LeafState, PruneReason, Tree, TreeNode } from "./answers.ts";
+import type { Task, Attempt, AttemptState, CloseReason, Tree, TreeNode } from "./answers.ts";
 
-/** Where a leaf stands; `failing` is ripe with at least one failed check. */
-export type Tone = "growing" | "ripening" | "ripe" | "failing" | "fruit" | "pruned";
+/** Where an attempt stands; `failing` is scored with at least one failed check. */
+export type Tone = "working" | "checking" | "scored" | "failing" | "accepted" | "closed";
 
 export interface Status {
   readonly tone: Tone;
@@ -15,43 +15,47 @@ export interface Status {
 
 export const short = (oid: string) => oid.slice(0, 8);
 
-export const pruneReason = (reason: PruneReason) => {
-  if ("Outgrown" in reason) {
-    return `outgrown by leaf ${reason.Outgrown.by}`;
+export const closeReason = (reason: CloseReason) => {
+  if ("Lost" in reason) {
+    return `lost to attempt ${reason.Lost.to}`;
   }
 
-  if ("Regrown" in reason) {
-    return `regrown as leaf ${reason.Regrown.into}`;
+  if ("Retried" in reason) {
+    return `retried as attempt ${reason.Retried.into}`;
   }
 
-  return `withered: ${reason.Withered.note}`;
+  if ("Rebased" in reason) {
+    return `rebased onto the head as attempt ${reason.Rebased.into}`;
+  }
+
+  return `abandoned: ${reason.Abandoned.note}`;
 };
 
-export const status = (state: LeafState): Status => {
-  if (state === "Growing") {
-    return { tone: "growing", label: "growing", commit: undefined };
+export const status = (state: AttemptState): Status => {
+  if (state === "Working") {
+    return { tone: "working", label: "working", commit: undefined };
   }
 
-  if ("Ripening" in state) {
-    return { tone: "ripening", label: "ripening: checks running", commit: state.Ripening.commit };
+  if ("Checking" in state) {
+    return { tone: "checking", label: "checking: checks running", commit: state.Checking.commit };
   }
 
-  if ("Ripe" in state) {
-    const { score, commit } = state.Ripe;
+  if ("Scored" in state) {
+    const { score, commit } = state.Scored;
     const passes = score.checks_passed === score.checks_total;
 
     return {
-      tone: passes ? "ripe" : "failing",
-      label: `ripe: ${passes ? "passes" : "fails"} ${score.checks_passed}/${score.checks_total} checks, cost ${score.cost}`,
+      tone: passes ? "scored" : "failing",
+      label: `scored: ${passes ? "passes" : "fails"} ${score.checks_passed}/${score.checks_total} checks, cost ${score.cost}`,
       commit,
     };
   }
 
-  if ("Fruit" in state) {
-    return { tone: "fruit", label: `fruit: node ${state.Fruit.node}`, commit: undefined };
+  if ("Accepted" in state) {
+    return { tone: "accepted", label: `accepted: node ${state.Accepted.node}`, commit: undefined };
   }
 
-  return { tone: "pruned", label: `pruned: ${pruneReason(state.Pruned.reason)}`, commit: undefined };
+  return { tone: "closed", label: `closed: ${closeReason(state.Closed.reason)}`, commit: undefined };
 };
 
 /** The accepted history: root first, head last, following parents back from the head. */
@@ -67,23 +71,23 @@ export const trunk = (tree: Tree): ReadonlyArray<TreeNode> => {
   return nodes.toReversed();
 };
 
-export interface BudView {
-  readonly bud: Bud;
-  readonly leaves: ReadonlyArray<Leaf>;
-  /** The node the bud's harvest made, once it has fruited. */
-  readonly fruit: number | undefined;
+export interface TaskView {
+  readonly task: Task;
+  readonly attempts: ReadonlyArray<Attempt>;
+  /** The node the task's accept made, once it has fruited. */
+  readonly accepted: number | undefined;
 }
 
-/** Every bud with its leaves, newest bud first. */
-export const buds = (tree: Tree): ReadonlyArray<BudView> => {
-  const leaves = Object.values(tree.leaves);
+/** Every task with its attempts, newest task first. */
+export const tasks = (tree: Tree): ReadonlyArray<TaskView> => {
+  const attempts = Object.values(tree.attempts);
 
-  return Object.values(tree.buds)
+  return Object.values(tree.tasks)
     .toSorted((a, b) => b.id - a.id)
-    .map((bud) => ({
-      bud,
-      leaves: leaves.filter((leaf) => leaf.bud === bud.id).toSorted((a, b) => a.id - b.id),
-      fruit: bud.state === "Open" ? undefined : bud.state.Fruited.node,
+    .map((task) => ({
+      task,
+      attempts: attempts.filter((attempt) => attempt.task === task.id).toSorted((a, b) => a.id - b.id),
+      accepted: task.state === "Open" ? undefined : task.state.Done.node,
     }));
 };
 

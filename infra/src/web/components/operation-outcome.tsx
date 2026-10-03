@@ -4,18 +4,18 @@ import { ActivityPanel } from "./activity-panel.tsx";
 /** What each change the UI can make is called, as the trace's one line. */
 const titleOf = (op: string | undefined) => {
   switch (op) {
-    case "bud":
-      return "New bud";
-    case "harvest":
-      return "Harvest";
-    case "regrow":
-      return "Regrow";
-    case "wither":
-      return "Wither";
+    case "task":
+      return "New task";
+    case "accept":
+      return "Accept";
+    case "retry":
+      return "Retry";
+    case "abandon":
+      return "Abandon";
     case "submit":
       return "Submit for scoring";
-    case "grow":
-      return "Grow with agents";
+    case "agents":
+      return "Start agents";
     default:
       return "Change";
   }

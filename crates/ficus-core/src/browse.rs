@@ -41,7 +41,9 @@ impl Tree {
                     AttemptState::Checking { commit } | AttemptState::Scored { commit, .. } => {
                         Some(commit.clone())
                     }
-                    AttemptState::Accepted { node } => self.node(*node).map(|node| node.commit.clone()),
+                    AttemptState::Accepted { node } => {
+                        self.node(*node).map(|node| node.commit.clone())
+                    }
                 };
                 Ok(View {
                     repo: attempt.repo.clone(),
@@ -237,7 +239,10 @@ mod tests {
             .unwrap();
         let acceptance = tree.accept(task).unwrap();
         let accepted = tree.change(Subject::Node(acceptance.node)).unwrap();
-        assert_eq!((accepted.base, accepted.head), (Some(oid('a')), Some(oid('b'))));
+        assert_eq!(
+            (accepted.base, accepted.head),
+            (Some(oid('a')), Some(oid('b')))
+        );
         assert_eq!(accepted.repo, tree.attempt(attempt).unwrap().repo);
     }
 

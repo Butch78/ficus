@@ -1,5 +1,5 @@
 /**
- * `POST /api/plant {org, tree, source, operation}`: plant, and stream its
+ * `POST /api/init {org, tree, source, operation}`: init, and stream its
  * progress back as it happens (one JSON object per line). A refusal before
  * any progress (not signed in, not a member) is a JSON `{error}` with its
  * status.
@@ -8,16 +8,16 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Api from "../../../lib/api.ts";
-import { attempt } from "../../../lib/run.ts";
+import { run } from "../../../lib/run.ts";
 
-const PlantRequest = Schema.Struct({
+const InitRequest = Schema.Struct({
   org: Schema.NonEmptyString,
   tree: Schema.NonEmptyString,
   source: Schema.NonEmptyString,
   operation: Schema.String.check(Schema.isPattern(/^[0-9a-f-]{36}$/)),
 });
 
-const decode = Schema.decodeUnknownOption(Schema.fromJsonString(PlantRequest));
+const decode = Schema.decodeUnknownOption(Schema.fromJsonString(InitRequest));
 
 export const POST = async (request: Request) => {
   const asked = decode(await request.text());
@@ -27,7 +27,7 @@ export const POST = async (request: Request) => {
   }
 
   const { org, tree, source, operation } = asked.value;
-  const answer = await attempt(Api.plant(org, tree, source, operation));
+  const answer = await run(Api.init(org, tree, source, operation));
 
   if (Result.isFailure(answer)) {
     return Response.json({ error: answer.failure.message }, { status: answer.failure.status });

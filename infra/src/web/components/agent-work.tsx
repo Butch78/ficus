@@ -1,5 +1,5 @@
 /**
- * An agent at work on its leaf, like an assistant's tool calls: each read,
+ * An agent at work on its attempt, like an assistant's tool calls: each read,
  * edit and command it ran, and whether it worked, then its last words. From
  * the agent's own transcript (src/agents/activity.ts), via the tree.
  */

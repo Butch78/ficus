@@ -2,8 +2,8 @@
 # Agents, end to end, on a deployed stage (opt-in: it spends Workers AI time
 # and takes several minutes, so CI does not run it):
 #
-#   plant the demo root, write a bud, grow it with one agent, follow the
-#   agent's tool calls until it submits, wait for its score, harvest.
+#   init the demo root, write a task, start one agent on it, follow the
+#   agent's tool calls until it submits, wait for its score, accept.
 #
 # Needs FICUS_API. Like scripts/e2e, signs up a fresh user unless FICUS_ORG
 # and FICUS_KEY name an organization and a key to work in. FICUS_MODEL picks
@@ -32,26 +32,26 @@ fi
 auth=(-H "x-api-key: $KEY" -H "content-type: application/json")
 call() { curl -s -X "$1" "${auth[@]}" "$API/v1/orgs/$ORG/trees/$T$2" ${3:+-d "$3"}; }
 
-step "plant the demo root as $T"
-out=$(call POST /plant '{}')
+step "init the demo root as $T"
+out=$(call POST /init '{}')
 mkdir "$W/root" && cp -r "$ROOT_DIR"/. "$W/root/"
 rm -rf "$W/root/.devenv" "$W/root/__pycache__"
 git -C "$W/root" init -q -b main && git -C "$W/root" add -A
 git -C "$W/root" -c user.name=root -c user.email=root@ficus.dev -c commit.gpgsign=false commit -qm "demo root"
 git -C "$W/root" -c http.extraHeader="Authorization: Bearer $(jq -r .token <<<"$out")" push -q "$(jq -r .remote <<<"$out")" HEAD:main
-call POST /plant '{}' | jq -c '{name, head}'
+call POST /init '{}' | jq -c '{name, head}'
 
-step "a bud, grown by one agent"
-BUD=$(call POST /buds '{"intent":"slugify should strip leading and trailing whitespace before slugging"}' | jq -r .bud)
+step "a task, worked by one agent"
+TASK=$(call POST /tasks '{"intent":"slugify should strip leading and trailing whitespace before slugging"}' | jq -r .task)
 body='{"agents":1}'
 [ -n "${FICUS_MODEL:-}" ] && body="{\"agents\":1,\"model\":\"$FICUS_MODEL\"}"
-LEAF=$(call POST "/buds/$BUD/grow" "$body" | jq -r '.leaves[0]')
-echo "bud $BUD, leaf $LEAF"
+ATTEMPT=$(call POST "/tasks/$TASK/agents" "$body" | jq -r '.attempts[0]')
+echo "task $TASK, attempt $ATTEMPT"
 
 step "follow the agent"
 seen=0
 for _ in $(seq 1 120); do
-  status=$(call GET "/leaves/$LEAF/agent")
+  status=$(call GET "/attempts/$ATTEMPT/agent")
   calls=$(jq '.calls | length' <<<"$status")
   if [ "$calls" -gt "$seen" ]; then
     jq -r --argjson from "$seen" '.calls[$from:][] | "  \(.tool): \(.summary[0:100]) [\(.state)]"' <<<"$status"
@@ -59,20 +59,20 @@ for _ in $(seq 1 120); do
   fi
   case "$(jq -r .state <<<"$status")" in
     submitted) echo "submitted"; break ;;
-    stopped|failed) echo "FAIL: the agent $(jq -r .state <<<"$status"): $(jq -r '.reason // .lastWords' <<<"$status")" >&2; exit 1 ;;
+    stopped|failed|unassigned) echo "FAIL: the agent $(jq -r .state <<<"$status"): $(jq -r '.reason // .lastWords' <<<"$status")" >&2; exit 1 ;;
   esac
   sleep 10
 done
 
 step "its score"
 for _ in $(seq 1 90); do
-  state=$(call GET "/leaves/$LEAF" | jq -c .leaf.state)
-  case "$state" in *Ripe*|*Pruned*) break ;; *) sleep 10 ;; esac
+  state=$(call GET "/attempts/$ATTEMPT" | jq -c .attempt.state)
+  case "$state" in *Scored*|*Closed*) break ;; *) sleep 10 ;; esac
 done
 echo "$state"
-standing=$(call GET "/buds/$BUD" | jq -c --argjson leaf "$LEAF" '.leaves[] | select(.leaf.id == $leaf) | .standing')
-[ "$standing" = '"Winner"' ] || { echo "FAIL: the agent's leaf stands $standing" >&2; exit 1; }
+standing=$(call GET "/tasks/$TASK" | jq -c --argjson attempt "$ATTEMPT" '.attempts[] | select(.attempt.id == $attempt) | .standing')
+[ "$standing" = '"Best"' ] || { echo "FAIL: the agent's attempt stands $standing" >&2; exit 1; }
 
-step "harvest it"
-call POST "/buds/$BUD/harvest" '{}' | jq -c '{fruit, node}'
+step "accept it"
+call POST "/tasks/$TASK/accept" '{}' | jq -c '{accepted, node}'
 echo "tree=$T"

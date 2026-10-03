@@ -1,18 +1,18 @@
 import { Badge, Text } from "@cloudflare/kumo";
-import type { LeafState } from "../lib/answers.ts";
+import type { AttemptState } from "../lib/answers.ts";
 import { short, status, type Tone } from "../lib/view.ts";
 
-/** Kumo's status badges, by where the leaf stands. */
+/** Kumo's status badges, by where the attempt stands. */
 const BADGE = {
-  growing: "neutral",
-  ripening: "warning",
-  ripe: "success",
+  working: "neutral",
+  checking: "warning",
+  scored: "success",
   failing: "error",
-  fruit: "green",
-  pruned: "secondary",
+  accepted: "green",
+  closed: "secondary",
 } as const satisfies Record<Tone, string>;
 
-export function LeafStatus({ state }: { readonly state: LeafState }) {
+export function AttemptStatus({ state }: { readonly state: AttemptState }) {
   const { tone, label, commit } = status(state);
 
   return (

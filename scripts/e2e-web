@@ -3,10 +3,10 @@
 #
 #   sign up on the UI's origin (its /api/auth proxies to the Api)
 #   create an organization and an API key there, with that session
-#   plant a tree through the Api with the key: empty root, push demo root, plant
+#   init a tree through the Api with the key: empty root, push demo root, init
 #   read it back as the UI shows it: the organization, its trees, the tree,
 #   and the root's repo (history, directory, a file) through Artifacts
-#   plant from a remote with progress streamed (application/x-ndjson)
+#   init from a remote with progress streamed (application/x-ndjson)
 #
 # Needs FICUS_WEB (the UI's URL) and FICUS_API (the Api's URL).
 set -euo pipefail
@@ -48,15 +48,15 @@ KEY=$(curl -sf -b "$JAR" "${json[@]}" "$WEB/api/auth/api-key/create" -d '{"name"
 expect / "$ORG"
 expect "/orgs/$ORG" "No trees yet"
 
-step "plant $T through the Api: empty root, push the demo root, plant again"
+step "init $T through the Api: empty root, push the demo root, init again"
 call() { curl -sf -X POST -H "x-api-key: $KEY" -H "content-type: application/json" "$API/v1/orgs/$ORG/trees/$T$1" -d "$2"; }
-out=$(call /plant '{}')
+out=$(call /init '{}')
 mkdir "$W/root" && cp -r "$ROOT_DIR"/. "$W/root/" && rm -rf "$W/root/.devenv" "$W/root/__pycache__"
 git -C "$W/root" init -q -b main && git -C "$W/root" add -A
 git -C "$W/root" -c user.name=root -c user.email=root@ficus.dev -c commit.gpgsign=false commit -qm "demo root"
 git -C "$W/root" -c http.extraHeader="Authorization: Bearer $(jq -r .token <<<"$out")" push -q "$(jq -r .remote <<<"$out")" HEAD:main
-call /plant '{}' | jq -c '{name, head}'
-call /buds '{"intent":"slugify should drop punctuation"}' | jq -c .
+call /init '{}' | jq -c '{name, head}'
+call /tasks '{"intent":"slugify should drop punctuation"}' | jq -c .
 
 step "the UI shows the tree and reads the root's repo through Artifacts"
 expect "/orgs/$ORG" "$T"
@@ -66,9 +66,9 @@ expect "/orgs/$ORG/trees/$T/nodes/0" "slug.py"
 expect "/orgs/$ORG/trees/$T/nodes/0?path=tests" "test_slug.py"
 expect "/orgs/$ORG/trees/$T/nodes/0?file=slug.py" "def slugify"
 
-step "a plant streams its steps as they happen, then its outcome, then the Api's record"
+step "an init streams its steps as they happen, then its outcome, then the Api's record"
 lines=$(curl -sN -X POST -H "x-api-key: $KEY" -H "content-type: application/json" -H "accept: application/x-ndjson" \
-  "$API/v1/orgs/$ORG/trees/$T-streamed/plant" -d '{"source":"https://github.com/Butch78/ficus"}')
+  "$API/v1/orgs/$ORG/trees/$T-streamed/init" -d '{"source":"https://github.com/Butch78/ficus"}')
 jq -c 'select(.kind == "step") | [.step, .state]' <<<"$lines" | uniq | tr '\n' ' '; echo
 for want in '"step":"import","state":"complete"' '"step":"lock","state":"complete"' '"step":"save","state":"complete"' '"kind":"outcome","status":200' '"step":"record","state":"complete"'; do
   grep -qF "$want" <<<"$lines" || { echo "FAIL: the stream has no $want" >&2; exit 1; }

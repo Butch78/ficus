@@ -3,7 +3,7 @@
 /**
  * A server action form's submit button that shows the action is running:
  * a spinner, the pending label, and no second submit until it answers.
- * A plant imports a whole repository, which can take a minute.
+ * An init imports a whole repository, which can take a minute.
  */
 import { Button } from "@cloudflare/kumo";
 import type { ReactNode } from "react";

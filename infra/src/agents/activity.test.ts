@@ -12,22 +12,22 @@ describe("activity", () => {
     const messages: ReadonlyArray<Said> = [
       assistant([
         { type: "text", text: "Let me look at the code." },
-        { type: "toolCall", id: "1", name: "read", arguments: { path: "/work/leaf/slug.py" } },
+        { type: "toolCall", id: "1", name: "read", arguments: { path: "/work/attempt/slug.py" } },
       ]),
       result("1", false),
       assistant([{ type: "toolCall", id: "2", name: "bash", arguments: { command: "devenv shell -- pytest\n -q" } }]),
       result("2", true),
       assistant([
-        { type: "toolCall", id: "3", name: "edit", arguments: { path: "/work/leaf/slug.py" } },
+        { type: "toolCall", id: "3", name: "edit", arguments: { path: "/work/attempt/slug.py" } },
         { type: "text", text: "Fixed the regex; running the tests again." },
       ]),
     ];
 
     expect(activity(messages)).toEqual({
       calls: [
-        { id: "1", tool: "read", summary: "/work/leaf/slug.py", state: "ok" },
+        { id: "1", tool: "read", summary: "/work/attempt/slug.py", state: "ok" },
         { id: "2", tool: "bash", summary: "devenv shell -- pytest -q", state: "error" },
-        { id: "3", tool: "edit", summary: "/work/leaf/slug.py", state: "running" },
+        { id: "3", tool: "edit", summary: "/work/attempt/slug.py", state: "running" },
       ],
       lastWords: "Fixed the regex; running the tests again.",
     });
@@ -40,7 +40,7 @@ describe("activity", () => {
 
 describe("summarise", () => {
   test("says the command, the path, or the submission", () => {
-    expect(summarise("submit_leaf", {})).toBe("submit the leaf for scoring");
+    expect(summarise("submit_attempt", {})).toBe("submit the attempt for scoring");
     expect(summarise("write", { path: "a.py", content: "x" })).toBe("a.py");
     expect(summarise("bash", { command: "x".repeat(300) })).toHaveLength(160);
   });

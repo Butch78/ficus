@@ -2,7 +2,7 @@
  * "What happened": an operation's Cloudflare trace, as steps a person reads.
  *
  * Every Worker here has traces on, and same-account service bindings share
- * one trace, so a plant is one trace from the UI through the Api, the tree
+ * one trace, so an init is one trace from the UI through the Api, the tree
  * Worker and its Durable Object, down to each Artifacts and D1 call. This
  * module turns that trace's spans (Workers Observability events) into
  * labelled, nested steps. Pure, so it tests without the API.
@@ -14,7 +14,7 @@ export const OPERATION_ATTRIBUTE = "ficus.operation";
 
 export const ORG_ATTRIBUTE = "ficus.org";
 
-/** Absent or null: the API leaves fields out, or sends them empty. */
+/** Absent or null: the API attempts fields out, or sends them empty. */
 const maybe = <S extends Schema.Constraint>(schema: S) => Schema.optional(Schema.NullOr(schema));
 
 const Metadata = Schema.Struct({
@@ -269,7 +269,7 @@ export const sentence = (label: string) => {
     case "Artifacts: import":
       return "Imported the repository into Artifacts";
     case "Artifacts: fork":
-      return "Forked a repository for the leaf";
+      return "Forked a repository for the attempt";
     case "Artifacts: createToken":
       return "Minted a token for the repository";
     case "Artifacts: get":

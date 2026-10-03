@@ -40,7 +40,7 @@ class Span extends Tracer.NativeSpan {
     readonly runInContext: RunInContext,
     readonly cloudflareSpan?: CloudflareSpan,
   ) {
-    // An invocation Cloudflare does not trace leaves its Effect spans unsampled.
+    // An invocation Cloudflare does not trace attempts its Effect spans unsampled.
     super({ ...options, sampled: options.sampled && (cloudflareSpan?.isTraced ?? false) });
   }
 
