@@ -9,7 +9,9 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
 import * as Output from "alchemy/Output";
+import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import { COMPATIBILITY, OBSERVABILITY } from "../platform.ts";
 
 export const SandboxWorker = Effect.gen(function* () {
@@ -31,11 +33,25 @@ export const SandboxWorker = Effect.gen(function* () {
     },
   });
 
+  // The image: one already in Cloudflare's registry when FICUS_SANDBOX_IMAGE
+  // names it (nix-built by scripts/build-sandbox-image and pushed by
+  // scripts/push-sandbox-image, as a deploy without Docker does), else
+  // context/Dockerfile built with Docker. The bundle's hash rides along with
+  // the Dockerfile build, so a new scorer redeploys the container.
+  const prebuilt = yield* Config.option(Config.String("FICUS_SANDBOX_IMAGE"));
+
+  const image = Option.isSome(prebuilt)
+    ? { image: prebuilt.value }
+    : {
+        context: `${import.meta.dirname}/context`,
+        env: { FICUS_SCORER_HASH: Output.map(scorerBinary.hash.output, (hash) => hash ?? "unhashed") },
+      };
+
   const container = Cloudflare.Container("SandboxContainer", {
     name: `ficus-sandbox-${stage}`,
     // The Durable Object class in sandbox.ts that drives it.
     className: "Sandbox",
-    context: `${import.meta.dirname}/context`,
+    ...image,
     instances: 0,
     maxInstances: 20,
     // A root's devenv shell plus its checks. Ficus's own, when it was
@@ -44,9 +60,6 @@ export const SandboxWorker = Effect.gen(function* () {
     // scoring, deploys, and agents' workspaces until idle.
     instanceType: "standard-4",
     observability: { logs: { enabled: true } },
-    env: {
-      FICUS_SCORER_HASH: Output.map(scorerBinary.hash.output, (hash) => hash ?? "unhashed"),
-    },
   });
 
   return yield* Cloudflare.Worker("Sandbox", {

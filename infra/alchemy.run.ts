@@ -18,8 +18,8 @@
 //                                  dispatches and polls them
 //   Deploys  src/deploys/worker.ts Effect-native: the `Deploy` Workflow, one
 //                                  instance per release, running the root's
-//                                  `[deploy]` in a sandbox. Only on a stage
-//                                  given FICUS_DEPLOY_TOKEN
+//                                  `[deploy]` in a sandbox. Only with
+//                                  FICUS_DEPLOYS=true, after secrets.run.ts
 //
 //   The web UI is a stack of its own (web.run.ts), deployed after this one
 //   to the same stage; it binds `Api` by reference.
@@ -32,7 +32,6 @@ import * as Drizzle from "alchemy/Drizzle";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import DeploysWorker from "./src/deploys/worker.ts";
 import { artifactsNamespace, COMPATIBILITY, OBSERVABILITY } from "./src/platform.ts";
 import { SandboxWorker } from "./src/sandbox/stack.ts";
@@ -70,12 +69,13 @@ export default Alchemy.Stack(
     // One namespace per stage; Artifacts creates it with the first repo.
     const artifacts = yield* artifactsNamespace;
 
-    // Deploys: a stage given a deploy token runs the root's `[deploy]` when a
-    // tree releases a node (src/deploys); one without it never deploys.
-    const deployToken = yield* Config.option(Config.Redacted("FICUS_DEPLOY_TOKEN"));
+    // Deploys: on a stage deployed with FICUS_DEPLOYS=true, a tree's release
+    // runs the root's `[deploy]` (src/deploys) with the deploy token
+    // secrets.run.ts keeps for the stage; elsewhere releases do not deploy.
+    const deploysEnabled = yield* Config.Boolean("FICUS_DEPLOYS").pipe(Config.withDefault(false));
     let deploys = {};
 
-    if (Option.isSome(deployToken)) {
+    if (deploysEnabled) {
       const host = yield* DeploysWorker;
 
       deploys = {
@@ -132,6 +132,12 @@ export default Alchemy.Stack(
     // Signs sessions. Generated once per stage and kept in state.
     const authSecret = yield* Alchemy.Random("BetterAuthSecret");
 
+    // Every tree's export, nightly (src/api/backups.ts), kept for 90 days.
+    const backups = yield* Cloudflare.R2.Bucket("Backups", {
+      name: `ficus-backups-${stage}`,
+      lifecycleRules: [{ id: "expire", deleteObjectsTransition: { condition: { type: "Age", maxAge: 90 * 24 * 60 * 60 } } }],
+    });
+
     const api = yield* Cloudflare.Worker("Api", {
       name: `ficus-api-${stage}`,
       main: "./src/api/worker.ts",
@@ -142,7 +148,10 @@ export default Alchemy.Stack(
         BETTER_AUTH_SECRET: authSecret.text,
         // A service binding: the only way into the tree Worker.
         TREE: worker,
+        BACKUPS: backups,
       },
+      // The nightly backup.
+      crons: ["17 3 * * *"],
     });
 
     return { api: api.url.as<string>() };

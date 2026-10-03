@@ -37,3 +37,19 @@ name = "does_the_task"
 ask = "Does `diff` do everything `task` asks, without changing anything the task does not need?"
 yes = "The whole task is done, and nothing else is changed."
 no = "Part of the task is missing, or the diff changes unrelated code."
+
+# How a released node deploys (src/deploys): the tree's release starts a
+# Deploy Workflow that runs this in a sandbox, from the released commit. It
+# builds the sandbox image with nix (no Docker there), pushes it, and deploys
+# prod. The Cloudflare token is the stage's deploy token, added by the
+# sandbox's egress; the command only ever sees a placeholder.
+[deploy]
+run = "STAGE=prod scripts/deploy-ficus"
+hosts = [
+  "registry.npmjs.org",
+  "registry.cloudflare.com",
+  # alchemy's state store (Cloudflare.state()), on the account's workers.dev subdomain.
+  "alchemy-state-store.fruitcards.workers.dev",
+]
+# Under the Deploy Workflow step's hour (src/deploys/workflow.ts).
+timeout_secs = 3000

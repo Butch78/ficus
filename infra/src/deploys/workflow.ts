@@ -15,6 +15,7 @@ import type * as cf from "@cloudflare/workers-types";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import { DeployParams, DeployReport } from "../core/deploy.ts";
@@ -35,8 +36,10 @@ export default class Deploy extends Cloudflare.Workflow<Deploy>()(
   "Deploy",
   Effect.gen(function* () {
     const artifacts = yield* Cloudflare.Artifacts.ReadNamespace(yield* artifactsNamespace);
-    // Bound as secrets at deploy time: the account the root's `[deploy]` deploys into, and the token for it.
-    const deployToken = yield* Config.Redacted("FICUS_DEPLOY_TOKEN");
+    // The token the root's `[deploy]` deploys with, from the Secrets Store by
+    // reference (secrets.run.ts): deploying this stack never needs its value.
+    const deployToken = yield* Cloudflare.SecretsStore.ReadSecret(yield* Cloudflare.SecretsStore.Secret.ref("DeployToken", { stack: "FicusSecrets" }));
+    // The account it deploys into.
     const accountId = yield* Config.String("CLOUDFLARE_ACCOUNT_ID");
 
     /** The sandbox Durable Object namespace the deploys Worker binds by name (worker.ts). */
@@ -55,6 +58,7 @@ export default class Deploy extends Cloudflare.Workflow<Deploy>()(
       );
 
       const token = yield* repo.createToken("read", READ_TOKEN_TTL_SECS).pipe(Effect.mapError((error) => failed(`minting a read token: ${error.message}`)));
+      const cloudflareToken = yield* deployToken.pipe(Effect.mapError((error) => failed(`reading the deploy token: ${error.message}`)));
       const namespace = yield* sandboxes;
       const sandbox = namespace.get(namespace.idFromName(`deploy:${params.tree}`));
 
@@ -68,7 +72,7 @@ export default class Deploy extends Cloudflare.Workflow<Deploy>()(
               token: token.plaintext,
               commit: params.commit,
               account_id: accountId,
-              cloudflare_token: Redacted.value(deployToken),
+              cloudflare_token: Redacted.value(cloudflareToken),
             }),
           });
 
@@ -93,6 +97,6 @@ export default class Deploy extends Cloudflare.Workflow<Deploy>()(
         timeout: "1 hour",
       });
     });
-    // oxlint-disable-next-line effecttsgo/strict-effect-provide -- alchemy's binding layer, provided where the Workflow is declared
-  }).pipe(Effect.provide(Cloudflare.Artifacts.ReadNamespaceBinding)),
+    // oxlint-disable-next-line effecttsgo/strict-effect-provide -- alchemy's binding layers, provided where the Workflow is declared
+  }).pipe(Effect.provide(Layer.mergeAll(Cloudflare.Artifacts.ReadNamespaceBinding, Cloudflare.SecretsStore.ReadSecretBinding))),
 ) {}

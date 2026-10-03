@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Ficus's own `[deploy]` (ficus.toml): deploy this commit as stage $STAGE,
+# from a deploy sandbox, without Docker. The sandbox image is built with nix
+# and pushed to Cloudflare's registry first; the stacks then deploy it as-is.
+#
+#   STAGE=prod scripts/deploy-ficus
+#
+# Needs CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN: in a deploy sandbox the
+# token is a placeholder the sandbox's egress replaces with the stage's deploy
+# token. The deploy token itself stays in the Secrets Store (secrets.run.ts).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+stage=${STAGE:?set STAGE, e.g. prod}
+
+scripts/build-scorer
+image=$(scripts/build-sandbox-image "$stage")
+reference=$(scripts/push-sandbox-image "$image" "ficus-sandbox-$stage")
+echo "sandbox image: $reference" >&2
+
+cd infra
+bun install --frozen-lockfile
+STAGE=$stage FICUS_DEPLOYS=true FICUS_SANDBOX_IMAGE=$reference bun run deploy
+STAGE=$stage bun run deploy:web

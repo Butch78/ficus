@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Build the sandbox container image with nix (nix/sandbox-image.nix): no
+# Docker needed, so a sandbox can build it for Ficus's own deploy. Prints the
+# image's path in the nix store: a docker-archive tarball.
+#
+#   scripts/build-sandbox-image [tag]
+#
+# nixpkgs is the one devenv.lock pins, so the image matches the devenv shell.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+tag=${1:-latest}
+
+[ -s infra/src/sandbox/context/ficus-scorer.js ] || scripts/build-scorer >&2
+
+nixpkgs=$(jq -r '.nodes.nixpkgs.locked | "github:\(.owner)/\(.repo)/\(.rev)"' devenv.lock)
+
+nix build --no-link --print-out-paths --impure --expr "
+  let pkgs = (builtins.getFlake \"$nixpkgs\").legacyPackages.\${builtins.currentSystem};
+  in import ./nix/sandbox-image.nix {
+    inherit pkgs;
+    context = builtins.path { path = ./infra/src/sandbox/context; name = \"ficus-sandbox-context\"; };
+    tag = \"$tag\";
+  }"
