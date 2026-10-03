@@ -39,6 +39,12 @@ export interface Bindings {
 
 const TREE_KEY = "tree";
 
+/** What `GET /trees/<t>/export` answers: its version, for whatever restores it. */
+const EXPORT_FORMAT = "ficus-tree-export/1";
+
+/** Storage keys of agents' assignments (agents.ts), left out of exports. */
+const ASSIGNMENT_PREFIX = "assignment:";
+
 /** How long `init` waits for an import before giving up: 30 polls, 2 s apart. */
 const IMPORT_POLLS = 30;
 
@@ -178,6 +184,8 @@ export class TreeObject extends DurableObject<Bindings> {
         return yield* this.#showRelease();
       case "deploys":
         return json(yield* Deploys.list(this.ctx.storage, this.env.DEPLOYS));
+      case "export":
+        return yield* this.#export();
       case "attempts/:id":
         return yield* this.#showAttempt(yield* idOf(AttemptId, id, "attempt"));
       case "tasks/:id":
@@ -799,6 +807,24 @@ export class TreeObject extends DurableObject<Bindings> {
     }
 
     return failures;
+  });
+
+  /**
+   * `GET /trees/<t>/export`: everything the tree keeps, key for key as
+   * stored, for backups. Assignments are left out: until an agent has one,
+   * it carries the attempt's write token.
+   */
+  readonly #export = Effect.fn("Tree.export")(function* (this: TreeObject) {
+    const tree = yield* this.#load();
+
+    if (tree === undefined) {
+      return yield* refuse(404, "no such tree");
+    }
+
+    const stored = yield* Effect.promise(() => this.ctx.storage.list());
+    const kept = [...stored.entries()].filter(([key]) => !key.startsWith(ASSIGNMENT_PREFIX));
+
+    return json({ format: EXPORT_FORMAT, name: T.name(tree), exported_at: new Date().toISOString(), storage: Object.fromEntries(kept) });
   });
 
   // --- Sandboxes: scoring and rebasing, from the alarm ---
