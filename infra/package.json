@@ -8,7 +8,7 @@
     "plan": "bun --bun alchemy plan alchemy.run.ts --stage ${STAGE:-dev}",
     "deploy": "bun --bun alchemy deploy alchemy.run.ts --stage ${STAGE:-dev} --yes",
     "destroy": "bun --bun alchemy destroy alchemy.run.ts --stage ${STAGE:-dev}",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p src/agents && tsc --noEmit -p src/api && tsc --noEmit -p src/observability && tsc --noEmit -p src/sandbox && tsc --noEmit -p src/web",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p src/agents && tsc --noEmit -p src/api && tsc --noEmit -p src/observability && tsc --noEmit -p src/sandbox && tsc --noEmit -p src/tree && tsc --noEmit -p src/web",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "test": "bun test ./src/",

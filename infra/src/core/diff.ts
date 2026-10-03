@@ -41,7 +41,7 @@ export interface FileDiff {
   readonly content: Content;
 }
 
-const utf8 = new TextDecoder("utf-8", { fatal: true });
+const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
 
 const text = (bytes: Uint8Array | undefined) => {
   try {

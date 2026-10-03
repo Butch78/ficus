@@ -759,3 +759,57 @@ export const graft = (tree: Tree, id: NodeId, commit: Oid, repo: RepoName, sourc
 
     return { ...tree, head: id, nodes: { ...tree.nodes, [id]: grafted } };
   });
+
+export const name = (tree: Tree) => tree.name;
+
+/** An attempt waiting for its checks, with what the sandbox needs to score it. */
+export interface ScoringJob {
+  readonly attempt: AttemptId;
+  readonly repo: RepoName;
+  /** The task's intent, for the root's judges. */
+  readonly intent: string;
+  readonly base: Oid;
+  readonly head: Oid;
+  readonly checks: ReadonlyArray<CheckSpec>;
+}
+
+/** Every attempt waiting for its checks, as a job for a sandbox. */
+export const scoringJobs = (tree: Tree): ReadonlyArray<ScoringJob> =>
+  checking(tree).flatMap(({ attempt: entry, commit }) => {
+    const [owner, base] = [tree.tasks[entry.task], tree.nodes[entry.base]];
+
+    return owner === undefined || base === undefined
+      ? []
+      : [{ attempt: entry.id, repo: entry.repo, intent: owner.intent, base: base.commit, head: commit, checks: owner.checks ?? [] }];
+  });
+
+/** A behind attempt being replayed onto the head in a fresh one. */
+export interface RebaseJob {
+  readonly behind: AttemptId;
+  readonly fresh: AttemptId;
+  readonly fromRepo: RepoName;
+  readonly fromBase: Oid;
+  readonly fromHead: Oid;
+  readonly ontoHead: Oid;
+}
+
+/** Start a rebase of every rebaseable attempt: the tree with each fresh attempt, the jobs, and any that could not start. */
+export const startRebases = (tree: Tree) => {
+  let changed = tree;
+  const jobs: Array<RebaseJob> = [];
+  const failures: Array<TreeError> = [];
+
+  for (const old of rebaseable(tree)) {
+    const started = rebaseStart(changed, old.id);
+    const base = tree.nodes[old.base];
+
+    if (Result.isFailure(started)) {
+      failures.push(started.failure);
+    } else if (base !== undefined) {
+      changed = started.success.tree;
+      jobs.push({ behind: old.id, fresh: started.success.fresh, fromRepo: old.repo, fromBase: base.commit, fromHead: started.success.commit, ontoHead: head(changed).commit });
+    }
+  }
+
+  return { tree: changed, jobs, failures };
+};

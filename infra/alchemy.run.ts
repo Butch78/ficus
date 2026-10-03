@@ -3,7 +3,7 @@
 //   Api      src/api/worker.ts     the one public entry: Better Auth on D1
 //                                  (users, organizations, API keys); forwards
 //                                  /v1/orgs/<org>/trees/... to Tree
-//   Worker   crates/ficus-worker   the tree service (TreeObject, Artifacts);
+//   Worker   src/tree/worker.ts    the tree service (TreeObject, Artifacts);
 //                                  internal only, no public URL: reached
 //                                  through Api's service binding, which
 //                                  vouches for the tenant
@@ -38,25 +38,6 @@ export default Alchemy.Stack(
   },
   Effect.gen(function* () {
     const { stage } = yield* Alchemy.Stack;
-
-    const bundle = yield* Command.Build("WorkerBundle", {
-      cwd: "../crates/ficus-worker",
-      command: "worker-build --release",
-      outdir: "build",
-      // The memo hashes what `include` matches, never `command`: this file
-      // is listed so a changed build line rebuilds.
-      memo: {
-        include: [
-          "**/*",
-          "../ficus-core/**",
-          "../../Cargo.toml",
-          "../../Cargo.lock",
-          "../../rust-toolchain.toml",
-          "../../infra/alchemy.run.ts",
-        ],
-        lockfile: false,
-      },
-    });
 
     // The scorer: ficus-scorer (src/scorer, bundled, run by bun) in an image
     // with nix + devenv. The bundle's hash rides into the container's env so
@@ -126,18 +107,16 @@ export default Alchemy.Stack(
 
     const worker = yield* Cloudflare.Worker("Worker", {
       name: `ficus-${stage}`,
-      // index.js, not build/worker/shim.mjs: the shim is a back-compat
-      // re-export that only resolves the wasm under one bundling mode.
-      main: "../crates/ficus-worker/build/index.js",
+      // The tree Worker and its TreeObject (src/tree), in Effect TypeScript.
+      main: "./src/tree/worker.ts",
       compatibility: COMPATIBILITY,
       observability: OBSERVABILITY,
       // Internal: trusts the tenant header, so only Api may reach it.
       workersDev: false,
       env: {
-        // The edge that orders the build before the upload.
-        FICUS_BUNDLE_HASH: Output.map(bundle.hash.output, (hash) => hash ?? "unhashed"),
         ARTIFACTS: artifacts,
-        // `TreeObject` is the #[durable_object] struct in crates/ficus-worker.
+        // `TreeObject` is the Durable Object class src/tree/worker.ts exports;
+        // the same name the Rust Worker used, so trees and their storage carry over.
         TREES: Cloudflare.DurableObject("TREES", { className: "TreeObject" }),
         // Sandboxes that score attempts: the `Sandbox` class in the sandbox Worker.
         // By literal name: `alchemy dev` cannot coerce a deploy-time Output
