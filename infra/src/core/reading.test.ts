@@ -57,6 +57,13 @@ describe("progress", () => {
     expect(outcomeLine(200, outcomeBody('{"name":"t-site"}'))).toBe('{"kind":"outcome","status":200,"body":{"name":"t-site"}}\n');
     expect(outcomeBody("tree already initialized")).toBe("tree already initialized");
   });
+
+  test("a scoring's outcome carries its snapshot news, and reads back with it", () => {
+    const line = outcomeLine(200, { cost: 1 }, { taken: "snap-1" });
+
+    expect(line).toBe('{"kind":"outcome","status":200,"body":{"cost":1},"snapshot":{"taken":"snap-1"}}\n');
+    expect(Option.getOrUndefined(parseLine(line))).toEqual({ kind: "outcome", status: 200, body: { cost: 1 }, snapshot: { taken: "snap-1" } });
+  });
 });
 
 describe("browsing a tree's repos", () => {

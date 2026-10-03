@@ -238,9 +238,60 @@ export const ScoreRequest = Schema.Struct({
   /** The task's intent: the `task` the root's judges see. */
   intent: Schema.String,
   checks: Schema.optionalKey(Schema.Array(CheckSpec)),
+  /** A warmed container snapshot of the base: boot from it instead of the bare image. */
+  snapshot: Schema.optional(Schema.String),
+  /** Warm a snapshot of the base while scoring (its devenv shell, built from the base alone) and report it. */
+  take_snapshot: Schema.optionalKey(Schema.Boolean),
 });
 
 export type ScoreRequest = typeof ScoreRequest.Type;
+
+/**
+ * What a scoring said about its base's warmed snapshot: one was `taken`, or
+ * the one it was given would not restore (`stale`: forget it). On a plain
+ * answer it travels in the snapshot headers, on a streamed one in the
+ * outcome line.
+ */
+export const SnapshotNews = Schema.Struct({
+  taken: Schema.optionalKey(Schema.String),
+  stale: Schema.optionalKey(Schema.Boolean),
+});
+
+export type SnapshotNews = typeof SnapshotNews.Type;
+
+export const SNAPSHOT_TAKEN_HEADER = "x-ficus-snapshot";
+
+export const SNAPSHOT_STALE_HEADER = "x-ficus-snapshot-stale";
+
+/** How one scoring boots: from its base's snapshot, or from the image, warming one for the base. */
+export interface SnapshotPlan {
+  readonly snapshot: string | undefined;
+  readonly take: boolean;
+}
+
+/**
+ * The plan for each of `bases` (one per scoring, in order), given the
+ * snapshots already taken: a base with one boots from it; otherwise its
+ * first scoring warms one and the rest boot cold, as later scorings of the
+ * base will boot from what that one took.
+ */
+export const snapshotPlans = (bases: ReadonlyArray<string>, known: ReadonlyMap<string, string>): ReadonlyArray<SnapshotPlan> => {
+  const warming = new Set<string>();
+
+  return bases.map((base) => {
+    const snapshot = known.get(base);
+
+    if (snapshot !== undefined) {
+      return { snapshot, take: false };
+    }
+
+    const take = !warming.has(base);
+
+    warming.add(base);
+
+    return { snapshot: undefined, take };
+  });
+};
 
 /** What the container is told: no credentials, which the sandbox's egress adds. */
 export const AttemptRef = Schema.Struct({

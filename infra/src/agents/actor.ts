@@ -105,6 +105,8 @@ export const Assignment = Schema.Struct({
   token: Schema.String,
   base_commit: Schema.String,
   history: Schema.Array(CompostEntry),
+  /** A warmed container snapshot of the base, when the tree has one: the workspace boots from it. */
+  snapshot: Schema.optional(Schema.String),
 });
 
 export interface Assignment extends Schema.Schema.Type<typeof Assignment> {}
@@ -122,8 +124,8 @@ type Gate = "plan" | "submit";
 
 interface Bindings {
   readonly AI: Ai;
-  /** `Sandbox` in the sandbox Worker: one container per agent. */
-  readonly SANDBOX: DurableObjectNamespace;
+  /** `Worktree` in the sandbox Worker: one container per agent. */
+  readonly WORKSPACES: DurableObjectNamespace;
 }
 
 /** How the agent's run ended, once it has: the tree reads it from `/status`. */
@@ -263,8 +265,8 @@ const changeRules = (plan: string): string =>
 export class AgentActor extends DurableObject<Bindings> {
   readonly #ai = createAI({ binding: this.env.AI });
 
-  /** The attempt's container: one `Sandbox` instance per agent. */
-  readonly #sandbox: SandboxStub = this.env.SANDBOX.get(this.env.SANDBOX.idFromName(`agent:${this.ctx.id.name ?? this.ctx.id.toString()}`));
+  /** The attempt's container: one `Worktree` per agent. */
+  readonly #sandbox: SandboxStub = this.env.WORKSPACES.get(this.env.WORKSPACES.idFromName(`agent:${this.ctx.id.name ?? this.ctx.id.toString()}`));
 
   readonly #workspace = new ContainerEnv(this.#sandbox, `agent:${this.ctx.id.toString()}`, ATTEMPT_DIR);
 
@@ -407,6 +409,7 @@ export class AgentActor extends DurableObject<Bindings> {
               token: assignment.token,
               checkout: ATTEMPT_DIR,
               author: assignment.agent,
+              snapshot: assignment.snapshot,
             }),
           }),
         ),

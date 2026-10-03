@@ -23,15 +23,13 @@
  * at a node, and a rollback is the pointer moving back. A **graft** is an
  * outside commit (a mirror's `main`) made the head.
  *
- * The tree is a value: the shape `TreeObject` stores, decoded by `Tree`, the
- * same JSON every tree saved so far (legacy.ts reads the older names). Every
- * operation is a pure function that answers the changed tree, or a
+ * The tree is a value: the shape `TreeObject` stores, decoded by `Tree`.
+ * Every operation is a pure function that answers the changed tree, or a
  * `TreeError`.
  */
 import * as Data from "effect/Data";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import { renameLegacy } from "./legacy.ts";
 import { CheckSpec, type ChecksError, validateChecks } from "./scoring.ts";
 import { AttemptId, Id, NodeId, Oid, RepoName, Score, TaskId, TreeError, type TreeErrorKind, U32_MAX } from "./values.ts";
 
@@ -143,8 +141,8 @@ export const Tree = Schema.Struct({
 
 export type Tree = typeof Tree.Type;
 
-/** A stored tree, in either vocabulary; old names are read and never written. */
-export const decodeTree = (stored: Schema.Json) => Schema.decodeUnknownResult(Tree)(renameLegacy(stored));
+/** A stored tree. */
+export const decodeTree = (stored: Schema.Json) => Schema.decodeUnknownResult(Tree)(stored);
 
 /** What an acceptance changed. */
 export interface Acceptance {

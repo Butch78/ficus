@@ -11,6 +11,7 @@
  */
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { SnapshotNews } from "./scoring.ts";
 
 export const CONTENT_TYPE = "application/x-ndjson";
 
@@ -57,7 +58,10 @@ export const stepLine = (step: string, state: StepState, item?: string, detail?:
   // JSON leaves out an absent item or detail.
   `${JSON.stringify({ kind: "step", step, state, item, detail })}\n`;
 
-export const outcomeLine = (status: number, body: Schema.Json) => `${JSON.stringify({ kind: "outcome", status, body })}\n`;
+/** The last line: the answer the plain call gives, and what a scoring did to its base's snapshot. */
+export const outcomeLine = <Body>(status: number, body: Body, snapshot?: SnapshotNews) =>
+  // JSON leaves out absent news.
+  `${JSON.stringify({ kind: "outcome", status, body, snapshot })}\n`;
 
 /** A line as read back from a stream, whoever wrote it. */
 export const Incoming = Schema.Union([
@@ -68,7 +72,7 @@ export const Incoming = Schema.Union([
     item: Schema.optionalKey(Schema.String),
     detail: Schema.optionalKey(Schema.String),
   }),
-  Schema.Struct({ kind: Schema.Literal("outcome"), status: Schema.Int, body: Schema.Json }),
+  Schema.Struct({ kind: Schema.Literal("outcome"), status: Schema.Int, body: Schema.Json, snapshot: Schema.optionalKey(SnapshotNews) }),
 ]);
 
 export type Incoming = typeof Incoming.Type;

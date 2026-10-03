@@ -28,9 +28,7 @@
     "@alchemy.run/better-auth": "2.0.0-beta.80",
     "@alchemy.run/frontend-frameworks": "2.0.0-beta.80",
     "@better-auth/api-key": "1.7.7",
-    "@cloudflare/containers": "0.3.7",
     "@cloudflare/kumo": "2.14.0",
-    "@cloudflare/sandbox": "1.0.0",
     "@earendil-works/chord": "1.0.0",
     "@earendil-works/pi-ai": "1.0.0",
     "@earendil-works/pi-durable": "1.0.0",
@@ -56,7 +54,7 @@
     "vite": "8.3.2"
   },
   "devDependencies": {
-    "@effect/tsgo": "0.47.2",
+    "@effect/tsgo": "0.48.0",
     "@oxlint/plugins": "1.86.0",
     "@types/bun": "1.4.2",
     "@types/react": "19.3.0",

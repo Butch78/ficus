@@ -246,7 +246,8 @@ export const ExecRequest = Schema.Struct({
 
 export type ExecRequest = typeof ExecRequest.Type;
 
-const EXEC_TIMEOUT_MS = 600_000;
+/** A command's limit when pi sets none (its bash tool does not): past a cold devenv build. */
+const EXEC_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
  * Run `command` under bash, both streams interleaved in one pipe, in its own

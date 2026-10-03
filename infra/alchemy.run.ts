@@ -7,13 +7,15 @@
 //                                  internal only, no public URL: reached
 //                                  through Api's service binding, which
 //                                  vouches for the tenant
-//   Sandbox  src/sandbox/worker.ts untrusted work in containers with the
-//                                  internet off; Egress decides, per phase,
-//                                  which hosts they reach (and adds the
-//                                  credentials they never see); asks Clef
-//                                  the root's judges once a container is gone
+//   Sandbox  src/sandbox/worker.ts Effect-native: untrusted work in
+//                                  containers with the internet off (Scorer
+//                                  scores and rebases attempts, Worktree is
+//                                  an agent's); Egress decides which hosts
+//                                  they reach and adds the credentials they
+//                                  never see; a base's warmed snapshot boots
+//                                  them fast; asks Clef the root's judges
 //   Agents   src/agents/worker.ts  one AgentActor per attempt an agent works:
-//                                  pi on Workers AI, working in a sandbox,
+//                                  pi on Workers AI, working in its Worktree,
 //                                  Clef at its handovers; the tree
 //                                  dispatches and polls them
 //
@@ -25,9 +27,9 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
 import * as Drizzle from "alchemy/Drizzle";
-import * as Output from "alchemy/Output";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import SandboxWorker from "./src/sandbox/worker.ts";
 import { COMPATIBILITY, OBSERVABILITY } from "./src/platform.ts";
 
 export default Alchemy.Stack(
@@ -39,53 +41,14 @@ export default Alchemy.Stack(
   Effect.gen(function* () {
     const { stage } = yield* Alchemy.Stack;
 
-    // The scorer: ficus-scorer (src/scorer, bundled, run by bun) in an image
-    // with nix + devenv. The bundle's hash rides into the container's env so
-    // a new scorer redeploys the container. That edge does not order the image build
-    // after this one (the image builds in an earlier phase), so run
-    // scripts/build-scorer before deploying, as deploy.yml does; this build
-    // then finds it up to date.
-    const scorerBinary = yield* Command.Build("ScorerBinary", {
-      cwd: "..",
-      command: "scripts/build-scorer",
-      outdir: "infra/src/sandbox/context",
-      memo: {
-        include: ["infra/src/scorer/**", "infra/src/core/**", "infra/package.json", "infra/bun.lock", "scripts/build-scorer"],
-        lockfile: false,
-      },
-    });
-
-    const sandboxContainer = Cloudflare.Container("SandboxContainer", {
-      name: `ficus-sandbox-${stage}`,
-      // The Durable Object class in src/sandbox/sandbox.ts that drives it.
-      className: "Sandbox",
-      context: `${import.meta.dirname}/src/sandbox/context`,
-      instances: 0,
-      maxInstances: 20,
-      // A root's devenv shell plus its checks. Ficus's own, when it was
-      // Rust, filled standard-1's disk; standard-4 stays until a TS-only
-      // root is seen to fit a smaller one. Billed while a sandbox runs:
-      // scoring, and agents' workspaces until idle.
-      instanceType: "standard-4",
-      observability: { logs: { enabled: true } },
-      env: {
-        FICUS_SCORER_HASH: Output.map(scorerBinary.hash.output, (hash) => hash ?? "unhashed"),
-      },
-    });
-
-    const sandbox = yield* Cloudflare.Worker("Sandbox", {
-      name: `ficus-sandbox-${stage}`,
-      main: "./src/sandbox/worker.ts",
-      compatibility: COMPATIBILITY,
-      observability: OBSERVABILITY,
-      workersDev: false,
-      // Workers AI, for Clef: the root's judges are asked from here.
-      env: { SANDBOX: sandboxContainer, AI: Cloudflare.Workers.AI() },
-    });
+    // Effect-native: the Scorer and Worktree Durable Objects, their
+    // container applications, and ficus-scorer's bundle (src/sandbox).
+    const sandbox = yield* SandboxWorker;
 
     // Agents: one AgentActor per attempt an agent works, a pi agent on Workers
-    // AI (Clef judges its plan and diff) working in its own sandbox. Internal:
-    // only the tree reaches it.
+    // AI (Clef judges its plan and diff) working in its own Worktree. Async,
+    // not Effect-native: AgentActor is a plain Durable Object class (pi's
+    // PiHarness installs itself on `this`). Internal: only the tree reaches it.
     const agents = yield* Cloudflare.Worker("Agents", {
       name: `ficus-agents-${stage}`,
       main: "./src/agents/worker.ts",
@@ -96,8 +59,11 @@ export default Alchemy.Stack(
         AI: Cloudflare.Workers.AI(),
         // `AgentActor` is the Durable Object class src/agents/worker.ts exports.
         AGENTS: Cloudflare.DurableObject("AGENTS", { className: "AgentActor" }),
-        // An agent's workspace is a sandbox: the scorer's image, its egress.
-        SANDBOX: Cloudflare.DurableObject("SANDBOX", { className: "Sandbox", scriptName: `ficus-sandbox-${stage}` }),
+        // An agent's container: the `Worktree` class in the sandbox Worker.
+        // By literal name: `alchemy dev` cannot coerce a deploy-time Output
+        // into a class's scriptName. The env value below keeps the edge that
+        // deploys the sandbox Worker (and its class) before this one.
+        WORKSPACES: Cloudflare.DurableObject("WORKSPACES", { className: "Worktree", scriptName: `ficus-sandbox-${stage}` }),
         FICUS_SANDBOX_SCRIPT: sandbox.workerName,
       },
     });
@@ -115,17 +81,13 @@ export default Alchemy.Stack(
       workersDev: false,
       env: {
         ARTIFACTS: artifacts,
-        // `TreeObject` is the Durable Object class src/tree/worker.ts exports;
-        // the same name since the first deploy, so trees and their storage carry over.
+        // `TreeObject` is the Durable Object class src/tree/worker.ts exports.
         TREES: Cloudflare.DurableObject("TREES", { className: "TreeObject" }),
-        // Sandboxes that score attempts: the `Sandbox` class in the sandbox Worker.
-        // By literal name: `alchemy dev` cannot coerce a deploy-time Output
-        // into a class's scriptName. The env value below keeps the edge that
-        // deploys the sandbox Worker (and its class) before this one.
-        SANDBOX: Cloudflare.DurableObject("SANDBOX", { className: "Sandbox", scriptName: `ficus-sandbox-${stage}` }),
+        // Containers that score and rebase attempts: the `Scorer` class in the
+        // sandbox Worker, by literal name like WORKSPACES, with the same edge.
+        SANDBOX: Cloudflare.DurableObject("SANDBOX", { className: "Scorer", scriptName: `ficus-sandbox-${stage}` }),
         FICUS_SANDBOX_SCRIPT: sandbox.workerName,
-        // The agents that work attempts: `AgentActor` in the agents Worker, by
-        // literal name like SANDBOX, with the same deploy-order edge.
+        // The agents that work attempts: `AgentActor` in the agents Worker.
         AGENTS: Cloudflare.DurableObject("AGENTS", { className: "AgentActor", scriptName: `ficus-agents-${stage}` }),
         FICUS_AGENTS_SCRIPT: agents.workerName,
       },

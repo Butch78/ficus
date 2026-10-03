@@ -17,7 +17,19 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { change, parsePath, parseRef, Subject, view } from "../core/browse.ts";
 import { applyStep, closeLedger, CONTENT_TYPE as PROGRESS, emptyLedger, type InitStep, Ledger, outcomeBody, outcomeLine, parseLine, stepLine, type StepState, textOf } from "../core/progress.ts";
-import { CheckSpec, RebaseReport, type RebaseRequest, ScoreReport, scoreOf, type ScoreRequest } from "../core/scoring.ts";
+import {
+  CheckSpec,
+  RebaseReport,
+  type RebaseRequest,
+  ScoreReport,
+  scoreOf,
+  type ScoreRequest,
+  type SnapshotNews,
+  snapshotPlans,
+  type SnapshotPlan,
+  SNAPSHOT_STALE_HEADER,
+  SNAPSHOT_TAKEN_HEADER,
+} from "../core/scoring.ts";
 import * as T from "../core/tree.ts";
 import { AttemptId, NodeId, Oid, RepoName, TaskId, type TreeError } from "../core/values.ts";
 import * as Agents from "./agents.ts";
@@ -80,9 +92,14 @@ export const Started = Schema.Struct({
   token: Schema.String,
   base_commit: Schema.String,
   history: Schema.Array(T.HistoryEntry),
+  /** A warmed container snapshot of the base, when the tree has one: the agent's workspace boots from it. */
+  snapshot: Schema.optional(Schema.String),
 });
 
 export type Started = typeof Started.Type;
+
+/** Where the warmed container snapshot of a base commit is kept. */
+const snapshotKey = (base: string) => `snapshot:${base}`;
 
 /** How a sandbox answered. */
 type SandboxOutcome<Report> =
@@ -91,6 +108,37 @@ type SandboxOutcome<Report> =
   | { readonly kind: "unscorable"; readonly reason: string }
   /** The sandbox, or the way to it, failed: worth another attempt. */
   | { readonly kind: "failed"; readonly reason: string };
+
+/** What a sandbox answered, as an outcome: its report, or why there is none. */
+const classified = <A>(
+  action: string,
+  report: Schema.Decoder<A>,
+  answered: Result.Result<{ readonly status: number; readonly body: Schema.Json } | undefined, string>,
+): SandboxOutcome<A> => {
+  if (Result.isFailure(answered)) {
+    return { kind: "failed", reason: answered.failure };
+  }
+
+  const outcome = answered.success;
+
+  if (outcome === undefined) {
+    return { kind: "failed", reason: "the sandbox's stream ended without an outcome" };
+  }
+
+  if (outcome.status === 422) {
+    return { kind: "unscorable", reason: textOf(outcome.body) };
+  }
+
+  if (outcome.status !== 200) {
+    return { kind: "failed", reason: `sandbox answered ${outcome.status}: ${textOf(outcome.body)}` };
+  }
+
+  const decoded = Schema.decodeUnknownResult(report)(outcome.body);
+
+  return Result.isSuccess(decoded)
+    ? { kind: "report", report: decoded.success }
+    : { kind: "failed", reason: `sandbox answered ${action} with an unreadable report: ${decoded.failure.message}` };
+};
 
 /** Where an init's steps go: the caller's stream, or nowhere. */
 interface Progress {
@@ -608,7 +656,13 @@ export class TreeObject extends DurableObject<Bindings> {
       token: forked.success.token,
       base_commit: base.commit,
       history: T.historyOf(tree, entry.task),
+      snapshot: yield* this.#snapshotOf(base.commit),
     });
+  });
+
+  /** The warmed container snapshot of `base`, if one was taken. */
+  readonly #snapshotOf = Effect.fn("Tree.snapshotOf")(function* (this: TreeObject, base: string) {
+    return yield* Effect.promise(() => this.ctx.storage.get<string>(snapshotKey(base)));
   });
 
   /**
@@ -807,6 +861,8 @@ export class TreeObject extends DurableObject<Bindings> {
     const storage = this.ctx.storage;
     let steps = emptyLedger;
 
+    let news: SnapshotNews = {};
+
     const answered = yield* Effect.tryPromise({
       try: async () => {
         if (key !== undefined) {
@@ -823,6 +879,10 @@ export class TreeObject extends DurableObject<Bindings> {
         const response = await stub.fetch(new Request(`http://sandbox/${action}`, { method: "POST", headers, body: JSON.stringify(request) }));
 
         if (key === undefined || response.status !== 200 || response.body === null) {
+          const taken = response.headers.get(SNAPSHOT_TAKEN_HEADER);
+
+          news = taken === null ? (response.headers.has(SNAPSHOT_STALE_HEADER) ? { stale: true } : {}) : { taken };
+
           return { status: response.status, body: outcomeBody(await response.text()) };
         }
 
@@ -844,6 +904,7 @@ export class TreeObject extends DurableObject<Bindings> {
 
             if (Option.isSome(line) && line.value.kind === "outcome") {
               outcome = { status: line.value.status, body: line.value.body };
+              news = line.value.snapshot ?? {};
             }
           }
         }
@@ -858,44 +919,33 @@ export class TreeObject extends DurableObject<Bindings> {
       yield* Effect.promise(() => storage.put(key, closeLedger(steps, "error", Date.now())));
     }
 
-    if (Result.isFailure(answered)) {
-      return { kind: "failed", reason: answered.failure } satisfies SandboxOutcome<A>;
-    }
-
-    const outcome = answered.success;
-
-    if (outcome === undefined) {
-      return { kind: "failed", reason: "the sandbox's stream ended without an outcome" } satisfies SandboxOutcome<A>;
-    }
-
-    if (outcome.status === 422) {
-      return { kind: "unscorable", reason: textOf(outcome.body) } satisfies SandboxOutcome<A>;
-    }
-
-    if (outcome.status !== 200) {
-      return { kind: "failed", reason: `sandbox answered ${outcome.status}: ${textOf(outcome.body)}` } satisfies SandboxOutcome<A>;
-    }
-
-    const decoded = Schema.decodeUnknownResult(report)(outcome.body);
-
-    return Result.isSuccess(decoded)
-      ? ({ kind: "report", report: decoded.success } satisfies SandboxOutcome<A>)
-      : ({ kind: "failed", reason: `sandbox answered ${action} with an unreadable report: ${decoded.failure.message}` } satisfies SandboxOutcome<A>);
+    return { outcome: classified(action, report, answered), news };
   });
 
   /** Mint a short-lived read token, ask a sandbox to score, revoke the token. */
-  readonly #scoreOne = Effect.fn("Tree.scoreOne")(function* (this: TreeObject, job: T.ScoringJob) {
+  readonly #scoreOne = Effect.fn("Tree.scoreOne")(function* (this: TreeObject, job: T.ScoringJob, plan: SnapshotPlan) {
     const prepared = yield* Artifacts.repo(this.#artifacts(), job.repo).pipe(
       Effect.flatMap((on) => Effect.all({ on: Effect.succeed(on), info: Artifacts.info(on), token: Artifacts.createToken(on, "read", SANDBOX_TOKEN_TTL_SECS) })),
       Effect.result,
     );
 
     if (Result.isFailure(prepared)) {
-      return { kind: "failed", reason: `Artifacts ${prepared.failure.code}: ${prepared.failure.message}` } satisfies SandboxOutcome<ScoreReport>;
+      const outcome: SandboxOutcome<ScoreReport> = { kind: "failed", reason: `Artifacts ${prepared.failure.code}: ${prepared.failure.message}` };
+
+      return { outcome, news: {} satisfies SnapshotNews };
     }
 
     const { on, info, token } = prepared.success;
-    const request: ScoreRequest = { remote: info.remote, token: token.plaintext, base: job.base, head: job.head, intent: job.intent, checks: job.checks };
+    const request: ScoreRequest = {
+      remote: info.remote,
+      token: token.plaintext,
+      base: job.base,
+      head: job.head,
+      intent: job.intent,
+      checks: job.checks,
+      snapshot: plan.snapshot,
+      take_snapshot: plan.take,
+    };
     const scored = yield* this.#askSandbox(job.repo, "score", request, ScoreReport, job.attempt);
 
     yield* Artifacts.revokeToken(on, token.id).pipe(Effect.catchTag("Artifacts.Error", (error) => Effect.logError(`revoking the scorer's token on ${job.repo}: ${error.message}`)));
@@ -917,7 +967,39 @@ export class TreeObject extends DurableObject<Bindings> {
       return;
     }
 
-    const outcomes = yield* Effect.forEach(jobs, (job) => this.#scoreOne(job), { concurrency: "unbounded" });
+    // One cold scoring per base warms a snapshot; the rest of that base's
+    // scorings, now and later, boot from it once it exists.
+    const bases = [...new Set(jobs.map((job) => job.base))];
+    const known = new Map<string, string>();
+
+    for (const base of bases) {
+      const snapshot = yield* this.#snapshotOf(base);
+
+      if (snapshot !== undefined) {
+        known.set(base, snapshot);
+      }
+    }
+
+    const plans = snapshotPlans(
+      jobs.map((job) => job.base),
+      known,
+    );
+
+    const answers = yield* Effect.forEach(jobs, (job, at) => this.#scoreOne(job, plans[at] ?? { snapshot: undefined, take: false }), { concurrency: "unbounded" });
+
+    for (const [at, job] of jobs.entries()) {
+      const news = answers[at]?.news;
+
+      if (news?.taken !== undefined) {
+        const taken = news.taken;
+
+        yield* Effect.promise(() => this.ctx.storage.put(snapshotKey(job.base), taken));
+      } else if (news?.stale === true) {
+        yield* Effect.promise(() => this.ctx.storage.delete(snapshotKey(job.base)));
+      }
+    }
+
+    const outcomes = answers.map((answer) => answer.outcome);
 
     // Scoring awaited; other requests may have changed the tree since.
     let latest = yield* this.#load();
@@ -994,7 +1076,7 @@ export class TreeObject extends DurableObject<Bindings> {
       onto_branch: onto.defaultBranch,
     };
 
-    const outcome = yield* this.#askSandbox(fresh.repo, "rebase", request, RebaseReport, undefined);
+    const { outcome } = yield* this.#askSandbox(fresh.repo, "rebase", request, RebaseReport, undefined);
 
     yield* Artifacts.revokeToken(from, fromToken.id).pipe(Effect.catchTag("Artifacts.Error", (error) => Effect.logError(`revoking the rebase's token on ${job.fromRepo}: ${error.message}`)));
 

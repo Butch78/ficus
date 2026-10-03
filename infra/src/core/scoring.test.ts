@@ -10,6 +10,7 @@ import {
   DEFAULT_CHECK_TIMEOUT_SECS,
   DEFAULT_PASS_AT,
   JUDGE_DIFF_CHARS,
+  snapshotPlans,
   MAX_FETCH_HOSTS,
   passAt,
   scoreOf,
@@ -160,5 +161,19 @@ describe("a report", () => {
     expect(marker).toBe(`[diff truncated: ${Array.from(diff).length} characters in all]`);
     expect(Array.from(body).length).toBeLessThanOrEqual(JUDGE_DIFF_CHARS);
     expect(body.split("\n").every((each) => each === line.trimEnd())).toBe(true);
+  });
+});
+
+describe("snapshotPlans", () => {
+  test("a base with a snapshot boots from it; a base without one warms it once", () => {
+    const plans = snapshotPlans(["a", "b", "a", "b", "c"], new Map([["a", "snap-a"]]));
+
+    expect(plans).toEqual([
+      { snapshot: "snap-a", take: false },
+      { snapshot: undefined, take: true },
+      { snapshot: "snap-a", take: false },
+      { snapshot: undefined, take: false },
+      { snapshot: undefined, take: true },
+    ]);
   });
 });

@@ -40,8 +40,8 @@ export const Score = Schema.Struct({
   checks_passed: Id,
   checks_total: Id,
   cost: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  /** `null` when the root has no judges; absent from trees stored before judges existed. */
-  confidence: Schema.optionalKey(Schema.NullOr(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1000 })))),
+  /** `null` when the root has no judges. */
+  confidence: Schema.NullOr(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1000 }))),
 });
 
 export type Score = typeof Score.Type;

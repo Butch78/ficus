@@ -1,20 +1,20 @@
 /**
- * `Egress`: the only way out of a sandbox container.
+ * Egress: the only way out of a sandbox or workspace container.
  *
- * The container runs with the internet off. The sandbox Durable Object
- * routes each host it permits through this entrypoint, with props that say
- * what that host may be used for. HTTPS arrives decrypted: Cloudflare's
- * sidecar terminates it with an ephemeral CA the container trusts.
+ * The container runs with the internet off. Its Durable Object routes each
+ * host it permits through this Worker's own default export, called with
+ * props that say what the host may be used for (worker.ts). HTTPS arrives
+ * decrypted: Cloudflare's sidecar terminates it with an ephemeral CA the
+ * container trusts.
  *
- * - `pass`:      forward unchanged (nix and devenv caches while preparing)
+ * - `pass`:      forward unchanged (nix and devenv caches)
  * - `deny`:      refuse (a host revoked for the check phase)
  * - `artifacts`: forward only requests for the listed repos, adding each
  *                repo's own token. The container never holds a token, so it
- *                cannot reach any other repo or keep access after the
- *                sandbox revokes it. Scoring lists one repo; a rebase
+ *                cannot reach any other repo or keep access after the route
+ *                is revoked. Scoring and a workspace list one repo; a rebase
  *                lists two: the behind attempt to read and the fresh one to push.
  */
-import { WorkerEntrypoint } from "cloudflare:workers";
 import * as Schema from "effect/Schema";
 import { isRepoRequest } from "./repo.ts";
 
@@ -30,38 +30,36 @@ export const EgressProps = Schema.Union([
 
 export type EgressProps = Schema.Schema.Type<typeof EgressProps>;
 
-const refuse = (why: string) => new Response(`ficus sandbox egress: ${why}\n`, { status: 403 });
+export const refuse = (why: string) => new Response(`ficus sandbox egress: ${why}\n`, { status: 403 });
 
-export class Egress extends WorkerEntrypoint<object, EgressProps> {
-  override fetch(request: Request): Promise<Response> {
-    const props = this.ctx.props;
+/** Forward, refuse, or authorize `request` as `props` says. */
+export const egress = (props: EgressProps, request: Request): Promise<Response> => {
+  const url = new URL(request.url);
 
-    // One line per decision, for Workers Observability (never the token).
-    console.log(`egress ${props.mode} ${request.method} ${new URL(request.url).host}${new URL(request.url).pathname}`);
+  // One line per decision, for Workers Observability (never the token).
+  console.log(`egress ${props.mode} ${request.method} ${url.host}${url.pathname}`);
 
-    switch (props.mode) {
-      case "pass": {
-        return fetch(request);
+  switch (props.mode) {
+    case "pass": {
+      return fetch(request);
+    }
+
+    case "deny": {
+      return Promise.resolve(refuse(`${url.host} is closed in this phase`));
+    }
+
+    case "artifacts": {
+      const grant = props.repos.find((repo) => isRepoRequest(url.pathname, repo.repoPath));
+
+      if (grant === undefined) {
+        return Promise.resolve(refuse(`${url.pathname} is not one of this sandbox's repos`));
       }
 
-      case "deny": {
-        return Promise.resolve(refuse(`${new URL(request.url).host} is closed in this phase`));
-      }
+      const authorized = new Request(request);
 
-      case "artifacts": {
-        const { pathname } = new URL(request.url);
-        const grant = props.repos.find((repo) => isRepoRequest(pathname, repo.repoPath));
+      authorized.headers.set("authorization", `Bearer ${grant.token}`);
 
-        if (grant === undefined) {
-          return Promise.resolve(refuse(`${pathname} is not one of this sandbox's repos`));
-        }
-
-        const authorized = new Request(request);
-
-        authorized.headers.set("authorization", `Bearer ${grant.token}`);
-
-        return fetch(authorized);
-      }
+      return fetch(authorized);
     }
   }
-}
+};

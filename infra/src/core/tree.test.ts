@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import legacyTree from "./fixtures/tree-botany.json";
 import type { CheckSpec } from "./scoring.ts";
 import * as T from "./tree.ts";
 import { AttemptId, makeScore, NodeId, Oid, RepoName, type Score, TaskId } from "./values.ts";
@@ -177,10 +176,7 @@ describe("the tree", () => {
     expect(g.accept(next).accepted).toBe(nextSurer);
   });
 
-  test("a score stored before judges reads back unjudged", () => {
-    const stored = Schema.decodeUnknownSync(T.Score)({ checks_passed: 3, checks_total: 3, cost: 7 });
-
-    expect(stored.confidence ?? null).toBeNull();
+  test("judges' confidence is kept in thousandths, at most 1000", () => {
     expect(T.judged(passing(7), 2000).confidence).toBe(1000);
   });
 
@@ -562,36 +558,5 @@ describe("the tree", () => {
     expect(back.release).toEqual({ node: NodeId.make(0), previous: acceptance.node, rollback: true });
     expect(refusal(T.release(g.get(), NodeId.make(99)))).toBe("UnknownNode");
     expect(ok(T.decodeTree(JSON.parse(JSON.stringify(back.tree))))).toEqual(back.tree);
-  });
-
-  /** A tree saved by the version that spoke of buds, leaves, harvests and compost loads unchanged. */
-  test("a tree saved in the old vocabulary still loads", () => {
-    const tree = ok(T.decodeTree(legacyTree));
-    const id = (raw: number) => AttemptId.make(raw);
-
-    expect(T.head(tree).id).toBe(NodeId.make(9));
-    expect(T.released(tree)?.id).toBe(NodeId.make(9));
-    expect(T.head(tree).accepted_from).toBe(id(4));
-    expect(T.openTasks(tree)).toHaveLength(2);
-    expect(T.task(tree, TaskId.make(1))?.state).toEqual({ Done: { attempt: id(4), node: NodeId.make(9) } });
-    expect(T.task(tree, TaskId.make(1))?.checks?.[0]?.name).toBe("done");
-    expect(T.task(tree, TaskId.make(3))?.retries).toBe(1);
-    expect(tree.history.map((entry) => [entry.attempt, entry.reason])).toEqual([
-      [id(5), { Lost: { to: id(4) } }],
-      [id(6), { Rebased: { into: id(10) } }],
-      [id(11), { Abandoned: { note: "conflict in lib.rs" } }],
-      [id(7), { Retried: { into: id(12) } }],
-      [id(12), { Abandoned: { note: "gave up" } }],
-    ]);
-    expect(T.attempt(tree, id(10))?.state).toEqual({ Checking: { commit: oid("5") } });
-    expect(T.attempt(tree, id(8))?.state).toBe("Working");
-    expect(T.attempt(tree, id(7))?.rebase).toBe(id(11));
-
-    // Saving writes the new names only.
-    const saved = JSON.stringify(tree);
-
-    for (const old of ["buds", "leaves", "compost", "fruit_of", "regrowths", "transplant", "Fruited", "Pruned", "Growing", "Outgrown"]) {
-      expect(saved).not.toContain(`"${old}"`);
-    }
   });
 });
