@@ -200,6 +200,19 @@ step "release the head; a deployment follows the pointer"
 call POST /release '{}' | jq -c .
 call GET /release | jq -c '{released: .released.id, commit: .released.commit[0:8], head: .head.id}'
 
+step "the release deploys the node, on a stage that deploys"
+if [ "$(call GET /deploys | jq -r .enabled)" = true ]; then
+  for _ in $(seq 1 90); do
+    deploy=$(call GET /deploys | jq -c '.deploys[0]')
+    case "$(jq -r .status <<<"$deploy")" in complete|errored|terminated) break ;; esac
+    sleep 10
+  done
+  jq -c '{id, node, status, deployed: .report.deployed, passed: .report.passed, tail: .report.tail, error}' <<<"$deploy"
+  [ "$(jq -r .report.passed <<<"$deploy")" = true ] || { echo "FAIL: the deploy did not pass" >&2; exit 1; }
+else
+  echo "this stage does not deploy (no FICUS_DEPLOY_TOKEN)"
+fi
+
 step "final tree"
 call GET "" | jq -c '{name, head, released, nodes: [.nodes[] | {id, parent, commit: .commit[0:8], accepted_from, touched}], history: [.history[] | {attempt, agent, reason}]}'
 echo "tree=$T"

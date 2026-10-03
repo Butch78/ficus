@@ -20,3 +20,23 @@ name = "does_the_task"
 ask = "Does `diff` do everything `task` asks, without changing anything the task does not need?"
 yes = "The whole task is done, and nothing else is changed."
 no = "Part of the task is missing, or the diff changes unrelated code."
+
+# How a released node deploys: run in a sandbox when the tree's release
+# pointer moves, on a stage that deploys. The demo has nothing to deploy, so
+# it only shows the sandbox reaching the account: CLOUDFLARE_API_TOKEN here is
+# a placeholder, and the sandbox's egress puts the real token on the request.
+# A real root runs `wrangler deploy` or `alchemy deploy` here.
+[deploy]
+run = """
+python - <<'PY'
+import json, os, urllib.request
+account = os.environ["CLOUDFLARE_ACCOUNT_ID"]
+request = urllib.request.Request(
+    f"https://api.cloudflare.com/client/v4/accounts/{account}/workers/scripts",
+    headers={"Authorization": f"Bearer {os.environ['CLOUDFLARE_API_TOKEN']}"},
+)
+scripts = json.load(urllib.request.urlopen(request))["result"]
+print(f"deployed nothing; the account has {len(scripts)} Workers")
+PY
+"""
+timeout_secs = 300
