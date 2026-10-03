@@ -19,7 +19,8 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   owner decides). Attempts and nodes record `touched` paths, so `behind` can say what overlaps.
   Tasks carry their own `checks` (run after the root's, never in the repo). `accept_next` takes the
   oldest ready task. `release` is a pointer at a node (older node = rollback). Keep matches exhaustive.
-- `infra/`: alchemy 2.0.0-beta.80 + Effect 4.0.0 + bun 1.4.2 (nix pin). `just infra-check`
+- `infra/`: alchemy from the alchemy-run/alchemy#1904 preview (`pkg.alchemy.run/alchemy/pr:1904:<sha>`, for
+  Durable Object-managed containers; back to a release once it lands) + Effect 4.0.0 + bun 1.4.2 (nix pin). `just infra-check`
   after TS changes. Unstable Effect modules (effect/http, …) are allowed: deps track the
   latest release, so bump them rather than avoid an API (`effecttsgo/unstable-api-usage` is off).
 - Lint layers: oxlint with @effect/tsgo (type-aware) + vendored anti-slop at
@@ -48,7 +49,8 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   one `Sandbox` per attempt.
   `infra/src/sandbox` is an Effect-native alchemy Worker: `Sandbox` (scoring, rebasing) and `Workspace`
   (an agent's container) are `Cloudflare.DurableObject`s, each with its own `Cloudflare.Container` (same
-  image). They drive the raw `state.container` (exec, `interceptOutboundHttps`, `snapshotContainer`):
+  image, `schedulingPolicy: "durable_object"`: the DO picks `images.default` or a snapshot, and the
+  size, at each `start()`; the only policy with snapshots, and immutable). They drive the raw `state.container` (exec, `interceptOutboundHttps`, `snapshotContainer`):
   alchemy's container handle has none of those and starts eagerly, so `containers.ts` binds through
   alchemy's internal `~alchemy/Container/Binding` key (recheck on alchemy upgrades). NOT the legacy
   @cloudflare/containers class, which ends 2026-12-31. Internet is off; Egress is the Worker's default

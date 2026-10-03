@@ -151,14 +151,32 @@ const ready = (machine: Machine, nonce: string, times: number) =>
     catch: (cause) => failure(503, `the container did not become ready: ${String(cause)}`),
   }).pipe(Effect.retry({ schedule: Schedule.spaced("500 millis"), times }));
 
+/**
+ * The size every container starts at: a root's devenv shell plus its checks
+ * need the disk and memory the `lite` tier does not have.
+ */
+const INSTANCE = "standard-1";
+
+/** Start from `snapshot`, or else from the container's `images.default`. */
 const start = (machine: Machine, nonce: string, snapshot: string | undefined) =>
   Effect.try({
-    try: () =>
-      machine.container.start(
-        snapshot === undefined
-          ? { enableInternet: false, env: { FICUS_BOOT: nonce } }
-          : { enableInternet: false, env: { FICUS_BOOT: nonce }, containerSnapshot: { id: snapshot } },
-      ),
+    try: () => {
+      const env = { FICUS_BOOT: nonce };
+
+      if (snapshot !== undefined) {
+        machine.container.start({ enableInternet: false, env, instance: INSTANCE, containerSnapshot: { id: snapshot } });
+
+        return;
+      }
+
+      const image = machine.container.images["default"];
+
+      if (image === undefined) {
+        throw new Error("the container has no default image: check its context in containers.ts");
+      }
+
+      machine.container.start({ enableInternet: false, env, instance: INSTANCE, image });
+    },
     catch: (cause) => failure(503, `starting the container: ${String(cause)}`),
   });
 

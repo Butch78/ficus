@@ -1,8 +1,15 @@
 /**
  * The two container applications, one per Durable Object class that drives
- * one: `SandboxContainer` scores leaves, `WorkspaceContainer` is an agent's
+ * one: `SandboxContainer` scores attempts, `WorkspaceContainer` is an agent's
  * workspace. Same image (src/sandbox/context: nix, devenv, ficus-scorer);
  * a Cloudflare container application backs exactly one Durable Object class.
+ *
+ * Both are Durable Object-managed (`schedulingPolicy: "durable_object"`):
+ * the application carries no image, size or count, and the Durable Object
+ * picks them at each start (machine.ts), from `images.default` or from a
+ * snapshot. It is the only policy with snapshots, and it starts faster.
+ * alchemy supports it from alchemy-run/alchemy#1904 (pinned as a preview in
+ * package.json until it is released).
  */
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Output from "alchemy/Output";
@@ -13,12 +20,12 @@ const props = Effect.gen(function* () {
   const scorer = yield* ScorerBinary;
 
   return {
+    // Published as the container's `images.default`.
     context: `${import.meta.dirname}/context`,
-    // A root's devenv shell plus its checks: nix needs the disk and memory
-    // the basic tier does not have.
-    instanceType: "standard-1" as const,
-    maxInstances: 20,
+    schedulingPolicy: "durable_object" as const,
     observability: { logs: { enabled: true } },
+    // The application has no environment in this mode; the scorer's hash is
+    // here for the edge that builds the binary before the image copies it.
     env: { FICUS_SCORER_HASH: Output.map(scorer.hash.output, (hash) => hash ?? "unhashed") },
   };
 });
