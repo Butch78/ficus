@@ -7,7 +7,9 @@
  *                  boot (from the base's warmed snapshot when given), open
  *                  the attempt's repo (token added by Egress, never in the
  *                  container) and the nix caches, clone the attempt
- *   POST /exec     { command, cwd?, env?, timeout_ms? }    pi's Result
+ *   POST /exec     { command, cwd?, env?, timeout_ms? }    pi's Result; a
+ *                  command runs with no stdin and stops at its timeout, or
+ *                  at DEFAULT_EXEC_MS
  *   POST /fs/<op>  pi's file operations, through `ficus-scorer fs`
  *
  * The attempt's repo and the caches stay open while the agent works: it pushes
@@ -41,6 +43,13 @@ import { answered, bodyAs } from "./sandbox.ts";
 
 /** Where the attempt is checked out; src/agents/actor.ts `ATTEMPT_DIR`. */
 export const ATTEMPT_DIR = "/work/attempt";
+
+/**
+ * How long a command may run when the agent sets no timeout (pi's bash tool
+ * has none): past the 20 minutes a cold devenv shell may take to build. A
+ * command that never ends would otherwise hold the agent forever.
+ */
+export const DEFAULT_EXEC_MS = 30 * 60 * 1000;
 
 /** How long an idle workspace container lives: an agent can think for a while between tool calls. */
 const IDLE_MS = 60 * 60 * 1000;
@@ -130,7 +139,9 @@ const runCommand = Effect.fn("Workspace.exec")(function* (
 ) {
   const process = yield* Effect.tryPromise({
     try: () =>
-      machine.container.exec(["/bin/sh", "-c", request.command], {
+      // No stdin: an interactive command (`devenv shell` without `--`, a
+      // prompt) gets end-of-file at once instead of waiting for input forever.
+      machine.container.exec(["/bin/sh", "-c", `exec </dev/null\n${request.command}`], {
         cwd: request.cwd ?? ATTEMPT_DIR,
         env: { ...EXEC_ENV, ...request.env },
         stderr: "combined",
@@ -144,23 +155,20 @@ const runCommand = Effect.fn("Workspace.exec")(function* (
   });
 
   // A command past its time is killed; pi reads that as `timeout`.
-  const timed =
-    request.timeout_ms === undefined
-      ? output
-      : output.pipe(
-          Effect.timeoutOption(Duration.millis(request.timeout_ms)),
-          Effect.flatMap(
-            Option.match({
-              onSome: Effect.succeed,
-              onNone: () =>
-                Effect.sync(() => process.kill()).pipe(
-                  Effect.andThen(
-                    Effect.fail(new ExecFailed({ code: "timeout", message: `timed out after ${request.timeout_ms}ms` })),
-                  ),
-                ),
-            }),
+  const limit = request.timeout_ms ?? DEFAULT_EXEC_MS;
+
+  const timed = output.pipe(
+    Effect.timeoutOption(Duration.millis(limit)),
+    Effect.flatMap(
+      Option.match({
+        onSome: Effect.succeed,
+        onNone: () =>
+          Effect.sync(() => process.kill()).pipe(
+            Effect.andThen(Effect.fail(new ExecFailed({ code: "timeout", message: `timed out after ${limit}ms` }))),
           ),
-        );
+      }),
+    ),
+  );
 
   return yield* timed.pipe(
     Effect.flatMap((done) => ok({ exitCode: done.exitCode, output: new TextDecoder().decode(done.stdout) })),

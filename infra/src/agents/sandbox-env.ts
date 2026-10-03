@@ -345,7 +345,8 @@ export class ContainerEnv implements ExecutionEnv {
       cwd: options?.cwd ?? this.cwd,
       env: options?.env,
       inherit_env: options?.inheritEnv,
-      timeout_ms: options?.timeout,
+      // pi's timeout is in seconds (its own Node environment multiplies by 1000).
+      timeout_ms: options?.timeout === undefined ? undefined : options.timeout * 1000,
       spill_after_bytes: options?.spill?.afterBytes,
       spill_after_lines: options?.spill?.afterLines,
     };
