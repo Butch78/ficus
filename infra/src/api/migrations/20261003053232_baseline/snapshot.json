@@ -1,0 +1,55 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "id": "27776400-403e-4d53-8b14-0001d6b467db",
+  "prevIds": [
+    "00000000-0000-0000-0000-000000000000"
+  ],
+  "ddl": [
+    {
+      "name": "ficus_tree",
+      "entityType": "tables"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "organizationId",
+      "entityType": "columns",
+      "table": "ficus_tree"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "name",
+      "entityType": "columns",
+      "table": "ficus_tree"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "createdAt",
+      "entityType": "columns",
+      "table": "ficus_tree"
+    },
+    {
+      "columns": [
+        "organizationId",
+        "name"
+      ],
+      "nameExplicit": false,
+      "name": "ficus_tree_pk",
+      "entityType": "pks",
+      "table": "ficus_tree"
+    }
+  ],
+  "renames": []
+}

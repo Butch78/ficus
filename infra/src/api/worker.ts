@@ -94,7 +94,7 @@ const membership = Effect.fn("Api.membership")(function* (request: Request, slug
 const listTrees = Effect.fn("Api.listTrees")(function* (env: Bindings, request: Request, slug: string) {
   const organization = yield* membership(request, slug);
 
-  const trees = yield* Directory.list(env.AUTH_DB, organization.id).pipe(
+  const trees = yield* Directory.list(organization.id).pipe(
     Effect.mapError((error) => fail(503, error.message)),
   );
 
@@ -138,7 +138,7 @@ const forwardToTree = Effect.fn("Api.forwardToTree")(function* (
   // An init the tree service accepted puts the tree in the directory. The
   // init itself has happened either way, so a failure to record it is
   // logged rather than turned into a failed init.
-  const record = Directory.record(env.AUTH_DB, organization.id, route.tree, Date.now()).pipe(
+  const record = Directory.record(organization.id, route.tree, Date.now()).pipe(
     Effect.as(Progress.stepLine("record", "complete")),
     Effect.catchTag("Directory.Failure", (error) =>
       Effect.logError(error.message).pipe(Effect.as(Progress.stepLine("record", "error"))),
@@ -154,7 +154,14 @@ const forwardToTree = Effect.fn("Api.forwardToTree")(function* (
     const services = yield* Effect.context<never>();
 
     return new Response(
-      Progress.afterSuccess(response.body, () => Effect.runPromiseWith(services)(record)),
+      Progress.afterSuccess(response.body, () =>
+        Effect.runPromiseWith(services)(
+          // An entry point of its own: the request's Effect, and the D1 client
+          // it was given, are done by the time the stream ends.
+          // oxlint-disable-next-line effecttsgo/strict-effect-provide -- runs after the request's Effect: an entry point
+          record.pipe(Effect.provide(Directory.directoryLayer(env.AUTH_DB))),
+        ),
+      ),
       response,
     );
   }
@@ -203,10 +210,14 @@ export default {
           Effect.succeed(Response.json({ error: error.message }, { status: error.status })),
         ),
         // Better Auth builds its URLs from the origin it is served on; the
-        // tracer records this request's Effect spans in its Cloudflare trace.
+        // directory has its D1 client; the tracer records this request's Effect spans in its Cloudflare trace.
         // oxlint-disable-next-line effecttsgo/strict-effect-provide -- the Worker's entry point
         Effect.provide(
-          Layer.merge(authLayer(env.AUTH_DB, env.BETTER_AUTH_SECRET, new URL(request.url).origin), CloudflareTracer.layer),
+          Layer.mergeAll(
+            authLayer(env.AUTH_DB, env.BETTER_AUTH_SECRET, new URL(request.url).origin),
+            Directory.directoryLayer(env.AUTH_DB),
+            CloudflareTracer.layer,
+          ),
         ),
       ),
     ),

@@ -24,6 +24,7 @@
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
+import * as Drizzle from "alchemy/Drizzle";
 import * as Output from "alchemy/Output";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -32,7 +33,7 @@ import { COMPATIBILITY, OBSERVABILITY } from "./src/platform.ts";
 export default Alchemy.Stack(
   "Ficus",
   {
-    providers: Layer.mergeAll(Cloudflare.providers(), Command.providers()),
+    providers: Layer.mergeAll(Cloudflare.providers(), Command.providers(), Drizzle.providers()),
     state: Cloudflare.state(),
   },
   Effect.gen(function* () {
@@ -156,11 +157,20 @@ export default Alchemy.Stack(
       },
     });
 
-    // Accounts. The schema is Better Auth's for src/api/auth.ts's plugins,
-    // compiled by `bun run auth:schema`; applied in order on deploy.
+    // Accounts and the tree directory. Migrations are drizzle-kit's: on each
+    // deploy, Drizzle.Schema writes one for any change to src/api/schema.ts
+    // (Ficus's tables), and the database applies the pending ones in order.
+    // Better Auth's tables come from `bun run auth:schema <name>`, which
+    // writes a custom migration into the same chain.
+    const apiSchema = yield* Drizzle.Schema("ApiSchema", {
+      schema: "./src/api/schema.ts",
+      out: "./src/api/migrations",
+      dialect: "sqlite",
+    });
+
     const authDb = yield* Cloudflare.D1.Database("AuthDb", {
       name: `ficus-auth-${stage}`,
-      migrations: "./src/api/migrations",
+      migrations: apiSchema,
     });
 
     // Signs sessions. Generated once per stage and kept in state.

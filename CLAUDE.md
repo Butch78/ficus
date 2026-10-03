@@ -43,6 +43,13 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   `GET /trees/<t>/{attempts,nodes}/<id>/{log,tree,file}?ref=&path=` (reads through Artifacts; the tree picks
   the repo, `ficus-core::browse`; files leave as text/plain or octet-stream, never HTML).
   The Api lists an org's trees (`GET /v1/orgs/<org>/trees`) from D1 (`ficus_tree`), recorded on each 2xx init.
+- Api D1: Drizzle 1.0 RC (pinned to alchemy's peer, `1.0.0-rc.5-ab785fc`). Ficus's tables are declared in
+  `infra/src/api/schema.ts` and queried through `drizzle-orm/effect-d1` (`@effect/sql-d1`'s `D1Client`, provided
+  per request). Migrations are drizzle-kit folders in `src/api/migrations`: alchemy's `Drizzle.Schema` writes
+  one on deploy for any change to schema.ts. Better Auth's tables are not in schema.ts: `bun run auth:schema
+  <name>` asks Better Auth what the chain lacks and writes a custom migration. The baseline is `IF NOT EXISTS`
+  so stages migrated before Drizzle adopt it (`migrations.test.ts`). Skip `drizzle-orm/effect-schema`: it calls
+  `Schema.isLengthBetween`, which effect 4.0.0 lacks.
   Every attempt/node is its own Artifacts repo (`<t>-a<id>`); git auth is `http.extraHeader="Authorization: Bearer <token>"`.
 - `POST /trees/<t>/init {}` with no `source` creates an empty root and returns a write token; push, init again.
 - Web UI: `infra/src/web`, vinext 1.x (Next.js App Router API on Vite) via `Cloudflare.Website.Vinext`,
