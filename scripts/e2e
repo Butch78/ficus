@@ -26,6 +26,9 @@ JAR="$W/cookies"
 # Better Auth refuses cookie-authenticated POSTs without an Origin (CSRF);
 # a browser always sends one, curl has to be told.
 json=(-H "content-type: application/json" -H "Origin: $API")
+# A connection that stalls fails the run instead of hanging it (no retries: a
+# POST sent twice would start two of something).
+curl() { command curl --connect-timeout 20 --max-time 300 "$@"; }
 
 step() { echo; echo "== $*"; }
 
