@@ -137,6 +137,11 @@ export const status = Effect.fn("Agents.status")(function* (host: Host, attempt:
     return yield* refuse(404, "no agent worked this attempt");
   }
 
+  // Until the alarm hands the assignment over, the agent would truthfully say `unassigned`: it is on its way.
+  if ((yield* tending(host.storage)).some((tended) => tended.attempt === attempt && !tended.dispatched)) {
+    return json({ model: chosen, state: "working", calls: [] });
+  }
+
   const answer = yield* Effect.tryPromise({
     try: async () => (await agent(host, entry.repo).fetch("http://agent/status")).json(),
     catch: (cause) => refuse(502, `the agent did not answer: ${String(cause)}`),
