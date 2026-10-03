@@ -1,0 +1,37 @@
+# Ficus follows GitHub while GitHub is the source of truth (docs/self-hosting.md,
+# step 1): every push to main is grafted into a Ficus tree as its new head, so
+# attempts in Ficus are rebased onto, and scored against, the same main.
+#
+# Off until FICUS_GRAFT_ENABLED is "true". Needs the Api's URL and organization
+# (variables FICUS_API, FICUS_ORG, FICUS_TREE) and an API key for that
+# organization (secret FICUS_API_KEY).
+name: Graft
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  graft:
+    name: Graft main into Ficus
+    if: vars.FICUS_GRAFT_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: graft
+      cancel-in-progress: false
+    steps:
+      - name: Graft
+        env:
+          FICUS_API: ${{ vars.FICUS_API }}
+          FICUS_ORG: ${{ vars.FICUS_ORG }}
+          FICUS_TREE: ${{ vars.FICUS_TREE }}
+          FICUS_API_KEY: ${{ secrets.FICUS_API_KEY }}
+          SOURCE: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          curl --fail-with-body -sS -X POST \
+            -H "x-api-key: $FICUS_API_KEY" -H "content-type: application/json" \
+            "$FICUS_API/v1/orgs/$FICUS_ORG/trees/$FICUS_TREE/graft" \
+            -d "$(jq -n --arg source "$SOURCE" '{source: $source, branch: "main"}')"
