@@ -173,6 +173,7 @@ export const boot = Effect.fn("Machine.boot")(function* (machine: Machine, snaps
 
   if (snapshot !== undefined) {
     const nonce = crypto.randomUUID();
+    const restoring = Date.now();
 
     const restored = yield* start(machine, nonce, snapshot).pipe(
       Effect.andThen(ready(machine, nonce, 60)),
@@ -186,14 +187,18 @@ export const boot = Effect.fn("Machine.boot")(function* (machine: Machine, snaps
     );
 
     if (restored) {
+      yield* Effect.logInfo(`booted from snapshot ${snapshot} in ${Date.now() - restoring}ms`);
+
       return { restored: true, stale: false } satisfies Booted;
     }
   }
 
   const nonce = crypto.randomUUID();
+  const started = Date.now();
 
   yield* start(machine, nonce, undefined);
   yield* ready(machine, nonce, 120);
+  yield* Effect.logInfo(`booted the image in ${Date.now() - started}ms${snapshot === undefined ? "" : " (snapshot stale)"}`);
 
   return { restored: false, stale: snapshot !== undefined } satisfies Booted;
 });
@@ -225,6 +230,7 @@ export const snapshot = Effect.fn("Machine.snapshot")(function* (machine: Machin
     try: (): Promise<cf.ContainerSnapshot> => machine.container.snapshotContainer({ name }),
     catch: (cause) => failure(503, `snapshotting: ${String(cause)}`),
   }).pipe(
+    Effect.tap((taken) => Effect.logInfo(`took snapshot ${taken.id} (${name}, ${taken.size} bytes)`)),
     Effect.map((taken): string | undefined => taken.id),
     Effect.catchTag("Sandbox.Failure", (error) =>
       Effect.logWarning("no snapshot taken", error.message).pipe(Effect.as(undefined)),
