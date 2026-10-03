@@ -1,7 +1,8 @@
 /**
  * pi-durable's `ExecutionEnv` over an agent's container: every file and shell
- * operation is a request to `ficus-scorer`'s sandbox API (`POST /fs/<op>`,
- * `POST /exec`), reached through the `ScorerContainer` Durable Object.
+ * operation is a request to the agent's `Workspace` Durable Object
+ * (src/sandbox/workspace.ts: `POST /fs/<op>` through `ficus-scorer fs`,
+ * `POST /exec` through the container's native exec).
  *
  * The container answers in pi's own `Result` shape with pi's error codes, so
  * this is a pass-through: decode at the boundary, rebuild pi's error classes.
@@ -22,7 +23,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
-/** The `ScorerContainer` stub for this agent's container. */
+/** The `Workspace` stub for this agent's container. */
 export interface SandboxStub {
   readonly fetch: (request: Request) => Promise<Response>;
 }
@@ -344,7 +345,8 @@ export class ContainerEnv implements ExecutionEnv {
       cwd: options?.cwd ?? this.cwd,
       env: options?.env,
       inherit_env: options?.inheritEnv,
-      timeout_ms: options?.timeout,
+      // pi's timeout is in seconds (its own Node environment multiplies by 1000).
+      timeout_ms: options?.timeout === undefined ? undefined : options.timeout * 1000,
       spill_after_bytes: options?.spill?.afterBytes,
       spill_after_lines: options?.spill?.afterLines,
     };

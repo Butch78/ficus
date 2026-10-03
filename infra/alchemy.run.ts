@@ -7,11 +7,14 @@
 //                                  internal only, no public URL: reached
 //                                  through Api's service binding, which
 //                                  vouches for the tenant
-//   Sandbox  src/sandbox/worker.ts untrusted work in containers with the
-//                                  internet off; Egress decides, per phase,
-//                                  which hosts they reach (and adds the
-//                                  credentials they never see); asks Clef
-//                                  the root's judges once a container is gone
+//   Sandbox  src/sandbox/worker.ts Effect-native: untrusted work in
+//                                  containers with the internet off (Sandbox
+//                                  scores a leaf, Workspace is an agent's);
+//                                  Egress decides which hosts they reach and
+//                                  adds the credentials they never see; a
+//                                  base's warmed snapshot boots them fast
+//   Agents   src/agents/worker.ts  AgentActor: a pi agent per attempt, working
+//                                  in its Workspace; started by Api
 //
 //   bun run plan | deploy | destroy        STAGE defaults to dev
 import * as Alchemy from "alchemy";
@@ -24,19 +27,8 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
 import { OWNER, REPO } from "./src/github.ts";
-
-// Stated here rather than inherited from alchemy's default, which moves
-// between alchemy releases: the runtime's behaviour is ours to pin.
-const COMPATIBILITY = { date: "2026-09-10" } as const;
-
-// Logs and traces for every Worker (Durable Object calls, service bindings,
-// subrequests): queryable through the Workers Observability API, which is
-// how a failed run is diagnosed without re-running it.
-const OBSERVABILITY = {
-  enabled: true,
-  logs: { enabled: true, invocationLogs: true },
-  traces: { enabled: true },
-} as const;
+import SandboxWorker from "./src/sandbox/worker.ts";
+import { COMPATIBILITY, OBSERVABILITY } from "./src/stack.ts";
 
 export default Alchemy.Stack(
   "Ficus",
@@ -66,51 +58,9 @@ export default Alchemy.Stack(
       },
     });
 
-    // The scorer: ficus-scorer (static musl) in an image with nix + devenv.
-    // The binary's hash rides into the container's env, which is the edge
-    // that builds the binary before the image that copies it.
-    const scorerBinary = yield* Command.Build("ScorerBinary", {
-      cwd: "..",
-      command: "scripts/build-scorer",
-      outdir: "infra/src/sandbox/context",
-      memo: {
-        include: [
-          "crates/ficus-scorer/**",
-          "crates/ficus-core/**",
-          "Cargo.toml",
-          "Cargo.lock",
-          "rust-toolchain.toml",
-          "scripts/build-scorer",
-        ],
-        lockfile: false,
-      },
-    });
-
-    const sandboxContainer = Cloudflare.Container("SandboxContainer", {
-      name: `ficus-sandbox-${stage}`,
-      // The Durable Object class in src/sandbox/sandbox.ts that drives it.
-      className: "Sandbox",
-      context: `${import.meta.dirname}/src/sandbox/context`,
-      instances: 0,
-      maxInstances: 20,
-      // A root's devenv shell plus its checks: nix needs the disk and memory
-      // the basic tier does not have.
-      instanceType: "standard-1",
-      observability: { logs: { enabled: true } },
-      env: {
-        FICUS_SCORER_HASH: Output.map(scorerBinary.hash.output, (hash) => hash ?? "unhashed"),
-      },
-    });
-
-    const sandbox = yield* Cloudflare.Worker("Sandbox", {
-      name: `ficus-sandbox-${stage}`,
-      main: "./src/sandbox/worker.ts",
-      compatibility: COMPATIBILITY,
-      observability: OBSERVABILITY,
-      workersDev: false,
-      // Workers AI, for Clef: the root's judges are asked from here.
-      env: { SANDBOX: sandboxContainer, AI: Cloudflare.Workers.AI() },
-    });
+    // Effect-native: the Sandbox and Workspace Durable Objects, their
+    // container applications, and ficus-scorer's build (src/sandbox).
+    const sandbox = yield* SandboxWorker;
 
     // One namespace per stage; Artifacts creates it with the first repo.
     const artifacts = yield* Cloudflare.Artifacts.Namespace("Artifacts", { namespace: `ficus-${stage}` });
@@ -139,6 +89,30 @@ export default Alchemy.Stack(
       },
     });
 
+    // A pi agent per attempt. Async, not Effect-native: AgentActor is a plain
+    // Durable Object class (pi's PiHarness installs itself on `this`), which
+    // an Effect-native Worker cannot export. Its bindings name the other
+    // scripts literally (`alchemy dev` cannot coerce a deploy-time Output into
+    // a class's scriptName); the script env values keep the deploy order.
+    const agents = yield* Cloudflare.Worker("Agents", {
+      name: `ficus-agents-${stage}`,
+      main: "./src/agents/worker.ts",
+      compatibility: COMPATIBILITY,
+      observability: OBSERVABILITY,
+      workersDev: false,
+      env: {
+        AI: Cloudflare.Workers.AI(),
+        AGENTS: Cloudflare.DurableObject("AGENTS", { className: "AgentActor" }),
+        WORKSPACES: Cloudflare.DurableObject("WORKSPACES", {
+          className: "Workspace",
+          scriptName: `ficus-sandbox-${stage}`,
+        }),
+        TREES: Cloudflare.DurableObject("TREES", { className: "TreeObject", scriptName: `ficus-${stage}` }),
+        FICUS_SANDBOX_SCRIPT: sandbox.workerName,
+        FICUS_TREE_SCRIPT: worker.workerName,
+      },
+    });
+
     // Accounts. The schema is Better Auth's for src/api/auth.ts's plugins,
     // compiled by `bun run auth:schema`; applied in order on deploy.
     const authDb = yield* Cloudflare.D1.Database("AuthDb", {
@@ -159,6 +133,9 @@ export default Alchemy.Stack(
         BETTER_AUTH_SECRET: authSecret.text,
         // A service binding: the only way into the tree Worker.
         TREE: worker,
+        // Starts an attempt's agent when it starts or retries (src/api/agents.ts).
+        AGENTS: Cloudflare.DurableObject("AGENTS", { className: "AgentActor", scriptName: `ficus-agents-${stage}` }),
+        FICUS_AGENTS_SCRIPT: agents.workerName,
       },
     });
 

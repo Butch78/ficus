@@ -10,15 +10,22 @@
  * Auth itself (`getFullOrganization` answers only to members), and forwarded
  * over a service binding to the internal tree Worker with the organization's
  * tenant key. Nothing reaches the tree Worker any other way.
+ *
+ * Starting or retrying an attempt also starts its agent (agents.ts), unless
+ * the request says `start_agent: false`; the answer then carries
+ * `agent_started`, or `agent_error` when the agent would not start (the
+ * attempt exists either way).
  */
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { API_KEY_HEADER, AUTH_BASE_PATH, Auth, layer as authLayer } from "./auth.ts";
+import { optionsOf, Started, startAgent, startsAnAttempt } from "./agents.ts";
 import { TENANT_HEADER, tenantKey } from "./tenant.ts";
 
 interface Bindings {
   readonly AUTH_DB: D1Database;
   readonly TREE: Fetcher;
+  readonly AGENTS: DurableObjectNamespace;
   readonly BETTER_AUTH_SECRET: string;
 }
 
@@ -94,16 +101,65 @@ const forwardToTree = Effect.fn("Api.forwardToTree")(function* (
 
   url.search = new URL(request.url).search;
 
+  // A request that starts an attempt is read whole: its options decide the agent.
+  const body = startsAnAttempt(request.method, route.rest)
+    ? yield* Effect.tryPromise({
+        try: () => request.text(),
+        catch: () => fail(400, "could not read the request body"),
+      })
+    : undefined;
+
   const init: RequestInit = { method: request.method, headers };
 
-  if (request.body !== null) {
+  if (body !== undefined) {
+    init.body = body;
+  } else if (request.body !== null) {
     init.body = request.body;
   }
 
-  return yield* Effect.tryPromise({
+  const answer = yield* Effect.tryPromise({
     try: () => env.TREE.fetch(new Request(url, init)),
     catch: (cause) => fail(502, `the tree service is unreachable: ${String(cause)}`),
   });
+
+  if (body === undefined || !answer.ok) {
+    return answer;
+  }
+
+  return yield* withAgent(env, tenant, route.tree, answer, body);
+});
+
+/** Start the agent of the attempt `answer` started, and say how that went in the answer. */
+const withAgent = Effect.fn("Api.withAgent")(function* (
+  env: Bindings,
+  tenant: string,
+  tree: string,
+  answer: Response,
+  body: string,
+) {
+  const text = yield* Effect.tryPromise({
+    try: () => answer.text(),
+    catch: () => fail(502, "could not read the tree's answer"),
+  });
+
+  const started = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Started))(text).pipe(
+    Effect.mapError((error) => fail(502, `the tree's answer is not a started attempt: ${String(error)}`)),
+  );
+
+  const options = optionsOf(body);
+
+  if (options.start_agent === false) {
+    return Response.json({ ...started, agent_started: false }, { status: answer.status });
+  }
+
+  return yield* startAgent(env.AGENTS, tenant, tree, started, options).pipe(
+    Effect.as(Response.json({ ...started, agent_started: true }, { status: answer.status })),
+    Effect.catchTag("Api.AgentStartFailed", (error) =>
+      Effect.succeed(
+        Response.json({ ...started, agent_started: false, agent_error: error.message }, { status: answer.status }),
+      ),
+    ),
+  );
 });
 
 const handle = Effect.fn("Api.handle")(function* (env: Bindings, request: Request) {

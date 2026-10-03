@@ -12,6 +12,9 @@
 //!   ficus-scorer rebase '<RebaseRef JSON>'   network: Artifacts
 //!       replays a behind attempt's commits onto the head in a fresh attempt and
 //!       pushes them; prints a RebaseReport
+//!   ficus-scorer fs <op>                    an agent's workspace
+//!       one file operation, its JSON request on stdin; prints pi's Result
+//!       (always exit 0: failures are in the Result, see fs.rs)
 //!
 //! Exit 0 with JSON on stdout on success. Exit 2 when the attempt or root
 //! cannot be scored or the replay conflicts (retrying will not help), 1 for
@@ -38,9 +41,18 @@ async fn main() -> ExitCode {
         ["prepare", attempt] => prepare(attempt).await,
         ["check", workdir] => check(Path::new(workdir)).await,
         ["rebase", job] => rebase(job).await,
+        ["fs", op] => {
+            let mut request = String::new();
+            if let Err(error) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut request) {
+                eprintln!("reading the fs request: {error}");
+                return ExitCode::from(1);
+            }
+            println!("{}", ficus_scorer::fs::answer(op, &request));
+            return ExitCode::SUCCESS;
+        }
         _ => {
             eprintln!(
-                "usage: ficus-scorer prepare '<AttemptRef JSON>' | ficus-scorer check <workdir> | ficus-scorer rebase '<RebaseRef JSON>'"
+                "usage: ficus-scorer prepare '<AttemptRef JSON>' | ficus-scorer check <workdir> | ficus-scorer rebase '<RebaseRef JSON>' | ficus-scorer fs <op>"
             );
             return ExitCode::from(1);
         }
