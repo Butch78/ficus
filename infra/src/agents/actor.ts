@@ -10,7 +10,7 @@
  * - `GET /status`: whether the agent is still working, its phase, and its
  *   last words.
  *
- * The agent works in a container (a `Workspace` in the sandbox Worker, the same image the
+ * The agent works in a container (a `Worktree` in the sandbox Worker, the same image the
  * scorer uses: nix, devenv, git), through pi's read/write/edit/bash tools, so
  * it can run the root's own checks before it submits. A attempt grows in two
  * phases, one pi conversation throughout, each phase with its own model, tools
@@ -53,7 +53,7 @@ import { Clef } from "../clef/clef.ts";
 import { clip, describe, DIFF, effort, MAX_REJECTIONS, objections, type Objection, PLAN } from "./gates.ts";
 import { ContainerEnv, type SandboxStub } from "./sandbox-env.ts";
 
-/** Where the attempt is checked out inside the agent's container: the Workspace's `ATTEMPT_DIR`. */
+/** Where the attempt is checked out inside the agent's container: the Worktree's `ATTEMPT_DIR`. */
 const ATTEMPT_DIR = "/work/attempt";
 
 /** crates/ficus-core `TENANT_HEADER`. */
@@ -116,7 +116,7 @@ const LOCKED_PATHS = ["ficus.toml", "devenv.nix", "devenv.yaml", "devenv.lock", 
 
 type Gate = "plan" | "submit";
 
-/** What the Workspace's `/prepare` takes: src/sandbox/workspace.ts `Preparation`. */
+/** What the Worktree's `/prepare` takes: src/sandbox/workspace.ts `Preparation`. */
 interface Preparation {
   readonly remote: string;
   readonly token: string;
@@ -254,7 +254,7 @@ const changeRules = (plan: string): string =>
 export class AgentActor extends DurableObject<Bindings> {
   readonly #ai = createAI({ binding: this.env.AI });
 
-  /** The attempt's container: one `Workspace` per agent. */
+  /** The attempt's container: one `Worktree` per agent. */
   readonly #sandbox: SandboxStub = this.env.WORKSPACES.get(
     this.env.WORKSPACES.idFromName(`agent:${this.ctx.id.name ?? this.ctx.id.toString()}`),
   );

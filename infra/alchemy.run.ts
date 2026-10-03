@@ -58,7 +58,7 @@ export default Alchemy.Stack(
       },
     });
 
-    // Effect-native: the Sandbox and Workspace Durable Objects, their
+    // Effect-native: the Scorer and Worktree Durable Objects, their
     // container applications, and ficus-scorer's build (src/sandbox).
     const sandbox = yield* SandboxWorker;
 
@@ -80,11 +80,11 @@ export default Alchemy.Stack(
         ARTIFACTS: artifacts,
         // `TreeObject` is the #[durable_object] struct in crates/ficus-worker.
         TREES: Cloudflare.DurableObject("TREES", { className: "TreeObject" }),
-        // Sandboxes that score attempts: the `Sandbox` class in the sandbox Worker.
+        // Sandboxes that score attempts: the `Scorer` class in the sandbox Worker.
         // By literal name: `alchemy dev` cannot coerce a deploy-time Output
         // into a class's scriptName. The env value below keeps the edge that
         // deploys the sandbox Worker (and its class) before this one.
-        SANDBOX: Cloudflare.DurableObject("SANDBOX", { className: "Sandbox", scriptName: `ficus-sandbox-${stage}` }),
+        SANDBOX: Cloudflare.DurableObject("SANDBOX", { className: "Scorer", scriptName: `ficus-sandbox-${stage}` }),
         FICUS_SANDBOX_SCRIPT: sandbox.workerName,
       },
     });
@@ -104,7 +104,7 @@ export default Alchemy.Stack(
         AI: Cloudflare.Workers.AI(),
         AGENTS: Cloudflare.DurableObject("AGENTS", { className: "AgentActor" }),
         WORKSPACES: Cloudflare.DurableObject("WORKSPACES", {
-          className: "Workspace",
+          className: "Worktree",
           scriptName: `ficus-sandbox-${stage}`,
         }),
         TREES: Cloudflare.DurableObject("TREES", { className: "TreeObject", scriptName: `ficus-${stage}` }),

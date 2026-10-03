@@ -1,6 +1,6 @@
 /**
- * The `ficus-sandbox` Worker, Effect-native: hosts `Sandbox` (scores a
- * attempt; also rebases one) and `Workspace` (an agent's container), each a Durable Object
+ * The `ficus-sandbox` Worker, Effect-native: hosts `Scorer` (scores an
+ * attempt; also rebases one) and `Worktree` (an agent's container), each a Durable Object
  * driving its own container. No public routes: the tree and the agents
  * reach them through Durable Object bindings.
  *
@@ -19,8 +19,8 @@ import * as Schema from "effect/Schema";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { COMPATIBILITY, OBSERVABILITY } from "../stack.ts";
 import { egress, EgressProps, refuse } from "./egress.ts";
-import { Sandbox } from "./sandbox.ts";
-import { Workspace } from "./workspace.ts";
+import { Scorer } from "./sandbox.ts";
+import { Worktree } from "./workspace.ts";
 
 const propsOf = Schema.decodeUnknownOption(EgressProps);
 
@@ -38,8 +38,8 @@ export default class SandboxWorker extends Cloudflare.Worker<SandboxWorker>()(
     };
   }),
   Effect.gen(function* () {
-    yield* Sandbox;
-    yield* Workspace;
+    yield* Scorer;
+    yield* Worktree;
 
     return {
       fetch: Effect.gen(function* () {

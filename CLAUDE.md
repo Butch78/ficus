@@ -19,7 +19,7 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   owner decides). Attempts and nodes record `touched` paths, so `behind` can say what overlaps.
   Tasks carry their own `checks` (run after the root's, never in the repo). `accept_next` takes the
   oldest ready task. `release` is a pointer at a node (older node = rollback). Keep matches exhaustive.
-- `infra/`: alchemy from the alchemy-run/alchemy#1904 preview (`pkg.alchemy.run/alchemy/pr:1904:<sha>`, for
+- `infra/`: alchemy from the alchemy-run/alchemy#1905 preview (`pkg.alchemy.run/alchemy/pr:1905:<sha>`, for
   Durable Object-managed containers; back to a release once it lands) + Effect 4.0.0 + bun 1.4.2 (nix pin). `just infra-check`
   after TS changes. Unstable Effect modules (effect/http, …) are allowed: deps track the
   latest release, so bump them rather than avoid an API (`effecttsgo/unstable-api-usage` is off).
@@ -47,12 +47,12 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   `POST /rebase`: Egress grants the behind repo read and the fresh repo write; a conflict is 422
   and final, a sandbox failure retries up to 5 times), then scores every Checking attempt in parallel,
   one `Sandbox` per attempt.
-  `infra/src/sandbox` is an Effect-native alchemy Worker: `Sandbox` (scoring, rebasing) and `Workspace`
+  `infra/src/sandbox` is an Effect-native alchemy Worker: `Scorer` (scoring, rebasing) and `Worktree`
   (an agent's container) are `Cloudflare.DurableObject`s, each with its own `Cloudflare.Container` (same
-  image, `schedulingPolicy: "durable_object"`: the DO picks `images.default` or a snapshot, and the
-  size, at each `start()`; the only policy with snapshots, and immutable). They drive the raw `state.container` (exec, `interceptOutboundHttps`, `snapshotContainer`):
-  alchemy's container handle has none of those and starts eagerly, so `containers.ts` binds through
-  alchemy's internal `~alchemy/Container/Binding` key (recheck on alchemy upgrades). NOT the legacy
+  image, `schedulingPolicy: "durable_object"`: the DO picks `images.scorer` or a snapshot, and the
+  size, at each `start()`; the only policy with snapshots, and immutable, hence new classes and
+  applications). Each attaches its container with `Cloudflare.Containers.bind` (not started) and drives
+  the raw `state.container` (exec, `interceptOutboundHttps`, `snapshotContainer`). NOT the legacy
   @cloudflare/containers class, which ends 2026-12-31. Internet is off; Egress is the Worker's default
   export, routed per host via `ctx.exports.default({ props })` (an Effect-native Worker cannot export a
   named WorkerEntrypoint): prepare phase = attempt repo (token added by Egress, never in the container)

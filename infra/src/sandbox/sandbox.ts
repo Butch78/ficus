@@ -1,5 +1,5 @@
 /**
- * `Sandbox`: one Durable Object per attempt being scored or rebased, driving
+ * `Scorer`: one Durable Object per attempt being scored or rebased, driving
  * its container with the runtime's native API. The container always runs
  * with the internet off; what it may reach is decided here, per phase, by
  * routing hosts through Egress.
@@ -35,7 +35,7 @@ import * as Schema from "effect/Schema";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { Clef } from "../clef/clef.ts";
-import { bindContainer, SandboxContainer } from "./containers.ts";
+import { ScorerContainer } from "./containers.ts";
 import { type CheckOutcome, CheckRun, judged, judging } from "./judges.ts";
 import {
   boot,
@@ -288,10 +288,11 @@ export const answered = <R>(
     ),
   );
 
-export class Sandbox extends Cloudflare.DurableObject<Sandbox>()(
-  "Sandbox",
+export class Scorer extends Cloudflare.DurableObject<Scorer>()(
+  "Scorer",
   Effect.gen(function* () {
-    yield* bindContainer(SandboxContainer);
+    // Attached, not started: each request starts it (machine.ts `boot`).
+    yield* Cloudflare.Containers.bind(ScorerContainer);
 
     const ai = yield* Cloudflare.Workers.AI();
     const state = yield* Cloudflare.DurableObjectState;

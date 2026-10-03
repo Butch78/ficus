@@ -14,6 +14,7 @@ import type * as cf from "@cloudflare/workers-types";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
+import { IMAGE } from "./containers.ts";
 import type { EgressProps } from "./egress.ts";
 
 /**
@@ -157,7 +158,7 @@ const ready = (machine: Machine, nonce: string, times: number) =>
  */
 const INSTANCE = "standard-1";
 
-/** Start from `snapshot`, or else from the container's `images.default`. */
+/** Start from `snapshot`, or else from the container's image (containers.ts `IMAGE`). */
 const start = (machine: Machine, nonce: string, snapshot: string | undefined) =>
   Effect.try({
     try: () => {
@@ -169,10 +170,10 @@ const start = (machine: Machine, nonce: string, snapshot: string | undefined) =>
         return;
       }
 
-      const image = machine.container.images["default"];
+      const image = machine.container.images[IMAGE];
 
       if (image === undefined) {
-        throw new Error("the container has no default image: check its context in containers.ts");
+        throw new Error(`the container has no image named ${IMAGE}: check containers.ts`);
       }
 
       machine.container.start({ enableInternet: false, env, instance: INSTANCE, image });

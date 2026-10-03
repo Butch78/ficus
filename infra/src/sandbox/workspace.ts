@@ -1,5 +1,5 @@
 /**
- * `Workspace`: one Durable Object per agent, driving the container the
+ * `Worktree`: one Durable Object per agent, driving the container the
  * agent works in, with the runtime's native API. `AgentActor`'s
  * `ContainerEnv` (src/agents/sandbox-env.ts) is its one caller.
  *
@@ -25,7 +25,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
-import { bindContainer, WorkspaceContainer } from "./containers.ts";
+import { WorktreeContainer } from "./containers.ts";
 import {
   boot,
   EXEC_ENV,
@@ -186,10 +186,11 @@ const fileOp = Effect.fn("Workspace.fs")(function* (machine: Machine, op: string
   return HttpServerResponse.text(ran.stdout, { headers: { "content-type": "application/json" } });
 });
 
-export class Workspace extends Cloudflare.DurableObject<Workspace>()(
-  "Workspace",
+export class Worktree extends Cloudflare.DurableObject<Worktree>()(
+  "Worktree",
   Effect.gen(function* () {
-    yield* bindContainer(WorkspaceContainer);
+    // Attached, not started: `/prepare`, or the next call after a reap, starts it.
+    yield* Cloudflare.Containers.bind(WorktreeContainer);
 
     const state = yield* Cloudflare.DurableObjectState;
 

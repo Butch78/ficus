@@ -1,64 +1,41 @@
 /**
  * The two container applications, one per Durable Object class that drives
- * one: `SandboxContainer` scores attempts, `WorkspaceContainer` is an agent's
- * workspace. Same image (src/sandbox/context: nix, devenv, ficus-scorer);
- * a Cloudflare container application backs exactly one Durable Object class.
+ * one: `ScorerContainer` scores and rebases attempts, `WorktreeContainer` is
+ * an agent's working copy. Same image (src/sandbox/context: nix, devenv,
+ * ficus-scorer); a Cloudflare container application backs exactly one
+ * Durable Object class.
  *
  * Both are Durable Object-managed (`schedulingPolicy: "durable_object"`):
- * the application carries no image, size or count, and the Durable Object
- * picks them at each start (machine.ts), from `images.default` or from a
- * snapshot. It is the only policy with snapshots, and it starts faster.
- * alchemy supports it from alchemy-run/alchemy#1904 (pinned as a preview in
- * package.json until it is released).
+ * the application carries no image, size, count or env, and the Durable
+ * Object picks the image (`images.scorer`, or a snapshot) and the size at
+ * each start (machine.ts). It is the only policy with snapshots, and it
+ * starts containers faster. The policy is immutable, so these are new
+ * applications on new classes (the old Sandbox and Workspace ran on the
+ * `default` policy). alchemy supports it from alchemy-run/alchemy#1905,
+ * pinned as a preview in package.json until it is released.
  */
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Output from "alchemy/Output";
 import * as Effect from "effect/Effect";
 import { ScorerBinary } from "./scorer-binary.ts";
 
+/** The image's name in `ctx.container.images`. */
+export const IMAGE = "scorer";
+
 const props = Effect.gen(function* () {
   const scorer = yield* ScorerBinary;
 
   return {
-    // Published as the container's `images.default`.
-    context: `${import.meta.dirname}/context`,
     schedulingPolicy: "durable_object" as const,
+    images: {
+      // The context is read through the scorer's hash: that is the edge that
+      // builds the binary before the image copies it in.
+      [IMAGE]: { context: Output.map(scorer.hash.output, () => `${import.meta.dirname}/context`) },
+    },
     observability: { logs: { enabled: true } },
-    // The application has no environment in this mode; the scorer's hash is
-    // here for the edge that builds the binary before the image copies it.
-    env: { FICUS_SCORER_HASH: Output.map(scorer.hash.output, (hash) => hash ?? "unhashed") },
   };
 });
 
-export class SandboxContainer extends Cloudflare.Container<SandboxContainer>()("SandboxContainer", props) {}
+export class ScorerContainer extends Cloudflare.Container<ScorerContainer>()("ScorerContainer", props) {}
 
-export class WorkspaceContainer extends Cloudflare.Container<WorkspaceContainer>()("WorkspaceContainer", props) {}
-
-/** The part of a container class this module reads. */
-interface Bindable {
-  readonly "~alchemy/Container/Binding"?: Effect.Effect<void>;
-}
-
-/**
- * Attach a container application to the Durable Object being declared,
- * without starting it. `Cloudflare.Containers.layer` would start it at
- * construction with fixed options; these objects start it per request,
- * from a snapshot when they have one. alchemy has no public API for that,
- * so this reads the binding alchemy keeps on the class (its own
- * `Containers.layer` yields the same Effect). Recheck on alchemy upgrades.
- */
-export const bindContainer = (container: typeof SandboxContainer | typeof WorkspaceContainer) =>
-  Effect.gen(function* () {
-    // SAFETY: alchemy 2.0.0-beta.80 sets this key on every Container class
-    // (src/Cloudflare/Containers/Container.ts); the check below fails loudly
-    // if a later alchemy drops it. Its Effect yields the binding's runtime
-    // handle, which these objects do not use.
-    const bindable: Bindable = container as Bindable;
-    const binding = bindable["~alchemy/Container/Binding"];
-
-    if (binding === undefined) {
-      return yield* Effect.die(new Error("alchemy no longer exposes ~alchemy/Container/Binding: see containers.ts"));
-    }
-
-    yield* binding;
-  });
+export class WorktreeContainer extends Cloudflare.Container<WorktreeContainer>()("WorktreeContainer", props) {}
