@@ -52,6 +52,13 @@ export class SandboxFailure extends Schema.TaggedError<SandboxFailure>()("Sandbo
 
 export const failure = (status: number, message: string) => new SandboxFailure({ status, message });
 
+/**
+ * One line to Workers Logs. Effect's logger does not reach them from an
+ * Effect-native alchemy Worker (its logs go to alchemy's tracer), so the
+ * operational lines a deploy is judged by go to the console, as Egress's do.
+ */
+const note = (line: string) => Effect.sync(() => console.log(`sandbox ${line}`));
+
 /** The Worker's own default export (worker.ts), called with props: Egress. */
 interface Loopback {
   readonly default: (options: { readonly props: EgressProps }) => cf.Fetcher;
@@ -179,7 +186,7 @@ export const boot = Effect.fn("Machine.boot")(function* (machine: Machine, snaps
       Effect.andThen(ready(machine, nonce, 60)),
       Effect.as(true),
       Effect.catchTag("Sandbox.Failure", (error) =>
-        Effect.logWarning(`snapshot ${snapshot} did not restore; booting the image`, error.message).pipe(
+        note(`snapshot ${snapshot} did not restore (${error.message}); booting the image`).pipe(
           Effect.andThen(destroy(machine)),
           Effect.as(false),
         ),
@@ -187,7 +194,7 @@ export const boot = Effect.fn("Machine.boot")(function* (machine: Machine, snaps
     );
 
     if (restored) {
-      yield* Effect.logInfo(`booted from snapshot ${snapshot} in ${Date.now() - restoring}ms`);
+      yield* note(`booted from snapshot ${snapshot} in ${Date.now() - restoring}ms`);
 
       return { restored: true, stale: false } satisfies Booted;
     }
@@ -198,7 +205,7 @@ export const boot = Effect.fn("Machine.boot")(function* (machine: Machine, snaps
 
   yield* start(machine, nonce, undefined);
   yield* ready(machine, nonce, 120);
-  yield* Effect.logInfo(`booted the image in ${Date.now() - started}ms${snapshot === undefined ? "" : " (snapshot stale)"}`);
+  yield* note(`booted the image in ${Date.now() - started}ms${snapshot === undefined ? "" : " (snapshot stale)"}`);
 
   return { restored: false, stale: snapshot !== undefined } satisfies Booted;
 });
@@ -230,10 +237,10 @@ export const snapshot = Effect.fn("Machine.snapshot")(function* (machine: Machin
     try: (): Promise<cf.ContainerSnapshot> => machine.container.snapshotContainer({ name }),
     catch: (cause) => failure(503, `snapshotting: ${String(cause)}`),
   }).pipe(
-    Effect.tap((taken) => Effect.logInfo(`took snapshot ${taken.id} (${name}, ${taken.size} bytes)`)),
+    Effect.tap((taken) => note(`took snapshot ${taken.id} (${name}, ${taken.size} bytes)`)),
     Effect.map((taken): string | undefined => taken.id),
     Effect.catchTag("Sandbox.Failure", (error) =>
-      Effect.logWarning("no snapshot taken", error.message).pipe(Effect.as(undefined)),
+      note(`no snapshot taken: ${error.message}`).pipe(Effect.as(undefined)),
     ),
   );
 });
@@ -246,4 +253,4 @@ export const destroy = (machine: Machine) =>
   Effect.tryPromise({
     try: () => machine.container.destroy(),
     catch: (cause) => failure(503, `destroying the container: ${String(cause)}`),
-  }).pipe(Effect.catchTag("Sandbox.Failure", (error) => Effect.logWarning(error.message)));
+  }).pipe(Effect.catchTag("Sandbox.Failure", (error) => note(error.message)));
