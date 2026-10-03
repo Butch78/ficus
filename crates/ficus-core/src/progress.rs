@@ -52,6 +52,8 @@ pub enum ScoreStep {
     Restore,
     /// Build the root's devenv shell.
     Devenv,
+    /// Run the root's `[fetch]` (dependencies), with its hosts open.
+    Fetch,
     /// Run one of the root's checks (`item`: its name), with no network.
     Check,
     /// Measure the change: lines added and removed.

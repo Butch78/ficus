@@ -103,6 +103,28 @@ impl JudgeSpec {
     }
 }
 
+/// The most hosts a root may open for its fetch.
+pub const MAX_FETCH_HOSTS: usize = 20;
+
+/// The root's `[fetch]`: what its checks need from the network before the
+/// network closes. While the root's devenv shell builds and `run` runs, the
+/// sandbox lets the attempt reach `hosts` (on top of its own repo and the
+/// nix caches); the checks then run with nothing. It comes from the base
+/// commit like the checks, so an attempt cannot widen its own network.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FetchSpec {
+    /// Hostnames, exactly: `static.crates.io`, not `*.crates.io`.
+    #[serde(default)]
+    pub hosts: Vec<String>,
+    /// A bash command, run from the repo root inside the root's devenv shell
+    /// when it has one: `cargo fetch --locked`, a package install.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
 /// The root's `ficus.toml`.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -111,6 +133,25 @@ pub struct RootChecks {
     pub checks: Vec<CheckSpec>,
     #[serde(rename = "judge", default)]
     pub judges: Vec<JudgeSpec>,
+    #[serde(default)]
+    pub fetch: FetchSpec,
+}
+
+/// A hostname a root may open: lowercase labels of letters, digits and `-`,
+/// dot-separated, at least two of them. No wildcards, ports or schemes.
+fn is_hostname(host: &str) -> bool {
+    let labels: Vec<&str> = host.split('.').collect();
+    host.len() <= 253
+        && labels.len() >= 2
+        && labels.iter().all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -131,6 +172,12 @@ pub enum ChecksError {
     HalfCriteria(String),
     #[error("judge {0:?}: `pass_at` must be above 0 and at most 1")]
     PassAt(String),
+    #[error("[fetch] host {0:?} is not a hostname (lowercase, no wildcards, ports or schemes)")]
+    FetchHost(String),
+    #[error("[fetch] opens more than {MAX_FETCH_HOSTS} hosts")]
+    TooManyHosts,
+    #[error("[fetch] has an empty `run`")]
+    EmptyFetch,
 }
 
 impl RootChecks {
@@ -152,6 +199,20 @@ impl RootChecks {
             if check.run.trim().is_empty() {
                 return Err(ChecksError::EmptyRun(check.name.clone()));
             }
+        }
+        if parsed.fetch.hosts.len() > MAX_FETCH_HOSTS {
+            return Err(ChecksError::TooManyHosts);
+        }
+        if let Some(host) = parsed.fetch.hosts.iter().find(|host| !is_hostname(host)) {
+            return Err(ChecksError::FetchHost(host.clone()));
+        }
+        if parsed
+            .fetch
+            .run
+            .as_ref()
+            .is_some_and(|run| run.trim().is_empty())
+        {
+            return Err(ChecksError::EmptyFetch);
         }
         for judge in &parsed.judges {
             let named = !judge.name.is_empty()
@@ -342,6 +403,59 @@ pub struct CheckRun {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_root_opens_named_hosts_for_its_fetch_and_nothing_wider() {
+        let root = RootChecks::parse(
+            r#"
+            [fetch]
+            hosts = ["static.crates.io", "index.crates.io", "registry.npmjs.org"]
+            run = "cargo fetch --locked"
+            timeout_secs = 1800
+
+            [[check]]
+            name = "test"
+            run = "CARGO_NET_OFFLINE=true cargo test"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(root.fetch.hosts.len(), 3);
+        assert_eq!(root.fetch.run.as_deref(), Some("cargo fetch --locked"));
+
+        let without = RootChecks::parse("[[check]]\nname = \"t\"\nrun = \"true\"\n").unwrap();
+        assert_eq!(without.fetch, FetchSpec::default());
+
+        for host in [
+            "*.crates.io",
+            "crates.io:443",
+            "https://crates.io",
+            "localhost",
+            "Crates.io",
+            "-a.io",
+        ] {
+            let text =
+                format!("[fetch]\nhosts = [{host:?}]\n[[check]]\nname = \"t\"\nrun = \"true\"\n");
+            assert_eq!(
+                RootChecks::parse(&text),
+                Err(ChecksError::FetchHost(host.to_owned())),
+                "{host}"
+            );
+        }
+        let many = (0..=MAX_FETCH_HOSTS)
+            .map(|n| format!("\"h{n}.example.com\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        assert_eq!(
+            RootChecks::parse(&format!(
+                "[fetch]\nhosts = [{many}]\n[[check]]\nname = \"t\"\nrun = \"true\"\n"
+            )),
+            Err(ChecksError::TooManyHosts)
+        );
+        assert_eq!(
+            RootChecks::parse("[fetch]\nrun = \" \"\n[[check]]\nname = \"t\"\nrun = \"true\"\n"),
+            Err(ChecksError::EmptyFetch)
+        );
+    }
 
     #[test]
     fn parses_checks_with_default_timeout() {

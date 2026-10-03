@@ -8,8 +8,9 @@
  *
  *   POST /score  (a ScoreRequest, from the tree)
  *     1. prepare: the attempt's repo (token added by Egress) and the nix/devenv
- *        caches; `ficus-scorer prepare` clones, restores the root's locked
- *        files and builds the root's devenv shell
+ *        caches; `ficus-scorer prepare` clones and restores the root's locked
+ *        files, then `ficus-scorer fetch` builds the root's devenv shell and
+ *        runs its `[fetch]`, with the hosts that names opened too
  *     2. check:   nothing; `ficus-scorer check` runs the root's checks, then
  *        the task's
  *   then the container is destroyed, and the root's judges (`[[judge]]` in
@@ -84,6 +85,9 @@ const EXEC_ENV = {
   SSL_CERT_FILE: "/etc/ssl/certs/ca-bundle.crt",
   NIX_SSL_CERT_FILE: "/etc/ssl/certs/ca-bundle.crt",
   GIT_SSL_CAINFO: "/etc/ssl/certs/ca-bundle.crt",
+  // A root whose devenv uses secretspec (Ficus's own) asks why its shell is
+  // entered; nothing in a sandbox reads a secret.
+  SECRETSPEC_REASON: "Ficus sandbox: build and check, no secrets",
 } as const;
 
 const SCORER = "/usr/local/bin/ficus-scorer";
@@ -137,7 +141,8 @@ export const RebaseRequest = Schema.Struct({
 
 export interface RebaseRequest extends Schema.Schema.Type<typeof RebaseRequest> {}
 
-const Prepared = Schema.Struct({ workdir: Schema.String });
+/** `ficus-scorer prepare`: the workdir, and the hosts the root's `[fetch]` opens next. */
+const Prepared = Schema.Struct({ workdir: Schema.String, hosts: Schema.Array(Schema.String) });
 
 /** crates/ficus-core `RebaseReport`. */
 const RebaseReport = Schema.Struct({ commit: Oid, replayed: Schema.Number });
@@ -152,6 +157,15 @@ const Workspace = Schema.Struct({
   checkout: Schema.String.check(Schema.isPattern(/^\/work\/[A-Za-z0-9._-]+$/)),
   author: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._-]{1,64}$/)),
 });
+
+/**
+ * The hosts the root's `[fetch]` opens for a workspace, read from the
+ * checkout when it is first opened (at the base commit) and kept: an agent
+ * that edits ficus.toml cannot widen its own network.
+ */
+const WORKSPACE_HOSTS_KEY = "workspace-hosts";
+
+const Hosts = Schema.Array(Schema.String);
 
 /** Where the background devenv build of a workspace writes its output. */
 const DEVENV_WARM_LOG = "/tmp/devenv-warm.log";
@@ -297,7 +311,7 @@ export class Sandbox extends DurableObject<Bindings> {
   /** The agent is done: its container goes, and no later operation reopens it. */
   readonly #close = Effect.fn("Sandbox.close")(function* (this: Sandbox) {
     this.#opened = false;
-    yield* Effect.promise(() => this.ctx.storage.delete(WORKSPACE_KEY));
+    yield* Effect.promise(() => this.ctx.storage.delete([WORKSPACE_KEY, WORKSPACE_HOSTS_KEY]));
 
     if (this.#container().running) {
       yield* Effect.promise(() => this.#container().destroy());
@@ -346,6 +360,10 @@ export class Sandbox extends DurableObject<Bindings> {
       return yield* failure(502, `checking out the attempt: exit ${cloned.exitCode}: ${cloned.stderr.trim()}`);
     }
 
+    for (const host of yield* this.#fetchHosts(checkout)) {
+      yield* this.#route(host, { mode: "pass" });
+    }
+
     // Warm the root's devenv shell in the background: built cold it takes
     // minutes, and an agent's first `devenv shell` then waits for this one
     // rather than starting its own. Once per container.
@@ -356,6 +374,22 @@ export class Sandbox extends DurableObject<Bindings> {
     ]);
 
     this.#opened = true;
+  });
+
+  /** The root's fetch hosts for this workspace: kept from its first open, or read now. */
+  readonly #fetchHosts = Effect.fn("Sandbox.fetchHosts")(function* (this: Sandbox, checkout: string) {
+    const stored = yield* Effect.promise(() => this.ctx.storage.get(WORKSPACE_HOSTS_KEY));
+
+    if (stored !== undefined) {
+      return yield* Schema.decodeUnknownEffect(Hosts)(stored).pipe(Effect.mapError(() => failure(500, "the kept fetch hosts are unreadable")));
+    }
+
+    const read = yield* this.#exec([SCORER, "hosts", checkout]);
+    const hosts = yield* this.#json(read, Hosts, "hosts");
+
+    yield* Effect.promise(() => this.ctx.storage.put(WORKSPACE_HOSTS_KEY, hosts));
+
+    return hosts;
   });
 
   /** One of pi's operations in an agent's container, its answer passed through. */
@@ -516,15 +550,25 @@ export class Sandbox extends DurableObject<Bindings> {
     say(stepLine("sandbox", "complete"));
 
     const prepared = yield* this.#exec([SCORER, "prepare", attempt], say);
+    const { workdir, hosts } = yield* this.#json(prepared, Prepared, "prepare");
+
+    // The root's own fetch hosts (crates, packages), read from the base
+    // commit by `prepare`: open while its devenv builds and its fetch runs.
+    for (const host of hosts) {
+      yield* this.#route(host, { mode: "pass" });
+    }
+
+    const fetched = yield* this.#exec([SCORER, "fetch", workdir], say);
 
     // Close everything before any of the root's checks run.
-    yield* this.#route(repo.host, { mode: "deny" });
-
-    for (const host of NIX_HOSTS) {
+    for (const host of new Set([repo.host, ...NIX_HOSTS, ...hosts])) {
       yield* this.#route(host, { mode: "deny" });
     }
 
-    const { workdir } = yield* this.#json(prepared, Prepared, "prepare");
+    if (fetched.exitCode !== 0) {
+      return yield* failure(500, `fetch exited ${fetched.exitCode}: ${fetched.stderr.trim()}`);
+    }
+
     const checked = yield* this.#exec([SCORER, "check", workdir], say);
     const run = yield* this.#json(checked, CheckRun, "check");
 

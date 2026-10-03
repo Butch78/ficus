@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 
 use ficus_core::progress::{Line, ScoreStep, StepState};
 use ficus_core::scoring::{
-    AttemptRef, CheckOrigin, CheckOutcome, CheckRun, CheckSpec, ChecksError, LOCKED_PATHS,
-    RebaseRef, RebaseReport, RootChecks, ScoreReport, clip_diff,
+    AttemptRef, CheckOrigin, CheckOutcome, CheckRun, CheckSpec, ChecksError, FetchSpec,
+    LOCKED_PATHS, RebaseRef, RebaseReport, RootChecks, ScoreReport, clip_diff,
 };
 use ficus_core::tree::Oid;
 use serde::{Deserialize, Serialize};
@@ -160,14 +160,30 @@ pub async fn rebase(root: &Path, job: &RebaseRef) -> Result<RebaseReport, ScoreE
     Ok(RebaseReport { commit, replayed })
 }
 
-/// What `prepare` attempts in the workdir for `check`.
+/// What `prepare` and `fetch` leave in the workdir for `check`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Prepared {
     attempt: AttemptRef,
-    /// `None` without a root devenv; otherwise whether its shell built, and
-    /// the end of its output when it did not.
-    devenv: Option<Result<(), String>>,
+    /// Whether the root has a devenv: its checks run inside its shell.
+    in_devenv: bool,
+    /// The root's `[fetch]`, as of the base commit.
+    fetch: FetchSpec,
+    /// Set by `fetch`: `Err` with the end of the output when the root's
+    /// devenv shell did not build or its fetch failed. `None` if `fetch`
+    /// never ran.
+    fetched: Option<Result<(), String>>,
 }
+
+/// What `prepare` hands the sandbox: where the attempt is, and the hosts the
+/// root's `[fetch]` opens for the next phase.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedAttempt {
+    pub workdir: PathBuf,
+    pub hosts: Vec<String>,
+}
+
+/// A root's fetch gets this long unless its `[fetch]` says otherwise.
+const FETCH_DEFAULT_SECS: u64 = 1800;
 
 const PREPARED_FILE: &str = "prepared.json";
 
@@ -203,10 +219,11 @@ async fn stepped<T>(
     done
 }
 
-/// Phase one, with network: clone the attempt into a fresh workdir under
-/// `root`, check `head` descends from `base`, put the root's locked files
-/// back, and build the root's devenv shell. Returns the workdir.
-pub async fn prepare(root: &Path, attempt: &AttemptRef) -> Result<PathBuf, ScoreError> {
+/// Phase one, with the network open to the attempt's repo: clone it into a
+/// fresh workdir under `root`, check `head` descends from `base`, and put the
+/// root's locked files back. Returns the workdir and the hosts the root's
+/// `[fetch]` needs for phase two.
+pub async fn prepare(root: &Path, attempt: &AttemptRef) -> Result<PreparedAttempt, ScoreError> {
     let workdir = root.join(attempt.head.as_str());
     match tokio::fs::remove_dir_all(&workdir).await {
         Ok(()) => {}
@@ -243,7 +260,7 @@ pub async fn prepare(root: &Path, attempt: &AttemptRef) -> Result<PathBuf, Score
     })
     .await?;
     // Fail now, while it is cheap, if the root defines nothing to run.
-    root_checks(&repo, base).await?;
+    let fetch = root_checks(&repo, base).await?.fetch;
 
     let root_has_devenv = stepped(ScoreStep::Restore, async {
         let mut root_has_devenv = false;
@@ -268,7 +285,29 @@ pub async fn prepare(root: &Path, attempt: &AttemptRef) -> Result<PathBuf, Score
     })
     .await?;
 
-    let devenv = if root_has_devenv {
+    let hosts = fetch.hosts.clone();
+    write_prepared(
+        &workdir,
+        &Prepared {
+            attempt: attempt.clone(),
+            in_devenv: root_has_devenv,
+            fetch,
+            fetched: None,
+        },
+    )
+    .await?;
+    Ok(PreparedAttempt { workdir, hosts })
+}
+
+/// Phase two, with the network open to the root's `[fetch]` hosts and the nix
+/// caches: build the root's devenv shell, then run the root's fetch in it. A
+/// failure here is the root's or the attempt's (a lockfile naming a crate
+/// that does not exist), so it is recorded for `check`, not raised.
+pub async fn fetch(workdir: &Path) -> Result<(), ScoreError> {
+    let mut prepared = read_prepared(workdir).await?;
+    let repo = workdir.join("attempt");
+    let mut fetched = Ok(());
+    if prepared.in_devenv {
         progress(ScoreStep::Devenv, StepState::Active, None, None);
         let built = run(
             &repo,
@@ -282,33 +321,58 @@ pub async fn prepare(root: &Path, attempt: &AttemptRef) -> Result<PathBuf, Score
             StepState::Error
         };
         progress(ScoreStep::Devenv, state, None, None);
-        Some(if built.passed {
-            Ok(())
+        if !built.passed {
+            fetched = Err(format!(
+                "the root's devenv shell did not build:\n{}",
+                built.tail
+            ));
+        }
+    }
+    if let (Ok(()), Some(command)) = (&fetched, &prepared.fetch.run) {
+        progress(ScoreStep::Fetch, StepState::Active, None, None);
+        let argv: Vec<&str> = if prepared.in_devenv {
+            vec!["devenv", "--quiet", "shell", "--", "bash", "-c", command]
         } else {
-            Err(built.tail)
-        })
-    } else {
-        None
-    };
+            vec!["bash", "-c", command]
+        };
+        let ran = run(
+            &repo,
+            &argv,
+            prepared.fetch.timeout_secs.unwrap_or(FETCH_DEFAULT_SECS),
+        )
+        .await?;
+        let state = if ran.passed {
+            StepState::Complete
+        } else {
+            StepState::Error
+        };
+        progress(ScoreStep::Fetch, state, None, None);
+        if !ran.passed {
+            fetched = Err(format!("the root's fetch failed:\n{}", ran.tail));
+        }
+    }
+    prepared.fetched = Some(fetched);
+    write_prepared(workdir, &prepared).await
+}
 
-    let prepared = Prepared {
-        attempt: attempt.clone(),
-        devenv,
-    };
+async fn read_prepared(workdir: &Path) -> Result<Prepared, ScoreError> {
+    serde_json::from_slice(&tokio::fs::read(workdir.join(PREPARED_FILE)).await?)
+        .map_err(|error| ScoreError::Io(std::io::Error::other(error)))
+}
+
+async fn write_prepared(workdir: &Path, prepared: &Prepared) -> Result<(), ScoreError> {
     tokio::fs::write(
         workdir.join(PREPARED_FILE),
-        serde_json::to_vec(&prepared).map_err(std::io::Error::other)?,
+        serde_json::to_vec(prepared).map_err(std::io::Error::other)?,
     )
     .await?;
-    Ok(workdir)
+    Ok(())
 }
 
 /// Phase two, without network: run the root's checks in a prepared workdir,
 /// cost the diff, collect what the root's judges need, and remove the workdir.
 pub async fn check(workdir: &Path) -> Result<CheckRun, ScoreError> {
-    let prepared: Prepared =
-        serde_json::from_slice(&tokio::fs::read(workdir.join(PREPARED_FILE)).await?)
-            .map_err(|error| ScoreError::Io(std::io::Error::other(error)))?;
+    let prepared = read_prepared(workdir).await?;
     let repo = workdir.join("attempt");
     let (base, head) = (
         prepared.attempt.base.as_str(),
@@ -330,23 +394,20 @@ pub async fn check(workdir: &Path) -> Result<CheckRun, ScoreError> {
         )
         .collect();
 
-    let checks = match &prepared.devenv {
-        None => run_checks(&repo, &specs, false).await?,
-        Some(Ok(())) => run_checks(&repo, &specs, true).await?,
-        Some(Err(tail)) => {
-            let tail = format!("the root's devenv shell did not build:\n{tail}");
-            specs
-                .iter()
-                .map(|(origin, check)| CheckOutcome {
-                    name: check.name.clone(),
-                    origin: *origin,
-                    passed: false,
-                    millis: 0,
-                    tail: tail.clone(),
-                    confidence: None,
-                })
-                .collect()
-        }
+    let checks = match &prepared.fetched {
+        // `fetch` did not run: an older sandbox, which built nothing first.
+        None | Some(Ok(())) => run_checks(&repo, &specs, prepared.in_devenv).await?,
+        Some(Err(tail)) => specs
+            .iter()
+            .map(|(origin, check)| CheckOutcome {
+                name: check.name.clone(),
+                origin: *origin,
+                passed: false,
+                millis: 0,
+                tail: tail.clone(),
+                confidence: None,
+            })
+            .collect(),
     };
 
     let cost = stepped(ScoreStep::Cost, diff_cost(&repo, base, head)).await?;
@@ -368,10 +429,25 @@ pub async fn check(workdir: &Path) -> Result<CheckRun, ScoreError> {
     })
 }
 
-/// Both phases back to back, for callers with no network policy to switch.
+/// All three phases back to back, for callers with no network policy to switch.
 pub async fn score(root: &Path, attempt: &AttemptRef) -> Result<CheckRun, ScoreError> {
-    let workdir = prepare(root, attempt).await?;
-    check(&workdir).await
+    let prepared = prepare(root, attempt).await?;
+    fetch(&prepared.workdir).await?;
+    check(&prepared.workdir).await
+}
+
+/// The hosts `checkout`'s committed `ficus.toml` opens for its fetch: what
+/// an agent's workspace may reach, read when it opens (at the base commit).
+/// Empty when there is no ficus.toml, or it does not parse: the scorer says
+/// why when it scores.
+pub async fn fetch_hosts(checkout: &Path) -> Result<Vec<String>, ScoreError> {
+    if !succeeds(checkout, &["cat-file", "-e", "HEAD:ficus.toml"]).await? {
+        return Ok(Vec::new());
+    }
+    let text = git(checkout, "read ficus.toml", &["show", "HEAD:ficus.toml"]).await?;
+    Ok(RootChecks::parse(&text)
+        .map(|root| root.fetch.hosts)
+        .unwrap_or_default())
 }
 
 /// The root's checks, always read from the base commit.
@@ -629,6 +705,42 @@ mod tests {
         // greeting.txt: 1 line deleted, 2 added.
         assert_eq!(report.cost, 3);
         assert!(report.score().unwrap().passes());
+    }
+
+    #[tokio::test]
+    async fn the_roots_fetch_runs_between_prepare_and_check_and_names_its_hosts() {
+        let repo = Fixture::new();
+        let root = "[fetch]\nhosts = [\"static.crates.io\"]\nrun = \"echo fetched > deps.txt\"\n\n[[check]]\nname = \"has-deps\"\nrun = \"grep -q fetched deps.txt\"\n";
+        let base = repo.commit(&[("ficus.toml", root), ("a.txt", "a\n")], &[]);
+        let head = repo.commit(&[("a.txt", "b\n")], &[]);
+
+        let prepared = prepare(&repo.scratch(), &repo.request(base, head))
+            .await
+            .unwrap();
+        assert_eq!(prepared.hosts, vec!["static.crates.io".to_owned()]);
+        fetch(&prepared.workdir).await.unwrap();
+        let report = check(&prepared.workdir).await.unwrap().report;
+        assert!(report.score().unwrap().passes(), "{:?}", report.checks);
+    }
+
+    #[tokio::test]
+    async fn a_failed_fetch_fails_every_check_with_its_output() {
+        let repo = Fixture::new();
+        let root = "[fetch]\nrun = \"echo no such crate >&2; exit 3\"\n\n[[check]]\nname = \"t\"\nrun = \"true\"\n";
+        let base = repo.commit(&[("ficus.toml", root)], &[]);
+        let head = repo.commit(&[("a.txt", "a\n")], &[]);
+        let report = score(&repo.scratch(), &repo.request(base, head))
+            .await
+            .unwrap()
+            .report;
+        let only = &report.checks[0];
+        assert!(!only.passed);
+        assert!(
+            only.tail.contains("the root's fetch failed"),
+            "{}",
+            only.tail
+        );
+        assert!(only.tail.contains("no such crate"), "{}", only.tail);
     }
 
     #[tokio::test]
