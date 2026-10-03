@@ -1,6 +1,9 @@
 //! Ficus domain logic. Nothing here may depend on the Workers runtime, so it
 //! builds and tests natively under `cargo nextest run`.
 
+pub mod browse;
+pub mod diff;
+pub mod progress;
 pub mod scoring;
 pub mod tenant;
 pub mod tree;

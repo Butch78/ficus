@@ -16,6 +16,13 @@
 //! Exit 0 with JSON on stdout on success. Exit 2 when the attempt or root
 //! cannot be scored or the replay conflicts (retrying will not help), 1 for
 //! anything else; the reason is on stderr either way.
+//!
+//! An agent's workspace (the same image, another sandbox) also runs:
+//!
+//!   ficus-scorer fs <op>    a file operation, the request JSON on stdin
+//!   ficus-scorer exec       a shell command, the request JSON on stdin
+//!
+//! Each prints pi's `Result` JSON and exits 0; failures are in the answer.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -38,9 +45,11 @@ async fn main() -> ExitCode {
         ["prepare", attempt] => prepare(attempt).await,
         ["check", workdir] => check(Path::new(workdir)).await,
         ["rebase", job] => rebase(job).await,
+        ["fs", op] => return answer(ficus_scorer::workspace::fs(op, &stdin()).await),
+        ["exec"] => return answer(ficus_scorer::workspace::exec(&stdin()).await),
         _ => {
             eprintln!(
-                "usage: ficus-scorer prepare '<AttemptRef JSON>' | ficus-scorer check <workdir> | ficus-scorer rebase '<RebaseRef JSON>'"
+                "usage: ficus-scorer prepare '<AttemptRef JSON>' | check <workdir> | rebase '<RebaseRef JSON>' | fs <op> | exec"
             );
             return ExitCode::from(1);
         }
@@ -59,6 +68,21 @@ async fn main() -> ExitCode {
 
 fn unreadable(error: impl std::error::Error + Send + Sync + 'static) -> ScoreError {
     ScoreError::Io(std::io::Error::other(error))
+}
+
+/// The request a workspace operation reads: all of stdin.
+fn stdin() -> String {
+    let mut text = String::new();
+    if let Err(error) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut text) {
+        eprintln!("reading the request from stdin: {error}");
+    }
+    text
+}
+
+/// A workspace answer: pi's `Result`, success or not, on stdout.
+fn answer(result: serde_json::Value) -> ExitCode {
+    println!("{result}");
+    ExitCode::SUCCESS
 }
 
 async fn prepare(attempt: &str) -> Result<String, ScoreError> {

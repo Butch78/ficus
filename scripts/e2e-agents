@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Agents, end to end, on a deployed stage (opt-in: it spends Workers AI time
+# and takes several minutes, so CI does not run it):
+#
+#   init the demo root, write a task, start one agent on it, follow the
+#   agent's tool calls until it submits, wait for its score, accept.
+#
+# Needs FICUS_API. Like scripts/e2e, signs up a fresh user unless FICUS_ORG
+# and FICUS_KEY name an organization and a key to work in. FICUS_MODEL picks
+# the Workers AI model (default: the agents' own default).
+set -euo pipefail
+API=${FICUS_API:?set FICUS_API to the Api Worker URL}
+ROOT_DIR=$(cd "$(dirname "$0")/../examples/demo-root" && pwd)
+W=$(mktemp -d)
+T="agents-$(date +%s)"
+ORG=${FICUS_ORG:-"agents-org-$(date +%s)"}
+json=(-H "content-type: application/json" -H "Origin: $API")
+
+step() { echo; echo "== $*"; }
+
+if [ -n "${FICUS_KEY:-}" ]; then
+  KEY=$FICUS_KEY
+else
+  step "sign up, create organization $ORG, mint an API key"
+  JAR="$W/cookies"
+  curl -sf -c "$JAR" "${json[@]}" "$API/api/auth/sign-up/email" \
+    -d "{\"email\":\"agents-$(date +%s)-$RANDOM@example.com\",\"password\":\"$(openssl rand -hex 16)\",\"name\":\"agents\"}" >/dev/null
+  curl -sf -b "$JAR" "${json[@]}" "$API/api/auth/organization/create" -d "{\"name\":\"$ORG\",\"slug\":\"$ORG\"}" >/dev/null
+  KEY=$(curl -sf -b "$JAR" "${json[@]}" "$API/api/auth/api-key/create" -d '{"name":"agents"}' | jq -r .key)
+fi
+
+auth=(-H "x-api-key: $KEY" -H "content-type: application/json")
+call() { curl -s -X "$1" "${auth[@]}" "$API/v1/orgs/$ORG/trees/$T$2" ${3:+-d "$3"}; }
+
+step "init the demo root as $T"
+out=$(call POST /init '{}')
+mkdir "$W/root" && cp -r "$ROOT_DIR"/. "$W/root/"
+rm -rf "$W/root/.devenv" "$W/root/__pycache__"
+git -C "$W/root" init -q -b main && git -C "$W/root" add -A
+git -C "$W/root" -c user.name=root -c user.email=root@ficus.dev -c commit.gpgsign=false commit -qm "demo root"
+git -C "$W/root" -c http.extraHeader="Authorization: Bearer $(jq -r .token <<<"$out")" push -q "$(jq -r .remote <<<"$out")" HEAD:main
+call POST /init '{}' | jq -c '{name, head}'
+
+step "a task, worked by one agent"
+TASK=$(call POST /tasks '{"intent":"slugify should strip leading and trailing whitespace before slugging"}' | jq -r .task)
+body='{"agents":1}'
+[ -n "${FICUS_MODEL:-}" ] && body="{\"agents\":1,\"model\":\"$FICUS_MODEL\"}"
+ATTEMPT=$(call POST "/tasks/$TASK/agents" "$body" | jq -r '.attempts[0]')
+echo "task $TASK, attempt $ATTEMPT"
+
+step "follow the agent"
+seen=0
+for _ in $(seq 1 120); do
+  status=$(call GET "/attempts/$ATTEMPT/agent")
+  calls=$(jq '.calls | length' <<<"$status")
+  if [ "$calls" -gt "$seen" ]; then
+    jq -r --argjson from "$seen" '.calls[$from:][] | "  \(.tool): \(.summary[0:100]) [\(.state)]"' <<<"$status"
+    seen=$calls
+  fi
+  case "$(jq -r .state <<<"$status")" in
+    submitted) echo "submitted"; break ;;
+    stopped|failed|unassigned) echo "FAIL: the agent $(jq -r .state <<<"$status"): $(jq -r '.reason // .lastWords' <<<"$status")" >&2; exit 1 ;;
+  esac
+  sleep 10
+done
+
+step "its score"
+for _ in $(seq 1 90); do
+  state=$(call GET "/attempts/$ATTEMPT" | jq -c .attempt.state)
+  case "$state" in *Scored*|*Closed*) break ;; *) sleep 10 ;; esac
+done
+echo "$state"
+standing=$(call GET "/tasks/$TASK" | jq -c --argjson attempt "$ATTEMPT" '.attempts[] | select(.attempt.id == $attempt) | .standing')
+[ "$standing" = '"Best"' ] || { echo "FAIL: the agent's attempt stands $standing" >&2; exit 1; }
+
+step "accept it"
+call POST "/tasks/$TASK/accept" '{}' | jq -c '{accepted, node}'
+echo "tree=$T"

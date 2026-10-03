@@ -1,0 +1,6 @@
+/* Kumo's setup, in its order: Tailwind scans Kumo's compiled components,
+   Kumo's tokens register before Tailwind. Style with Kumo's semantic tokens
+   only (kumo-styling.test.ts holds the line). */
+@source "../../../node_modules/@cloudflare/kumo/dist/**/*.{js,jsx,ts,tsx}";
+@import "@cloudflare/kumo/styles";
+@import "tailwindcss";

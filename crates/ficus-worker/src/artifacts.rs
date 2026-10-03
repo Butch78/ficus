@@ -47,6 +47,31 @@ extern "C" {
 
     #[wasm_bindgen(method, catch, js_name = log)]
     async fn log_raw(this: &Repo, opts: JsValue) -> Result<JsValue, JsValue>;
+
+    #[wasm_bindgen(method, catch, js_name = readTree)]
+    async fn read_tree_raw(this: &Repo, hash: &str) -> Result<JsValue, JsValue>;
+
+    #[wasm_bindgen(method, catch, js_name = readFile)]
+    async fn read_file_raw(this: &Repo, args: JsValue) -> Result<JsValue, JsValue>;
+
+    #[wasm_bindgen(method, catch, js_name = readCommit)]
+    async fn read_commit_raw(this: &Repo, hash: &str) -> Result<JsValue, JsValue>;
+
+    #[wasm_bindgen(method, catch, js_name = readBlob)]
+    async fn read_blob_raw(this: &Repo, hash: &str) -> Result<JsValue, JsValue>;
+
+    /// The web `Blob` `readFile` resolves to: bytes plus a browser-safe type.
+    #[derive(Debug, Clone)]
+    pub type Blob;
+
+    #[wasm_bindgen(method, getter, js_name = type)]
+    fn mime(this: &Blob) -> String;
+
+    #[wasm_bindgen(method, getter)]
+    fn size(this: &Blob) -> f64;
+
+    #[wasm_bindgen(method, js_name = arrayBuffer)]
+    fn array_buffer(this: &Blob) -> js_sys::Promise;
 }
 
 impl EnvBinding for Namespace {
@@ -186,9 +211,69 @@ struct ForkOptions<'a> {
     default_branch_only: bool,
 }
 
+/// `ArtifactsCommitMetadata`, whole: what a reader of a repo's log sees.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all(deserialize = "camelCase"))]
+pub struct CommitMetadata {
+    pub hash: String,
+    pub tree_hash: String,
+    pub message: String,
+    pub author: Person,
+    pub committer: Person,
+    pub parents: Vec<String>,
+    pub authored_at: i64,
+    pub committed_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Person {
+    pub name: String,
+    pub email: String,
+}
+
+/// `ArtifactsTreeEntry`: one immediate child of a git tree.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TreeEntry {
+    pub name: String,
+    pub mode: String,
+    pub hash: String,
+    /// `tree`, `blob`, `symlink`, `gitlink` or `exec`.
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
+impl TreeEntry {
+    pub fn is_tree(&self) -> bool {
+        self.kind == "tree"
+    }
+}
+
+/// A blob's contents, unless it is larger than the caller would read.
+pub enum BlobBytes {
+    Bytes(Vec<u8>),
+    TooLarge,
+}
+
+/// A file's bytes and the content type Artifacts gives them.
+pub struct File {
+    pub content_type: String,
+    pub bytes: Vec<u8>,
+}
+
 #[derive(Serialize)]
-struct LogOptions {
+struct LogOptions<'a> {
+    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
+    git_ref: Option<&'a str>,
     limit: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    offset: Option<u32>,
+}
+
+#[derive(Serialize)]
+struct ReadFileArgs<'a> {
+    #[serde(rename = "ref")]
+    git_ref: &'a str,
+    path: &'a str,
 }
 
 impl Namespace {
@@ -302,8 +387,104 @@ impl Repo {
 
     /// The default branch's first-parent history, newest first.
     pub async fn history(&self, limit: u32) -> Result<Vec<Commit>, ArtifactsError> {
-        let opts = encode(&LogOptions { limit })?;
+        let opts = encode(&LogOptions {
+            git_ref: None,
+            limit,
+            offset: None,
+        })?;
         decode(self.log_raw(opts).await.map_err(ArtifactsError::from_js)?)
+    }
+
+    /// First-parent history from `git_ref` (the repo's HEAD if `None`),
+    /// newest first; empty if the ref does not resolve.
+    pub async fn log(
+        &self,
+        git_ref: Option<&str>,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<CommitMetadata>, ArtifactsError> {
+        let opts = encode(&LogOptions {
+            git_ref,
+            limit,
+            offset: Some(offset),
+        })?;
+        decode(self.log_raw(opts).await.map_err(ArtifactsError::from_js)?)
+    }
+
+    /// A tree's immediate children; `None` if there is no such object.
+    pub async fn read_tree(&self, hash: &str) -> Result<Option<Vec<TreeEntry>>, ArtifactsError> {
+        decode(
+            self.read_tree_raw(hash)
+                .await
+                .map_err(ArtifactsError::from_js)?,
+        )
+    }
+
+    /// A commit by id; `None` if there is no such object.
+    pub async fn read_commit(&self, hash: &str) -> Result<Option<CommitMetadata>, ArtifactsError> {
+        decode(
+            self.read_commit_raw(hash)
+                .await
+                .map_err(ArtifactsError::from_js)?,
+        )
+    }
+
+    /// A blob's bytes by id: `Ok(None)` if there is no such blob, and
+    /// `Blob::TooLarge` past `max_bytes` rather than copying it.
+    pub async fn read_blob(
+        &self,
+        hash: &str,
+        max_bytes: u32,
+    ) -> Result<Option<BlobBytes>, ArtifactsError> {
+        let found = self
+            .read_blob_raw(hash)
+            .await
+            .map_err(ArtifactsError::from_js)?;
+        if found.is_null() || found.is_undefined() {
+            return Ok(None);
+        }
+        let blob: Blob = found.unchecked_into();
+        if blob.size() > f64::from(max_bytes) {
+            return Ok(Some(BlobBytes::TooLarge));
+        }
+        let buffer = wasm_bindgen_futures::JsFuture::from(blob.array_buffer())
+            .await
+            .map_err(ArtifactsError::from_js)?;
+        Ok(Some(BlobBytes::Bytes(
+            js_sys::Uint8Array::new(&buffer).to_vec(),
+        )))
+    }
+
+    /// The file at `path` as of `git_ref`; `None` if either does not resolve
+    /// to a file. Files over `max_bytes` are refused rather than copied.
+    pub async fn read_file(
+        &self,
+        git_ref: &str,
+        path: &str,
+        max_bytes: u32,
+    ) -> Result<Option<File>, ArtifactsError> {
+        let args = encode(&ReadFileArgs { git_ref, path })?;
+        let found = self
+            .read_file_raw(args)
+            .await
+            .map_err(ArtifactsError::from_js)?;
+        if found.is_null() || found.is_undefined() {
+            return Ok(None);
+        }
+        let blob: Blob = found.unchecked_into();
+        if blob.size() > f64::from(max_bytes) {
+            return Err(ArtifactsError {
+                code: "MEMORY_LIMIT".to_owned(),
+                message: format!("{path} is larger than {max_bytes} bytes"),
+            });
+        }
+        let buffer = wasm_bindgen_futures::JsFuture::from(blob.array_buffer())
+            .await
+            .map_err(ArtifactsError::from_js)?;
+        Ok(Some(File {
+            content_type: blob.mime(),
+            bytes: js_sys::Uint8Array::new(&buffer).to_vec(),
+        }))
     }
 }
 

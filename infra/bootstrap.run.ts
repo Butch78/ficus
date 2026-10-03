@@ -67,7 +67,23 @@ export default Alchemy.Stack(
       ],
     });
 
+    // What the deployed web UI holds at runtime to show an operation's trace:
+    // read access to Workers Observability and nothing else, so the token
+    // inside a running Worker is not the one that deploys Workers.
+    const traces = yield* Cloudflare.ApiToken.AccountApiToken("ObservabilityReadToken", {
+      name: "ficus-observability-read",
+      accountId,
+      policies: [
+        {
+          effect: "allow",
+          permissionGroups: ["Workers Observability Read"],
+          resources: { [`com.cloudflare.api.account.${accountId}`]: "*" },
+        },
+      ],
+    });
+
     yield* secret("CloudflareApiToken", "CLOUDFLARE_API_TOKEN", ci.value);
+    yield* secret("ObservabilityReadToken", "FICUS_OBSERVABILITY_TOKEN", traces.value);
     yield* secret("CloudflareAccountId", "CLOUDFLARE_ACCOUNT_ID", Redacted.make(accountId));
 
     // The switch: deploy.yml's jobs skip unless this reads `true`.

@@ -3,6 +3,7 @@
  *
  *   /api/auth/*                         Better Auth: sign-up, sign-in,
  *                                       organizations, API keys
+ *   GET /v1/orgs/<org>/trees            the organization's trees
  *   /v1/orgs/<org>/trees/<tree>[/...]   the tree API, for members of <org>
  *
  * A request to /v1 is authenticated (session cookie or `x-api-key`; a key's
@@ -12,8 +13,12 @@
  * tenant key. Nothing reaches the tree Worker any other way.
  */
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as CloudflareTracer from "../observability/tracer.ts";
 import { API_KEY_HEADER, AUTH_BASE_PATH, Auth, layer as authLayer } from "./auth.ts";
+import * as Directory from "./directory.ts";
+import * as Progress from "./progress.ts";
 import { TENANT_HEADER, tenantKey } from "./tenant.ts";
 
 interface Bindings {
@@ -54,11 +59,13 @@ export const treeRoute = (pathname: string) => {
   return org === undefined || tree === undefined ? undefined : { org, tree, rest: rest ?? "" };
 };
 
-const forwardToTree = Effect.fn("Api.forwardToTree")(function* (
-  env: Bindings,
-  request: Request,
-  route: { readonly org: string; readonly tree: string; readonly rest: string },
-) {
+/** `/v1/orgs/<org>/trees`: the organization's slug; undefined otherwise. */
+export const treesRoute = (pathname: string) => /^\/v1\/orgs\/([^/]+)\/trees\/?$/.exec(pathname)?.[1];
+
+/** The organization `slug` names, if the caller is signed in and a member. */
+const membership = Effect.fn("Api.membership")(function* (request: Request, slug: string) {
+  yield* Effect.annotateCurrentSpan("ficus.org", slug);
+
   const auth = yield* Auth;
 
   const session = yield* Effect.tryPromise({
@@ -73,14 +80,33 @@ const forwardToTree = Effect.fn("Api.forwardToTree")(function* (
   // Answers only to members: a non-member and a missing organization are the
   // same 404, so membership of an organization does not leak its existence.
   const organization = yield* Effect.tryPromise({
-    try: () => auth.api.getFullOrganization({ query: { organizationSlug: route.org }, headers: request.headers }),
-    catch: () => fail(404, `no organization ${route.org} that you belong to`),
+    try: () => auth.api.getFullOrganization({ query: { organizationSlug: slug }, headers: request.headers }),
+    catch: () => fail(404, `no organization ${slug} that you belong to`),
   });
 
   if (organization === null) {
-    return yield* fail(404, `no organization ${route.org} that you belong to`);
+    return yield* fail(404, `no organization ${slug} that you belong to`);
   }
 
+  return organization;
+});
+
+const listTrees = Effect.fn("Api.listTrees")(function* (env: Bindings, request: Request, slug: string) {
+  const organization = yield* membership(request, slug);
+
+  const trees = yield* Directory.list(organization.id).pipe(
+    Effect.mapError((error) => fail(503, error.message)),
+  );
+
+  return Response.json({ trees });
+});
+
+const forwardToTree = Effect.fn("Api.forwardToTree")(function* (
+  env: Bindings,
+  request: Request,
+  route: { readonly org: string; readonly tree: string; readonly rest: string },
+) {
+  const organization = yield* membership(request, route.org);
   const tenant = yield* tenantKey(organization.id);
   const headers = new Headers(request.headers);
 
@@ -100,10 +126,49 @@ const forwardToTree = Effect.fn("Api.forwardToTree")(function* (
     init.body = request.body;
   }
 
-  return yield* Effect.tryPromise({
+  const response = yield* Effect.tryPromise({
     try: () => env.TREE.fetch(new Request(url, init)),
     catch: (cause) => fail(502, `the tree service is unreachable: ${String(cause)}`),
   });
+
+  if (request.method !== "POST" || route.rest !== "/init" || !response.ok) {
+    return response;
+  }
+
+  // An init the tree service accepted puts the tree in the directory. The
+  // init itself has happened either way, so a failure to record it is
+  // logged rather than turned into a failed init.
+  const record = Directory.record(organization.id, route.tree, Date.now()).pipe(
+    Effect.as(Progress.stepLine("record", "complete")),
+    Effect.catchTag("Directory.Failure", (error) =>
+      Effect.logError(error.message).pipe(Effect.as(Progress.stepLine("record", "error"))),
+    ),
+  );
+
+  const streamed = response.headers.get("content-type")?.startsWith(Progress.CONTENT_TYPE) ?? false;
+
+  // A streamed init answers 200 before it is done: record it once its
+  // outcome says it succeeded, as the stream's last step.
+  if (streamed && response.body !== null) {
+    // The request's services (the tracer among them), for after it returns.
+    const services = yield* Effect.context<never>();
+
+    return new Response(
+      Progress.afterSuccess(response.body, () =>
+        Effect.runPromiseWith(services)(
+          // An entry point of its own: the request's Effect, and the D1 client
+          // it was given, are done by the time the stream ends.
+          // oxlint-disable-next-line effecttsgo/strict-effect-provide -- runs after the request's Effect: an entry point
+          record.pipe(Effect.provide(Directory.directoryLayer(env.AUTH_DB))),
+        ),
+      ),
+      response,
+    );
+  }
+
+  yield* record;
+
+  return response;
 });
 
 const handle = Effect.fn("Api.handle")(function* (env: Bindings, request: Request) {
@@ -122,6 +187,12 @@ const handle = Effect.fn("Api.handle")(function* (env: Bindings, request: Reques
     });
   }
 
+  const trees = treesRoute(pathname);
+
+  if (trees !== undefined && request.method === "GET") {
+    return yield* listTrees(env, request, trees);
+  }
+
   const route = treeRoute(pathname);
 
   if (route === undefined) {
@@ -138,9 +209,16 @@ export default {
         Effect.catchTag("Api.Failure", (error) =>
           Effect.succeed(Response.json({ error: error.message }, { status: error.status })),
         ),
-        // Better Auth builds its URLs from the origin it is served on.
+        // Better Auth builds its URLs from the origin it is served on; the
+        // directory has its D1 client; the tracer records this request's Effect spans in its Cloudflare trace.
         // oxlint-disable-next-line effecttsgo/strict-effect-provide -- the Worker's entry point
-        Effect.provide(authLayer(env.AUTH_DB, env.BETTER_AUTH_SECRET, new URL(request.url).origin)),
+        Effect.provide(
+          Layer.mergeAll(
+            authLayer(env.AUTH_DB, env.BETTER_AUTH_SECRET, new URL(request.url).origin),
+            Directory.directoryLayer(env.AUTH_DB),
+            CloudflareTracer.layer,
+          ),
+        ),
       ),
     ),
 } satisfies ExportedHandler<Bindings>;

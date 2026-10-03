@@ -12,14 +12,16 @@
 #   accept (oldest ready task: B) -> release the head
 #
 # Needs FICUS_API, the Api Worker's URL. Signs up a fresh user, creates an
-# organization and an API key, and drives everything through the public API.
+# organization and an API key, and drives everything through the public API;
+# or, with FICUS_ORG and FICUS_KEY, works in that organization with that key
+# (to leave a full tree where you can see it in the UI).
 # Creates repos in the stage's Artifacts namespace.
 set -euo pipefail
 API=${FICUS_API:?set FICUS_API to the Api Worker URL, e.g. https://ficus-api-dev.<account>.workers.dev}
 ROOT_DIR=$(cd "$(dirname "$0")/../examples/demo-root" && pwd)
 T="e2e-$(date +%s)"
 W=$(mktemp -d)
-ORG="e2e-org-$(date +%s)"
+ORG=${FICUS_ORG:-"e2e-org-$(date +%s)"}
 JAR="$W/cookies"
 # Better Auth refuses cookie-authenticated POSTs without an Origin (CSRF);
 # a browser always sends one, curl has to be told.
@@ -27,13 +29,19 @@ json=(-H "content-type: application/json" -H "Origin: $API")
 
 step() { echo; echo "== $*"; }
 
-step "sign up, create organization $ORG, mint an API key"
-EMAIL="e2e-$(date +%s)-$RANDOM@example.com"
-curl -sf -c "$JAR" "${json[@]}" "$API/api/auth/sign-up/email" \
-  -d "{\"email\":\"$EMAIL\",\"password\":\"$(openssl rand -hex 16)\",\"name\":\"e2e\"}" | jq -c '{user: .user.email}'
-curl -sf -b "$JAR" "${json[@]}" "$API/api/auth/organization/create" -d "{\"name\":\"$ORG\",\"slug\":\"$ORG\"}" | jq -c '{org: .slug}'
-KEY=$(curl -sf -b "$JAR" "${json[@]}" "$API/api/auth/api-key/create" -d '{"name":"e2e"}' | jq -r .key)
-[ -n "$KEY" ] && [ "$KEY" != null ] || { echo "FAIL: no API key" >&2; exit 1; }
+if [ -n "${FICUS_KEY:-}" ]; then
+  KEY=$FICUS_KEY
+  [ -n "${FICUS_ORG:-}" ] || { echo "FICUS_KEY needs FICUS_ORG" >&2; exit 1; }
+else
+  step "sign up, create organization $ORG, mint an API key"
+  EMAIL="e2e-$(date +%s)-$RANDOM@example.com"
+  curl -sf -c "$JAR" "${json[@]}" "$API/api/auth/sign-up/email" \
+    -d "{\"email\":\"$EMAIL\",\"password\":\"$(openssl rand -hex 16)\",\"name\":\"e2e\"}" | jq -c '{user: .user.email}'
+  curl -sf -b "$JAR" "${json[@]}" "$API/api/auth/organization/create" -d "{\"name\":\"$ORG\",\"slug\":\"$ORG\"}" | jq -c '{org: .slug}'
+  KEY=$(curl -sf -b "$JAR" "${json[@]}" "$API/api/auth/api-key/create" -d '{"name":"e2e"}' | jq -r .key)
+  [ -n "$KEY" ] && [ "$KEY" != null ] || { echo "FAIL: no API key" >&2; exit 1; }
+
+fi
 
 auth=(-H "x-api-key: $KEY" "${json[@]}")
 call() { local m=$1 p=$2 d=${3:-}; if [ -n "$d" ]; then curl -s -X "$m" "${auth[@]}" "$API/v1/orgs/$ORG/trees/$T$p" -d "$d"; else curl -s -X "$m" "${auth[@]}" "$API/v1/orgs/$ORG/trees/$T$p"; fi; }

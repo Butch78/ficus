@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# End-to-end through the web UI (infra/src/web) of a deployed stage:
+#
+#   sign up on the UI's origin (its /api/auth proxies to the Api)
+#   create an organization and an API key there, with that session
+#   init a tree through the Api with the key: empty root, push demo root, init
+#   read it back as the UI shows it: the organization, its trees, the tree,
+#   and the root's repo (history, directory, a file) through Artifacts
+#   init from a remote with progress streamed (application/x-ndjson)
+#
+# Needs FICUS_WEB (the UI's URL) and FICUS_API (the Api's URL).
+set -euo pipefail
+WEB=${FICUS_WEB:?set FICUS_WEB to the web UI URL}
+API=${FICUS_API:?set FICUS_API to the Api Worker URL}
+ROOT_DIR=$(cd "$(dirname "$0")/../examples/demo-root" && pwd)
+W=$(mktemp -d)
+STAMP="$(date +%s)-$RANDOM"
+ORG="web-e2e-$STAMP"
+T="web-$(date +%s)"
+JAR="$W/cookies"
+# The UI's origin: the session belongs to it, and Better Auth wants it as Origin.
+json=(-H "content-type: application/json" -H "Origin: $WEB")
+
+step() { echo; echo "== $*"; }
+
+page() { # path -> body; fails on anything but 200
+  local out
+  out=$(curl -s -b "$JAR" -w '\n%{http_code}' "$WEB$1")
+  [ "${out##*$'\n'}" = 200 ] || { echo "FAIL: GET $1 answered ${out##*$'\n'}" >&2; return 1; }
+  printf '%s' "${out%$'\n'*}"
+}
+
+expect() { # path text
+  page "$1" | grep -qF -- "$2" || { echo "FAIL: $1 does not show '$2'" >&2; return 1; }
+  echo "ok  $1 shows '$2'"
+}
+
+step "signed out, the UI sends you to sign in"
+[ "$(curl -s -o /dev/null -w '%{redirect_url}' "$WEB/")" = "$WEB/sign-in" ] || { echo "FAIL: / did not redirect to /sign-in" >&2; exit 1; }
+expect /sign-in "Sign in"
+
+step "sign up on the UI's origin; create organization $ORG and an API key with that session"
+curl -sf -c "$JAR" "${json[@]}" "$WEB/api/auth/sign-up/email" \
+  -d "{\"email\":\"web-$STAMP@example.com\",\"password\":\"$(openssl rand -hex 16)\",\"name\":\"web-e2e\"}" | jq -c '{user: .user.email}'
+curl -sf -b "$JAR" "${json[@]}" "$WEB/api/auth/organization/create" -d "{\"name\":\"$ORG\",\"slug\":\"$ORG\"}" | jq -c '{org: .slug}'
+KEY=$(curl -sf -b "$JAR" "${json[@]}" "$WEB/api/auth/api-key/create" -d '{"name":"web-e2e"}' | jq -r .key)
+[ -n "$KEY" ] && [ "$KEY" != null ] || { echo "FAIL: no API key" >&2; exit 1; }
+expect / "$ORG"
+expect "/orgs/$ORG" "No trees yet"
+
+step "init $T through the Api: empty root, push the demo root, init again"
+call() { curl -sf -X POST -H "x-api-key: $KEY" -H "content-type: application/json" "$API/v1/orgs/$ORG/trees/$T$1" -d "$2"; }
+out=$(call /init '{}')
+mkdir "$W/root" && cp -r "$ROOT_DIR"/. "$W/root/" && rm -rf "$W/root/.devenv" "$W/root/__pycache__"
+git -C "$W/root" init -q -b main && git -C "$W/root" add -A
+git -C "$W/root" -c user.name=root -c user.email=root@ficus.dev -c commit.gpgsign=false commit -qm "demo root"
+git -C "$W/root" -c http.extraHeader="Authorization: Bearer $(jq -r .token <<<"$out")" push -q "$(jq -r .remote <<<"$out")" HEAD:main
+call /init '{}' | jq -c '{name, head}'
+call /tasks '{"intent":"slugify should drop punctuation"}' | jq -c .
+
+step "the UI shows the tree and reads the root's repo through Artifacts"
+expect "/orgs/$ORG" "$T"
+expect "/orgs/$ORG/trees/$T" "slugify should drop punctuation"
+expect "/orgs/$ORG/trees/$T/nodes/0" "demo root"
+expect "/orgs/$ORG/trees/$T/nodes/0" "slug.py"
+expect "/orgs/$ORG/trees/$T/nodes/0?path=tests" "test_slug.py"
+expect "/orgs/$ORG/trees/$T/nodes/0?file=slug.py" "def slugify"
+
+step "an init streams its steps as they happen, then its outcome, then the Api's record"
+lines=$(curl -sN -X POST -H "x-api-key: $KEY" -H "content-type: application/json" -H "accept: application/x-ndjson" \
+  "$API/v1/orgs/$ORG/trees/$T-streamed/init" -d '{"source":"https://github.com/Butch78/ficus"}')
+jq -c 'select(.kind == "step") | [.step, .state]' <<<"$lines" | uniq | tr '\n' ' '; echo
+for want in '"step":"import","state":"complete"' '"step":"lock","state":"complete"' '"step":"save","state":"complete"' '"kind":"outcome","status":200' '"step":"record","state":"complete"'; do
+  grep -qF "$want" <<<"$lines" || { echo "FAIL: the stream has no $want" >&2; exit 1; }
+done
+[ "$(tail -1 <<<"$lines" | jq -r .step)" = record ] || { echo "FAIL: the Api's record is not the last line" >&2; exit 1; }
+expect "/orgs/$ORG" "$T-streamed"
+
+step "another organization's tree is a 404"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$WEB/orgs/somebody-else/trees/$T")" = 404 ] || { echo "FAIL: expected 404" >&2; exit 1; }
+echo "ok"

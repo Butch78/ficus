@@ -1,0 +1,7 @@
+{
+  // Runs inside Workers (the Api and the web UI provide it): workerd's types.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "types": ["@cloudflare/workers-types", "bun"], "lib": ["ESNext"] },
+  "include": ["."],
+  "exclude": []
+}

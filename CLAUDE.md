@@ -39,9 +39,66 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   `GET /trees/<t>/attempts/<id>` (state + report) · `POST /trees/<t>/tasks/<id>/accept` ·
   `POST /trees/<t>/accept` (oldest ready task; both set the alarm that rebases the behind attempts) ·
   `GET /trees/<t>/behind` · `POST /trees/<t>/attempts/<id>/{retry,abandon}` ·
-  `POST /trees/<t>/release {node?}` · `GET /trees/<t>/release` · `GET /trees/<t>`.
+  `POST /trees/<t>/release {node?}` · `GET /trees/<t>/release` · `GET /trees/<t>` ·
+  `GET /trees/<t>/{attempts,nodes}/<id>/{log,tree,file}?ref=&path=` (reads through Artifacts; the tree picks
+  the repo, `ficus-core::browse`; files leave as text/plain or octet-stream, never HTML).
+  The Api lists an org's trees (`GET /v1/orgs/<org>/trees`) from D1 (`ficus_tree`), recorded on each 2xx init.
+- Api D1: Drizzle 1.0 RC (pinned to alchemy's peer, `1.0.0-rc.5-ab785fc`). Ficus's tables are declared in
+  `infra/src/api/schema.ts` and queried through `drizzle-orm/effect-d1` (`@effect/sql-d1`'s `D1Client`, provided
+  per request). Migrations are drizzle-kit folders in `src/api/migrations`: alchemy's `Drizzle.Schema` writes
+  one on deploy for any change to schema.ts. Better Auth's tables are not in schema.ts: `bun run auth:schema
+  <name>` asks Better Auth what the chain lacks and writes a custom migration. The baseline is `IF NOT EXISTS`
+  so stages migrated before Drizzle adopt it (`migrations.test.ts`). Skip `drizzle-orm/effect-schema`: it calls
+  `Schema.isLengthBetween`, which effect 4.0.0 lacks.
   Every attempt/node is its own Artifacts repo (`<t>-a<id>`); git auth is `http.extraHeader="Authorization: Bearer <token>"`.
 - `POST /trees/<t>/init {}` with no `source` creates an empty root and returns a write token; push, init again.
+- Web UI: `infra/src/web`, vinext 1.x (Next.js App Router API on Vite) via `Cloudflare.Website.Vinext`,
+  its own stack `infra/web.run.ts` (stage = the Ficus stack's; binds `Api` by `Cloudflare.Worker.ref`).
+  The browser only talks to the UI's origin: `app/api/auth/*` proxies Better Auth, server components call
+  the Api over the binding with the UI's origin, and the Api builds one Better Auth per origin.
+  Pages run Effects through `lib/run.ts` (`load`: 401 → /sign-in, 404 → notFound). `just e2e-web` smokes it.
+  Styled with Kumo (`@cloudflare/kumo`, Tailwind v4; guide: `node_modules/@cloudflare/kumo/ai/USAGE.md`, or
+  `bunx kumo doc <Component>`): Kumo components and semantic tokens only (`bg-kumo-*`, `text-kumo-*`,
+  `border-kumo-*`), no palette colors, no `dark:` (`src/web/kumo-styling.test.ts` enforces it). Server
+  components take compound parts (`Table.Row`, `LayerCard.Primary`, ...) from `components/kumo.ts`: on a
+  client reference, `Table.Row` is undefined (React error #130).
+- Agents: `infra/src/agents` (Worker `ficus-agents-<stage>`), one `AgentActor` per agent attempt: pi-durable on
+  Workers AI in two phases (a cheap scout plans, `@cf/moonshotai/kimi-k2.7-code` changes), Clef judging the plan
+  and the diff (`gates.ts`). `POST /trees/<t>/tasks/<id>/agents {agents, model}` starts + forks attempts and keeps
+  each assignment; the TreeObject alarm (`tree_object/agents.rs`) hands them to the `AGENTS` binding, then polls
+  `GET /status`: submitted → the tree submits the attempt; stopped/failed/unassigned → abandons it with the
+  agent's last words. Nothing calls the tree back (cross-Worker DO bindings both ways can't deploy on a fresh
+  stage). The agent's workspace is a Sandbox: `POST /workspace` (egress: the attempt repo with Egress-added
+  token + nix caches; the Sandbox checks the attempt out), `/fs/<op>` and `/exec` run `ficus-scorer fs|exec`
+  (request on stdin). Egress routes belong to the Sandbox DO instance: `#open` reopens them from storage on each
+  new instance. `/grow` answers at once and opens the workspace in a detached fiber (placing a container can
+  take minutes; the tree's alarm must not wait). Once an attempt stops working the tree `POST /stop`s its agent,
+  which aborts pi and `DELETE /workspace`s: an idle workspace holds one of the Sandbox class's instances, and
+  when they run out new ones fail with "There is no container instance that can be provided". pi's shell
+  timeouts are seconds (`sandbox-env.ts` `timeoutMs`).
+- UI pages: tree (head, open tasks and how each stands, New task, accepted history); task (standings from
+  `ficus-core` `Tree::standings`, which shares `best_attempt()` with `accept`; the case for accepting; Start
+  agents; work one yourself); attempt (timeline, actions, diff via `GET .../{attempts,nodes}/<id>/diff`, scoring
+  ledger, the agent at work).
+- Tracing is Effect's: `infra/src/observability/tracer.ts` is an Effect `Tracer` layer that records every
+  `Effect.fn`/`withSpan` as a Cloudflare span (scalar annotations → attributes), nested with the platform's own.
+  The Api and the UI provide it per request; name spans with `Effect.fn("Area.what")`, annotate with
+  `Effect.annotateCurrentSpan`. Never call `cloudflare:workers` `tracing` directly.
+- Live progress: `POST /trees/<t>/init` with `Accept: application/x-ndjson` streams one JSON line per step
+  (`ficus-core::progress`: import → settle → lock → save, then the outcome, the answer the plain call gives);
+  without that header it answers as before. `TreeObject` holds `Rc<State>` so `init_streaming` can spawn the
+  work while the response streams. The Api passes the stream through and appends `record` after a 2xx outcome.
+  The UI's `InitForm` reads it via `/api/init` and ticks steps off (`lib/init-progress.ts`), shown with AI
+  Elements' Task and ChainOfThought ported to Kumo (`components/elements/`, Apache-2.0, LICENSE there).
+  Scoring streams the same way (Sandbox `/score` → `scoring:<attempt>` ledger, shown live on attempt pages).
+- "What happened" panel: the UI shows an operation's trace like an agent's tool call: one line
+  (`✓ Init site · 3.7 s`) → steps in words (`lib/activity.ts` `sentence()`/`narrate()`, keyed on span names;
+  add a case when you add a span worth telling) → the raw spans. Same-account service bindings share one trace
+  (UI → Api → tree Worker → TreeObject → Artifacts/D1). A Worker can't read its trace id, so an operation is an
+  `Effect.fn("ficus.<op>")` annotated with `ficus.operation` (uuid) + `ficus.org`; `/api/activity` (members only)
+  finds it through the Workers Observability query API. Traces land ~15-20 s after the work, Durable Object
+  spans later. Needs `FICUS_OBSERVABILITY_TOKEN` (Workers Observability Read; bootstrap mints
+  `ficus-observability-read` for CI); unset → "no trace".
 - Scoring: TreeObject's alarm first rebases every behind submitted attempt (one `Sandbox` per attempt,
   `POST /rebase`: Egress grants the behind repo read and the fresh repo write; a conflict is 422
   and final, a sandbox failure retries up to 5 times), then scores every Checking attempt in parallel, one `Sandbox` per attempt
@@ -54,7 +111,9 @@ Rust git platform on Cloudflare Workers + Artifacts. Contest entry, deadline 202
   travel in the request and run after the root's. Cost = diff lines; the report also lists `touched` paths.
   `[[judge]]` in ficus.toml = a yes/no question on `{task, diff}` the Sandbox asks Clef (Workers AI binding)
   after the container is gone; counts as a check, and its mean confidence breaks cost ties at acceptance.
-  Image: `infra/src/sandbox/context` (nix + devenv; binary from `scripts/build-scorer`).
+  Image: `infra/src/sandbox/context` (nix + devenv; binary from `scripts/build-scorer`). Run
+  `scripts/build-scorer` before `bun run deploy`: alchemy builds the image before its ScorerBinary step, so
+  otherwise the image copies a missing or stale binary.
 - The deploy token needs Containers: Edit (registry credentials) on top of Workers, Workers AI, Artifacts.
 - `just e2e` (FICUS_API=https://ficus-dev.fruitcards.workers.dev) runs the full cycle live.
 - After a deploy, old isolates keep serving for a few seconds: wait before judging a change live

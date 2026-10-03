@@ -6,10 +6,16 @@
 //! Where a handler needs Artifacts both before and after a change, it reloads
 //! the tree after the await rather than reusing the copy it read before.
 
+use std::rc::Rc;
 use std::time::Duration;
 
+use ficus_core::browse::{FilePath, GitRef, Subject};
+use ficus_core::progress::{
+    CONTENT_TYPE as PROGRESS, Incoming, InitStep, Ledger, StepState, outcome_body,
+};
 use ficus_core::scoring::{CheckSpec, RebaseReport, RebaseRequest, ScoreReport, ScoreRequest};
 use ficus_core::tree::{AttemptId, HistoryEntry, NodeId, Oid, RepoName, TaskId, Tree, TreeError};
+use futures_util::StreamExt;
 use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use worker::{
@@ -17,7 +23,10 @@ use worker::{
     durable_object,
 };
 
-use crate::artifacts::{ArtifactsError, Namespace, Scope};
+mod agents;
+
+use crate::artifacts::{ArtifactsError, CommitMetadata, Namespace, Repo, Scope};
+use crate::progress::Progress;
 
 const TREE_KEY: &str = "tree";
 /// How long `init` waits for an import before giving up: 30 polls, 2s apart.
@@ -25,6 +34,10 @@ const IMPORT_POLLS: u32 = 30;
 const IMPORT_POLL_MS: u64 = 2000;
 /// Deep enough to find a attempt's base under any sensible amount of work.
 const HISTORY_DEPTH: u32 = 1000;
+/// What a reader may page through, and the largest file it may read.
+const LOG_PAGE_DEFAULT: u32 = 30;
+const LOG_PAGE_MAX: u32 = 100;
+const FILE_MAX_BYTES: u32 = 1024 * 1024;
 /// The scorer's read token outlives any scoring run, including a cold devenv.
 const SCORER_TOKEN_TTL_SECS: u32 = 3600;
 /// A attempt whose scoring fails this many times for the scorer's own reasons
@@ -35,7 +48,8 @@ const SCORING_RETRY: Duration = Duration::from_secs(60);
 
 #[durable_object]
 pub struct TreeObject {
-    state: State,
+    /// Shared, so work that outlives a request (a streamed init) can hold it.
+    state: Rc<State>,
     env: Env,
 }
 
@@ -73,8 +87,8 @@ struct ReleaseBody {
     node: Option<NodeId>,
 }
 
-/// Everything an agent needs to start working a attempt.
-#[derive(Serialize)]
+/// Everything an agent needs to start working an attempt.
+#[derive(Serialize, Deserialize)]
 struct Started {
     attempt: AttemptId,
     task: TaskId,
@@ -90,12 +104,19 @@ struct Started {
 
 impl DurableObject for TreeObject {
     fn new(state: State, env: Env) -> Self {
-        Self { state, env }
+        Self {
+            state: Rc::new(state),
+            env,
+        }
     }
 
     /// Rebases first: they turn behind attempts into checking ones, which
     /// the scoring that follows picks up in the same alarm.
     async fn alarm(&self) -> Result<Response> {
+        // Agents first: a submission they report is checked in this alarm.
+        // Then rebases: they turn behind attempts into checking ones, which
+        // the scoring that follows picks up in the same alarm.
+        self.tend_agents().await?;
         self.rebase_behind().await?;
         self.score_checking().await
     }
@@ -126,7 +147,30 @@ impl DurableObject for TreeObject {
                 Ok(attempt) => self.show_attempt(attempt).await,
                 Err(_) => Response::error("attempt id must be a number", 400),
             },
-            (Method::Post, ["init"]) => self.init(name, req.json().await?).await,
+            (Method::Get, ["tasks", task]) => match task.parse() {
+                Ok(task) => self.show_task(task).await,
+                Err(_) => Response::error("task id must be a number", 400),
+            },
+            (Method::Get, ["attempts", attempt, "agent"]) => match attempt.parse() {
+                Ok(attempt) => self.agent_status(attempt).await,
+                Err(_) => Response::error("attempt id must be a number", 400),
+            },
+            (Method::Get, ["attempts", attempt, read]) => match attempt.parse() {
+                Ok(attempt) => self.read(Subject::Attempt(attempt), read, &req).await,
+                Err(_) => Response::error("attempt id must be a number", 400),
+            },
+            (Method::Get, ["nodes", node, read]) => match node.parse() {
+                Ok(node) => self.read(Subject::Node(node), read, &req).await,
+                Err(_) => Response::error("node id must be a number", 400),
+            },
+            (Method::Post, ["init"]) => {
+                let body = req.json().await?;
+                if wants_progress(&req)? {
+                    self.init_streaming(name, body)
+                } else {
+                    self.init(name, body, &Progress::silent()).await
+                }
+            }
             (Method::Post, ["tasks"]) => self.task(req.json().await?).await,
             (Method::Post, ["tasks", task, "attempts"]) => match task.parse() {
                 Ok(task) => self.start(task, req.json().await?).await,
@@ -135,6 +179,10 @@ impl DurableObject for TreeObject {
             (Method::Post, ["accept"]) => self.accept(None).await,
             (Method::Post, ["tasks", task, "accept"]) => match task.parse() {
                 Ok(task) => self.accept(Some(task)).await,
+                Err(_) => Response::error("task id must be a number", 400),
+            },
+            (Method::Post, ["tasks", task, "agents"]) => match task.parse() {
+                Ok(task) => self.start_agents(name, task, req.json().await?).await,
                 Err(_) => Response::error("task id must be a number", 400),
             },
             (Method::Post, ["attempts", attempt, action]) => match attempt.parse() {
@@ -272,7 +320,9 @@ impl TreeObject {
             intent: job.intent.clone(),
             checks: job.checks.clone(),
         };
-        let scored = self.ask_sandbox(&job.repo, "score", &request).await;
+        let scored = self
+            .ask_sandbox(&job.repo, "score", &request, Some(job.attempt))
+            .await;
         if let Err(error) = repo.revoke_token(&token.id).await {
             worker::console_error!(
                 "revoking the scorer's token on {}: {error}",
@@ -408,7 +458,10 @@ impl TreeObject {
             onto_head: job.onto_head.clone(),
             onto_branch: onto.default_branch,
         };
-        let outcome = match self.ask_sandbox(&fresh.repo, "rebase", &request).await {
+        let outcome = match self
+            .ask_sandbox(&fresh.repo, "rebase", &request, None)
+            .await
+        {
             SandboxOutcome::Report(report) => RebaseOutcome::Report(report),
             SandboxOutcome::Unscorable(reason) => RebaseOutcome::Conflict(reason),
             SandboxOutcome::Failed(reason) => RebaseOutcome::Failed(reason),
@@ -435,21 +488,32 @@ impl TreeObject {
     }
 
     /// Ask the sandbox named after `repo` for `action`; 422 means the input
-    /// is at fault and retrying will not help.
+    /// is at fault and retrying will not help. With `ledger`, the sandbox
+    /// streams its steps and each is recorded in that attempt's scoring
+    /// ledger as it happens, for pages to show live.
     async fn ask_sandbox<Req: Serialize, Rep: for<'de> Deserialize<'de>>(
         &self,
         repo: &RepoName,
         action: &str,
         request: &Req,
+        ledger: Option<AttemptId>,
     ) -> SandboxOutcome<Rep> {
+        // Scoring streams its steps; a rebase answers once.
+        let key = ledger.map(|attempt| format!("scoring:{attempt}"));
+        let mut steps = Ledger::default();
         let attempt = async {
+            if let Some(key) = &key {
+                self.state.storage().put(key, &steps).await?;
+            }
             let stub = self
                 .env
                 .durable_object("SANDBOX")?
                 .get_by_name(repo.as_str())?;
-            // axum's Json extractor refuses a body without this (415).
             let headers = Headers::new();
             headers.set("content-type", "application/json")?;
+            if key.is_some() {
+                headers.set("accept", PROGRESS)?;
+            }
             let mut init = RequestInit::new();
             init.with_method(Method::Post)
                 .with_headers(headers)
@@ -460,20 +524,107 @@ impl TreeObject {
                     &init,
                 )?)
                 .await?;
-            Ok::<_, worker::Error>((response.status_code(), response.text().await?))
+            let Some(key) = key.as_ref().filter(|_| response.status_code() == 200) else {
+                return Ok(Some((
+                    response.status_code(),
+                    outcome_body(&response.text().await?),
+                )));
+            };
+            let mut body = response.stream()?;
+            let mut pending = String::new();
+            let mut outcome = None;
+            while let Some(chunk) = body.next().await {
+                pending.push_str(&String::from_utf8_lossy(&chunk?));
+                while let Some(end) = pending.find('\n') {
+                    let line: String = pending.drain(..=end).collect();
+                    match Incoming::parse(&line) {
+                        Some(Incoming::Step {
+                            step,
+                            state,
+                            item,
+                            detail,
+                        }) => {
+                            steps.apply(&step, state, item.as_deref(), detail.as_deref(), now());
+                            self.state.storage().put(key, &steps).await?;
+                        }
+                        Some(Incoming::Outcome { status, body }) => outcome = Some((status, body)),
+                        None => {}
+                    }
+                }
+            }
+            Ok::<_, worker::Error>(outcome)
         };
-        match attempt.await {
-            Ok((200, body)) => match serde_json::from_str::<Rep>(&body) {
+        let answered = attempt.await;
+        if let Some(key) = &key {
+            // Whatever was still running when the stream ended did not finish.
+            steps.close(StepState::Error, now());
+            if let Err(error) = self.state.storage().put(key, &steps).await {
+                worker::console_error!("storing the scoring ledger {key}: {error}");
+            }
+        }
+        match answered {
+            Ok(Some((200, body))) => match serde_json::from_value::<Rep>(body) {
                 Ok(report) => SandboxOutcome::Report(report),
                 Err(error) => SandboxOutcome::Failed(format!(
                     "sandbox answered {action} with an unreadable report: {error}"
                 )),
             },
-            Ok((422, reason)) => SandboxOutcome::Unscorable(reason),
-            Ok((status, body)) => {
-                SandboxOutcome::Failed(format!("sandbox answered {status}: {body}"))
+            Ok(Some((422, reason))) => SandboxOutcome::Unscorable(text_of(reason)),
+            Ok(Some((status, body))) => {
+                SandboxOutcome::Failed(format!("sandbox answered {status}: {}", text_of(body)))
+            }
+            Ok(None) => {
+                SandboxOutcome::Failed("the sandbox's stream ended without an outcome".to_owned())
             }
             Err(error) => SandboxOutcome::Failed(error.to_string()),
+        }
+    }
+
+    /// An attempt's scoring steps so far, if it has been scored or is being scored.
+    async fn scoring(&self, attempt: AttemptId) -> Result<Option<Ledger>> {
+        self.state
+            .storage()
+            .get::<Ledger>(&format!("scoring:{attempt}"))
+            .await
+    }
+
+    /// A task and its attempts: where each stands if the task were accepted
+    /// now, its scoring report and steps, and the history of earlier attempts.
+    async fn show_task(&self, task: TaskId) -> Result<Response> {
+        let Some(tree) = self.load().await? else {
+            return Response::error("no such tree", 404);
+        };
+        let standings = match tree.standings(task) {
+            Ok(standings) => standings,
+            Err(error) => return tree_error(&error),
+        };
+        let mut attempts = Vec::with_capacity(standings.len());
+        for (id, standing) in standings {
+            attempts.push(serde_json::json!({
+                "attempt": tree.attempt(id),
+                "standing": standing,
+                "report": self.report(id).await?,
+                "scoring": self.scoring(id).await?,
+                "agent": self.agent_model(id).await?,
+            }));
+        }
+        Response::from_json(&serde_json::json!({
+            "task": tree.task(task),
+            "head": tree.head().id,
+            "attempts": attempts,
+            "history": tree.history_of(task).collect::<Vec<_>>(),
+        }))
+    }
+
+    async fn report(&self, attempt: AttemptId) -> Result<Option<ScoreReport>> {
+        match self
+            .state
+            .storage()
+            .get::<String>(&format!("report:{attempt}"))
+            .await?
+        {
+            Some(json) => Ok(Some(serde_json::from_str(&json)?)),
+            None => Ok(None),
         }
     }
 
@@ -521,16 +672,116 @@ impl TreeObject {
         let Some(entry) = tree.attempt(attempt) else {
             return tree_error(&TreeError::UnknownAttempt(attempt));
         };
-        let report = match self
-            .state
-            .storage()
-            .get::<String>(&format!("report:{attempt}"))
-            .await?
-        {
-            Some(json) => Some(serde_json::from_str::<ScoreReport>(&json)?),
-            None => None,
+        let (report, scoring) = (self.report(attempt).await?, self.scoring(attempt).await?);
+        Response::from_json(
+            &serde_json::json!({ "attempt": entry, "report": report, "scoring": scoring }),
+        )
+    }
+
+    /// Read the repo behind an attempt or node through Artifacts: `log`, `tree`
+    /// or `file`, at `?ref=` (default: the commit the subject is pinned to,
+    /// else its repo's HEAD) and, for `tree` and `file`, `?path=`; or `diff`,
+    /// what it changed.
+    async fn read(&self, subject: Subject, what: &str, req: &Request) -> Result<Response> {
+        let Some(tree) = self.load().await? else {
+            return Response::error("no such tree", 404);
         };
-        Response::from_json(&serde_json::json!({ "attempt": entry, "report": report }))
+        let view = match tree.view(subject) {
+            Ok(view) => view,
+            Err(error) => return tree_error(&error),
+        };
+        let query = Query::of(req)?;
+        let git_ref = match query.get("ref").map(GitRef::parse).transpose() {
+            Ok(Some(git_ref)) => Some(git_ref.as_str().to_owned()),
+            Ok(None) => view.pinned.map(String::from),
+            Err(error) => return Response::error(error.to_string(), 400),
+        };
+        let path = match FilePath::parse(query.get("path").unwrap_or_default()) {
+            Ok(path) => path,
+            Err(error) => return Response::error(error.to_string(), 400),
+        };
+        let repo = match self.artifacts()?.repo(&view.repo).await {
+            Ok(repo) => repo,
+            Err(error) => return artifacts_error(&error),
+        };
+        let at = git_ref.as_deref();
+        let label = at.unwrap_or("HEAD");
+        if what == "diff" {
+            return self.diff(&tree, subject, &repo).await;
+        }
+        match what {
+            "log" => {
+                let limit = query
+                    .number("limit")
+                    .unwrap_or(LOG_PAGE_DEFAULT)
+                    .clamp(1, LOG_PAGE_MAX);
+                let offset = query.number("offset").unwrap_or(0);
+                match repo.log(at, limit, offset).await {
+                    Ok(commits) => Response::from_json(&serde_json::json!({
+                        "repo": view.repo,
+                        "ref": label,
+                        "commits": commits,
+                    })),
+                    Err(error) => artifacts_error(&error),
+                }
+            }
+            "tree" | "file" => {
+                // Resolve the ref once, so the listing and every file read
+                // from it describe the same commit.
+                let commit = match repo.log(at, 1, 0).await {
+                    Ok(commits) => match commits.into_iter().next() {
+                        Some(commit) => commit,
+                        None => return Response::error(format!("no commit at {label}"), 404),
+                    },
+                    Err(error) => return artifacts_error(&error),
+                };
+                if what == "tree" {
+                    list_dir(&repo, &view.repo, commit, &path).await
+                } else {
+                    read_file(&repo, &commit.hash, &path).await
+                }
+            }
+            _ => Response::error("not found", 404),
+        }
+    }
+
+    /// What an attempt changed since the node it started from, or a node since its
+    /// parent: the changed files and their hunks.
+    async fn diff(&self, tree: &Tree, subject: Subject, repo: &Repo) -> Result<Response> {
+        let change = match tree.change(subject) {
+            Ok(change) => change,
+            Err(error) => return tree_error(&error),
+        };
+        let Some(base) = change.base else {
+            return Response::error("the root has no base to compare: browse it instead", 400);
+        };
+        let tree_of = |commit: Option<CommitMetadata>| commit.map(|commit| commit.tree_hash);
+        let (old, head) = match (
+            repo.read_commit(base.as_str()).await,
+            match &change.head {
+                Some(head) => repo.read_commit(head.as_str()).await,
+                None => repo
+                    .log(None, 1, 0)
+                    .await
+                    .map(|commits| commits.into_iter().next()),
+            },
+        ) {
+            (Ok(old), Ok(head)) => (tree_of(old), head),
+            (Err(error), _) | (_, Err(error)) => return artifacts_error(&error),
+        };
+        let Some(head) = head else {
+            return Response::error("no head commit to compare", 404);
+        };
+        match crate::diff::trees(repo, old, Some(head.tree_hash.clone())).await {
+            Ok(diff) => Response::from_json(&serde_json::json!({
+                "repo": change.repo,
+                "base": base,
+                "head": head.hash,
+                "files": diff.files,
+                "truncated": diff.truncated,
+            })),
+            Err(error) => artifacts_error(&error),
+        }
     }
 
     fn artifacts(&self) -> Result<Namespace> {
@@ -558,14 +809,50 @@ impl TreeObject {
         }
     }
 
-    /// Import `source` as the tree's root repo and init the tree on its head.
-    async fn init(&self, name: RepoName, body: InitBody) -> Result<Response> {
+    /// Another handle on this object, for work that outlives the request.
+    fn handle(&self) -> Self {
+        Self {
+            state: Rc::clone(&self.state),
+            env: self.env.clone(),
+        }
+    }
+
+    /// Init, answering at once with a stream of its steps as they happen
+    /// and, last, the answer `init` would have given.
+    fn init_streaming(&self, name: RepoName, body: InitBody) -> Result<Response> {
+        let (sender, receiver) = futures_channel::mpsc::unbounded::<Vec<u8>>();
+        let this = self.handle();
+        wasm_bindgen_futures::spawn_local(async move {
+            let progress = Progress::to(sender);
+            let answer = match this.init(name, body, &progress).await {
+                Ok(answer) => answer,
+                Err(error) => match Response::error(error.to_string(), 500) {
+                    Ok(answer) => answer,
+                    Err(_) => return,
+                },
+            };
+            progress.outcome(answer).await;
+        });
+        let headers = Headers::new();
+        headers.set("content-type", PROGRESS)?;
+        headers.set("cache-control", "no-store")?;
+        Ok(Response::from_stream(receiver.map(Ok::<_, worker::Error>))?.with_headers(headers))
+    }
+
+    /// Import `source` as the tree's root repo and init the tree on its head,
+    /// telling `progress` each step as it starts and ends.
+    async fn init(&self, name: RepoName, body: InitBody, progress: &Progress) -> Result<Response> {
         if self.load().await?.is_some() {
             return Response::error("tree already initialized", 409);
         }
         let artifacts = self.artifacts()?;
+        let failed = |step: InitStep, error: &ArtifactsError| {
+            progress.step(step, StepState::Error, Some(&error.to_string()));
+            artifacts_error(error)
+        };
         let head = match body.source {
             Some(source) => {
+                progress.step(InitStep::Import, StepState::Active, Some(&source));
                 // ALREADY_EXISTS means an earlier init got this far and then
                 // timed out; carry on and pick up the repo it imported.
                 match artifacts
@@ -574,15 +861,19 @@ impl TreeObject {
                 {
                     Ok(_) => {}
                     Err(error) if error.is("ALREADY_EXISTS") => {}
-                    Err(error) => return artifacts_error(&error),
+                    Err(error) => return failed(InitStep::Import, &error),
                 }
-                match settled_head(&artifacts, &name).await? {
-                    Some(head) => head,
+                progress.step(InitStep::Import, StepState::Complete, None);
+                progress.step(InitStep::Settle, StepState::Active, None);
+                match settled_head(&artifacts, &name, progress).await? {
+                    Some(head) => {
+                        progress.step(InitStep::Settle, StepState::Complete, Some(head.as_str()));
+                        head
+                    }
                     None => {
-                        return Response::error(
-                            "import has not finished; init again to pick it up",
-                            504,
-                        );
+                        let late = "import has not finished; init again to pick it up";
+                        progress.step(InitStep::Settle, StepState::Error, Some(late));
+                        return Response::error(late, 504);
                     }
                 }
             }
@@ -590,7 +881,14 @@ impl TreeObject {
                 Ok(repo) => match repo.history(1).await {
                     Ok(history) => match history.first() {
                         Some(head) => match Oid::try_from(head.hash.clone()) {
-                            Ok(head) => head,
+                            Ok(head) => {
+                                progress.step(
+                                    InitStep::ReadHead,
+                                    StepState::Complete,
+                                    Some(head.as_str()),
+                                );
+                                head
+                            }
                             Err(error) => return tree_error(&error),
                         },
                         None => {
@@ -600,11 +898,17 @@ impl TreeObject {
                             );
                         }
                     },
-                    Err(error) => return artifacts_error(&error),
+                    Err(error) => return failed(InitStep::ReadHead, &error),
                 },
                 Err(error) if error.is("NOT_FOUND") => {
+                    progress.step(InitStep::Create, StepState::Active, None);
                     return match artifacts.create(&name, "ficus root").await {
                         Ok(created) => {
+                            progress.step(
+                                InitStep::Create,
+                                StepState::Complete,
+                                Some(&created.remote),
+                            );
                             let mut response = Response::from_json(&serde_json::json!({
                                 "state": "awaiting root",
                                 "remote": created.remote,
@@ -614,20 +918,22 @@ impl TreeObject {
                             response = response.with_status(202);
                             Ok(response)
                         }
-                        Err(error) => artifacts_error(&error),
+                        Err(error) => failed(InitStep::Create, &error),
                     };
                 }
-                Err(error) => return artifacts_error(&error),
+                Err(error) => return failed(InitStep::ReadHead, &error),
             },
         };
+        progress.step(InitStep::Lock, StepState::Active, None);
         let repo = match artifacts.repo(&name).await {
             Ok(repo) => repo,
-            Err(error) => return artifacts_error(&error),
+            Err(error) => return failed(InitStep::Lock, &error),
         };
         // The root repo is only ever read through forks; nobody pushes to it.
         if let Err(error) = repo.revoke_active_tokens().await {
-            return artifacts_error(&error);
+            return failed(InitStep::Lock, &error);
         }
+        progress.step(InitStep::Lock, StepState::Complete, None);
         if self.load().await?.is_some() {
             return Response::error("tree already initialized", 409);
         }
@@ -635,7 +941,9 @@ impl TreeObject {
             Ok(tree) => tree,
             Err(error) => return tree_error(&error),
         };
+        progress.step(InitStep::Save, StepState::Active, None);
         self.save(&tree).await?;
+        progress.step(InitStep::Save, StepState::Complete, None);
         Response::from_json(&tree)
     }
 
@@ -668,6 +976,19 @@ impl TreeObject {
     /// Fork the base node's repo into `attempt`'s repo and hand out its token.
     /// A failed fork abandons the attempt so it does not sit working forever.
     async fn provision(&self, tree: &Tree, attempt: AttemptId) -> Result<Response> {
+        match self.fork_attempt(tree, attempt).await? {
+            Ok(started) => Response::from_json(&started),
+            Err(refused) => Ok(refused),
+        }
+    }
+
+    /// Fork the base node's repo for a new attempt: what its agent starts
+    /// from, or the answer refusing it (the attempt is abandoned).
+    async fn fork_attempt(
+        &self,
+        tree: &Tree,
+        attempt: AttemptId,
+    ) -> Result<std::result::Result<Started, Response>> {
         let entry = tree
             .attempt(attempt)
             .expect("the caller just created this attempt");
@@ -684,7 +1005,7 @@ impl TreeObject {
             Err(error) => Err(error),
         };
         match forked {
-            Ok(created) => Response::from_json(&Started {
+            Ok(created) => Ok(Ok(Started {
                 attempt,
                 task: entry.task,
                 intent,
@@ -695,7 +1016,7 @@ impl TreeObject {
                 token: created.token,
                 base_commit: base.commit.as_str().to_owned(),
                 history: tree.history_of(entry.task).cloned().collect(),
-            }),
+            })),
             Err(error) => {
                 if let Some(mut tree) = self.load().await?
                     && tree
@@ -704,7 +1025,7 @@ impl TreeObject {
                 {
                     self.save(&tree).await?;
                 }
-                artifacts_error(&error)
+                artifacts_error(&error).map(Err)
             }
         }
     }
@@ -835,7 +1156,19 @@ impl TreeObject {
                 502,
             );
         }
-        self.provision(&tree, fresh).await
+        let started = match self.fork_attempt(&tree, fresh).await? {
+            Ok(started) => started,
+            Err(refused) => return Ok(refused),
+        };
+        // An agent's attempt retries with an agent: the same model, a fresh run.
+        if let Some(model) = self.agent_model(behind).await? {
+            let answer = serde_json::json!({ "attempt": fresh, "task": started.task, "agent": started.agent, "remote": started.remote, "base_commit": started.base_commit });
+            self.tend(tree.name().as_str(), Some(model), started)
+                .await?;
+            self.state.storage().set_alarm(Duration::ZERO).await?;
+            return Response::from_json(&answer);
+        }
+        Response::from_json(&started)
     }
 
     /// Revoke the tokens of each attempt's repo. Failures are returned, not
@@ -908,10 +1241,36 @@ enum RebaseOutcome {
     Failed(String),
 }
 
+/// Milliseconds since the epoch, as the ledger records them.
+fn now() -> u64 {
+    // A JS timestamp is an integral number of milliseconds well inside u64.
+    js_sys::Date::now() as u64
+}
+
+/// An outcome body as text: a string as it is, anything else as JSON.
+fn text_of(body: serde_json::Value) -> String {
+    match body {
+        serde_json::Value::String(text) => text,
+        other => other.to_string(),
+    }
+}
+
+/// Whether the caller asked to hear an operation's steps as they happen.
+fn wants_progress(req: &Request) -> Result<bool> {
+    Ok(req
+        .headers()
+        .get("accept")?
+        .is_some_and(|accept| accept.contains(PROGRESS)))
+}
+
 /// The head of `name` once its import has landed, or `None` if it has not
-/// within `IMPORT_POLLS`.
-async fn settled_head(artifacts: &Namespace, name: &RepoName) -> Result<Option<Oid>> {
-    for _ in 0..IMPORT_POLLS {
+/// within `IMPORT_POLLS`. Each wait is a `Settle` step with its attempt.
+async fn settled_head(
+    artifacts: &Namespace,
+    name: &RepoName,
+    progress: &Progress,
+) -> Result<Option<Oid>> {
+    for attempt in 1..=IMPORT_POLLS {
         match artifacts.repo(name).await {
             Ok(repo) => match repo.history(1).await {
                 Ok(history) => {
@@ -926,9 +1285,105 @@ async fn settled_head(artifacts: &Namespace, name: &RepoName) -> Result<Option<O
             Err(error) if error.is("IMPORT_IN_PROGRESS") || error.is("CREATE_IN_PROGRESS") => {}
             Err(error) => return Err(worker::Error::RustError(error.to_string())),
         }
+        progress.step(
+            InitStep::Settle,
+            StepState::Active,
+            Some(&format!(
+                "still importing, check {attempt} of {IMPORT_POLLS}"
+            )),
+        );
         worker::Delay::from(std::time::Duration::from_millis(IMPORT_POLL_MS)).await;
     }
     Ok(None)
+}
+
+/// A request's query string, by name.
+struct Query(Vec<(String, String)>);
+
+impl Query {
+    fn of(req: &Request) -> Result<Self> {
+        Ok(Self(req.url()?.query_pairs().into_owned().collect()))
+    }
+
+    fn get(&self, name: &str) -> Option<&str> {
+        self.0
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    }
+
+    fn number(&self, name: &str) -> Option<u32> {
+        self.get(name).and_then(|value| value.parse().ok())
+    }
+}
+
+/// The directory at `path` in `commit`, walking down from its root tree.
+async fn list_dir(
+    repo: &Repo,
+    name: &RepoName,
+    commit: CommitMetadata,
+    path: &FilePath,
+) -> Result<Response> {
+    let mut hash = commit.tree_hash.clone();
+    for segment in path.names() {
+        let entries = match repo.read_tree(&hash).await {
+            Ok(Some(entries)) => entries,
+            Ok(None) => return Response::error(format!("no tree {hash}"), 404),
+            Err(error) => return artifacts_error(&error),
+        };
+        match entries
+            .into_iter()
+            .find(|entry| entry.name == *segment && entry.is_tree())
+        {
+            Some(entry) => hash = entry.hash,
+            None => return Response::error(format!("no directory {}", path.joined()), 404),
+        }
+    }
+    let mut entries = match repo.read_tree(&hash).await {
+        Ok(Some(entries)) => entries,
+        Ok(None) => return Response::error(format!("no tree {hash}"), 404),
+        Err(error) => return artifacts_error(&error),
+    };
+    // Directories first, then by name: how a reader expects a listing.
+    entries.sort_by(|a, b| b.is_tree().cmp(&a.is_tree()).then(a.name.cmp(&b.name)));
+    Response::from_json(&serde_json::json!({
+        "repo": name,
+        "commit": commit,
+        "path": path.joined(),
+        "entries": entries,
+    }))
+}
+
+/// The file at `path` in `commit`, as bytes. Never served as anything a
+/// browser would run: these are untrusted bytes leaving through the
+/// origin that holds the session cookie.
+async fn read_file(repo: &Repo, commit: &str, path: &FilePath) -> Result<Response> {
+    if path.is_root() {
+        return Response::error("a file read needs a path", 400);
+    }
+    let file = match repo.read_file(commit, &path.joined(), FILE_MAX_BYTES).await {
+        Ok(Some(file)) => file,
+        Ok(None) => return Response::error(format!("no file {}", path.joined()), 404),
+        Err(error) => return artifacts_error(&error),
+    };
+    let is_text = file.content_type.starts_with("text/")
+        || ["json", "xml", "javascript", "toml", "yaml"]
+            .iter()
+            .any(|kind| file.content_type.contains(kind));
+    let headers = Headers::new();
+    headers.set(
+        "content-type",
+        if is_text {
+            "text/plain; charset=utf-8"
+        } else {
+            "application/octet-stream"
+        },
+    )?;
+    headers.set("x-ficus-content-type", &file.content_type)?;
+    headers.set("x-ficus-commit", commit)?;
+    headers.set("x-content-type-options", "nosniff")?;
+    headers.set("content-security-policy", "sandbox; default-src 'none'")?;
+    Ok(Response::from_bytes(file.bytes)?.with_headers(headers))
 }
 
 fn tree_error(error: &TreeError) -> Result<Response> {
@@ -961,6 +1416,7 @@ fn artifacts_error(error: &ArtifactsError) -> Result<Response> {
         "ALREADY_EXISTS" | "CREATE_IN_PROGRESS" | "IMPORT_IN_PROGRESS" | "FORK_IN_PROGRESS" => 409,
         "INVALID_INPUT" | "INVALID_REPO_NAME" | "INVALID_URL" | "INVALID_TTL" => 400,
         "REMOTE_AUTH_REQUIRED" => 403,
+        "MEMORY_LIMIT" => 413,
         _ => 502,
     };
     Response::error(error.to_string(), status)

@@ -50,6 +50,18 @@ deploy:
 e2e:
     scripts/e2e
 
+# The web UI's end-to-end through a deployed stage (FICUS_WEB, FICUS_API: their URLs)
+e2e-web:
+    scripts/e2e-web
+
+# Agents end to end on a deployed stage (FICUS_API; opt-in: spends Workers AI, takes minutes)
+e2e-agents:
+    scripts/e2e-agents
+
+# Deploy the web UI stack (after `just deploy`, same STAGE)
+deploy-web:
+    cd infra && bun run deploy:web
+
 # Deploy the emscripten git engine Worker
 git-deploy:
     cd crates/ficus-git && wrangler deploy

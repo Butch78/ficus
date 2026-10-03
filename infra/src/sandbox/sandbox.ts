@@ -23,6 +23,23 @@
  *     with their tokens added by Egress; `ficus-scorer rebase` replays
  *     the behind commits onto the head and pushes. Nothing from either repo
  *     is run. The answer is the RebaseReport, or 422 on a conflict.
+ *
+ *   `/score` with `Accept: application/x-ndjson` answers with a stream
+ *   instead (crates/ficus-core/src/progress.rs): each step as it happens, the
+ *   sandbox's own and `ficus-scorer`'s, then the outcome: what the plain
+ *   answer would have been.
+ *
+ *   An agent's workspace (from AgentActor, src/agents):
+ *   POST /workspace {remote, token}   start the container; for the agent's
+ *                                     whole run it may reach its attempt's repo
+ *                                     (token added by Egress) and the
+ *                                     nix/devenv caches, nothing else
+ *   POST /fs/<op>, POST /exec         pi's file and shell operations, run as
+ *                                     `ficus-scorer fs <op>` / `exec` with the
+ *                                     request on stdin; the answer is pi's
+ *                                     Result, as JSON
+ *   DELETE /workspace                 the agent is done: destroy the container
+ *                                     and forget the workspace
  */
 import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
@@ -71,6 +88,19 @@ const EXEC_ENV = {
 
 const SCORER = "/usr/local/bin/ficus-scorer";
 
+/** `ficus-scorer`'s progress lines on stderr (crates/ficus-scorer `PROGRESS_PREFIX`). */
+const PROGRESS_PREFIX = "ficus-progress ";
+
+const PROGRESS = "application/x-ndjson";
+
+/** Where progress lines go: the caller's stream, or nowhere. */
+type Report = (line: string) => void;
+
+const quiet: Report = () => undefined;
+
+const stepLine = (step: string, state: "active" | "complete" | "error", detail?: string) =>
+  JSON.stringify(detail === undefined ? { kind: "step", step, state } : { kind: "step", step, state, detail });
+
 const Oid = Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}([0-9a-f]{24})?$/));
 
 /** crates/ficus-core `CheckSpec`: a task's check, run after the root's. */
@@ -112,6 +142,35 @@ const Prepared = Schema.Struct({ workdir: Schema.String });
 /** crates/ficus-core `RebaseReport`. */
 const RebaseReport = Schema.Struct({ commit: Oid, replayed: Schema.Number });
 
+/**
+ * What an agent's workspace starts from: its attempt's remote and write token,
+ * where to check it out, and who commits there.
+ */
+const Workspace = Schema.Struct({
+  remote: Schema.String,
+  token: Schema.String,
+  checkout: Schema.String.check(Schema.isPattern(/^\/work\/[A-Za-z0-9._-]+$/)),
+  author: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._-]{1,64}$/)),
+});
+
+/** Where the background devenv build of a workspace writes its output. */
+const DEVENV_WARM_LOG = "/tmp/devenv-warm.log";
+
+/**
+ * A workspace's container outlives an agent's slowest think between
+ * operations. The agent closes it when it is done; this only catches one that
+ * never says so, and every idle container holds one of the class's instances.
+ */
+const WORKSPACE_IDLE_MS = 20 * 60 * 1000;
+
+/** One readiness probe: an exec into a container that cannot be placed can hang. */
+const PROBE_TIMEOUT = "15 seconds";
+
+type Workspace = typeof Workspace.Type;
+
+/** Where a workspace keeps what it was opened with, to open it again. */
+const WORKSPACE_KEY = "workspace";
+
 export class SandboxFailure extends Schema.TaggedError<SandboxFailure>()("Sandbox.Failure", {
   status: Schema.Number,
   message: Schema.String,
@@ -124,6 +183,26 @@ interface Ran {
   readonly stdout: string;
   readonly stderr: string;
 }
+
+/** Each line of `stream` as it arrives, the last one even without a newline. */
+const eachLine = async (stream: ReadableStream | null, take: (line: string) => void) => {
+  if (stream === null) {
+    return;
+  }
+
+  let pending = "";
+
+  for await (const chunk of stream.pipeThrough(new TextDecoderStream())) {
+    const lines = (pending + chunk).split("\n");
+
+    pending = lines.pop() ?? "";
+    lines.forEach(take);
+  }
+
+  if (pending !== "") {
+    take(pending);
+  }
+};
 
 interface Bindings {
   readonly AI: Clef.AiBinding;
@@ -139,8 +218,27 @@ const respond = <A>(run: Effect.Effect<A, SandboxFailure>): Promise<Response> =>
   );
 
 export class Sandbox extends DurableObject<Bindings> {
+  /** Whether this instance has routed the workspace's egress (see `#open`). */
+  #opened = false;
+
   override async fetch(request: Request): Promise<Response> {
     const { pathname } = new URL(request.url);
+
+    if (request.method === "POST" && pathname === "/workspace") {
+      return respond(this.#workspace(request).pipe(Effect.as({ ready: true })));
+    }
+
+    if (request.method === "DELETE" && pathname === "/workspace") {
+      return this.#respond(this.#close().pipe(Effect.as(Response.json({ closed: true }))));
+    }
+
+    const workspaceOp = /^\/(?:fs\/([a-z]+)|exec)$/.exec(pathname);
+
+    if (request.method === "POST" && workspaceOp !== null) {
+      const argv = workspaceOp[1] === undefined ? [SCORER, "exec"] : [SCORER, "fs", workspaceOp[1]];
+
+      return this.#respond(this.#workspaceOp(argv, request));
+    }
 
     if (request.method !== "POST") {
       return new Response("not found", { status: 404 });
@@ -148,12 +246,11 @@ export class Sandbox extends DurableObject<Bindings> {
 
     switch (pathname) {
       case "/score": {
-        return respond(
-          this.#score(request).pipe(
-            // oxlint-disable-next-line effecttsgo/strict-effect-provide -- a request is an entry point
-            Effect.provide(Clef.layerBinding(this.env.AI)),
-          ),
-        );
+        if (request.headers.get("accept")?.includes(PROGRESS) === true) {
+          return this.#streamed(request);
+        }
+
+        return respond(this.#scoreWithClef(request, quiet));
       }
 
       case "/rebase": {
@@ -164,6 +261,180 @@ export class Sandbox extends DurableObject<Bindings> {
         return new Response("not found", { status: 404 });
       }
     }
+  }
+
+  /** Score, with the judges' Clef: a request is an entry point. */
+  #scoreWithClef(request: Request, say: Report) {
+    return this.#score(request, say).pipe(
+      // oxlint-disable-next-line effecttsgo/strict-effect-provide -- a request is an entry point
+      Effect.provide(Clef.layerBinding(this.env.AI)),
+    );
+  }
+
+  #respond(answer: Effect.Effect<Response, SandboxFailure>): Promise<Response> {
+    return Effect.runPromise(
+      answer.pipe(
+        Effect.catchTag("Sandbox.Failure", (error) => Effect.succeed(new Response(error.message, { status: error.status }))),
+      ),
+    );
+  }
+
+  /** Start an agent's container, its egress open to its attempt and the nix caches. */
+  readonly #workspace = Effect.fn("Sandbox.workspace")(function* (this: Sandbox, request: Request) {
+    const body = yield* Effect.tryPromise({
+      try: () => request.json(),
+      catch: () => failure(400, "the workspace request is not JSON"),
+    });
+
+    const workspace = yield* Schema.decodeUnknownEffect(Workspace)(body).pipe(
+      Effect.mapError((error) => failure(400, `not a workspace request: ${String(error)}`)),
+    );
+
+    yield* Effect.promise(() => this.ctx.storage.put(WORKSPACE_KEY, workspace));
+    yield* this.#open(workspace);
+  });
+
+  /** The agent is done: its container goes, and no later operation reopens it. */
+  readonly #close = Effect.fn("Sandbox.close")(function* (this: Sandbox) {
+    this.#opened = false;
+    yield* Effect.promise(() => this.ctx.storage.delete(WORKSPACE_KEY));
+
+    if (this.#container().running) {
+      yield* Effect.promise(() => this.#container().destroy());
+    }
+  });
+
+  /**
+   * Start the container if it is not running, route its egress, trust the
+   * egress CA. The routes belong to this instance of the Durable Object, not
+   * to the container: an agent's run outlives instances, so every new
+   * instance opens the workspace again before its first operation.
+   */
+  readonly #open = Effect.fn("Sandbox.open")(function* (this: Sandbox, { remote, token, checkout, author }: Workspace) {
+    const repo = repoOf(remote);
+
+    yield* this.#ready();
+    yield* Effect.promise(() => this.#container().setInactivityTimeout(WORKSPACE_IDLE_MS));
+    yield* this.#route(repo.host, { mode: "artifacts", repos: [{ repoPath: repo.repoPath, token }] });
+
+    for (const host of NIX_HOSTS) {
+      yield* this.#route(host, { mode: "pass" });
+    }
+
+    const trusted = yield* this.#exec(["/usr/local/bin/ficus-trust-egress"]);
+
+    if (trusted.exitCode !== 0) {
+      return yield* failure(503, `trusting the egress CA: ${trusted.stderr.trim()}`);
+    }
+
+    // The checkout, as last pushed, if this container does not have it: a
+    // container that was stopped comes back empty. The token stays with
+    // Egress; git here never sees it.
+    const cloned = yield* this.#exec([
+      "/bin/sh",
+      "-c",
+      `if [ -d '${checkout}/.git' ]; then exit 0; fi; ${[
+        `rm -rf '${checkout}'`,
+        `mkdir -p "$(dirname '${checkout}')"`,
+        `git clone --quiet '${remote}' '${checkout}'`,
+        `git -C '${checkout}' config user.name '${author}'`,
+        `git -C '${checkout}' config user.email '${author}@agents.ficus.dev'`,
+      ].join(" && ")}`,
+    ]);
+
+    if (cloned.exitCode !== 0) {
+      return yield* failure(502, `checking out the attempt: exit ${cloned.exitCode}: ${cloned.stderr.trim()}`);
+    }
+
+    // Warm the root's devenv shell in the background: built cold it takes
+    // minutes, and an agent's first `devenv shell` then waits for this one
+    // rather than starting its own. Once per container.
+    yield* this.#exec([
+      "/bin/sh",
+      "-c",
+      `cd '${checkout}' && [ -f devenv.nix ] && [ ! -e ${DEVENV_WARM_LOG} ] && (nohup devenv shell -- true > ${DEVENV_WARM_LOG} 2>&1 &) ; true`,
+    ]);
+
+    this.#opened = true;
+  });
+
+  /** One of pi's operations in an agent's container, its answer passed through. */
+  readonly #workspaceOp = Effect.fn("Sandbox.workspaceOp")(function* (this: Sandbox, argv: ReadonlyArray<string>, request: Request) {
+    if (!this.#opened) {
+      const stored = yield* Effect.promise(() => this.ctx.storage.get(WORKSPACE_KEY));
+
+      const workspace = yield* Schema.decodeUnknownEffect(Workspace)(stored).pipe(
+        Effect.mapError(() => failure(409, "no workspace here: POST /workspace first")),
+      );
+
+      yield* this.#open(workspace);
+    }
+
+    const container = this.#container();
+
+    const input = yield* Effect.tryPromise({
+      try: () => request.text(),
+      catch: () => failure(400, "the request body could not be read"),
+    });
+
+    const answer = yield* Effect.tryPromise({
+      try: async () => {
+        const running = await container.exec([...argv], {
+          env: { ...EXEC_ENV },
+          stdin: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(input));
+              controller.close();
+            },
+          }),
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+
+        const [stdout, stderr] = await Promise.all([new Response(running.stdout).text(), new Response(running.stderr).text()]);
+
+        return { exitCode: await running.exitCode, stdout, stderr } satisfies Ran;
+      },
+      catch: (cause) => failure(503, `${argv.slice(1).join(" ")}: ${String(cause)}`),
+    });
+
+    if (answer.exitCode !== 0) {
+      const why = `${argv.slice(1).join(" ")} exited ${answer.exitCode}: ${answer.stderr.trim() || answer.stdout.trim()}`;
+
+      console.error(`workspace: ${why}`);
+
+      return yield* failure(500, why);
+    }
+
+    return new Response(answer.stdout, { headers: { "content-type": "application/json" } });
+  });
+
+  /** Score, answering at once with the steps as they happen, the outcome last. */
+  #streamed(request: Request): Response {
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+    const writer = writable.getWriter();
+    const encoder = new TextEncoder();
+    const report: Report = (line) => void writer.write(encoder.encode(`${line}\n`));
+
+    const outcome = this.#scoreWithClef(request, report).pipe(
+      Effect.match({
+        onSuccess: (body) => ({ kind: "outcome", status: 200, body }),
+        onFailure: (error) => ({ kind: "outcome", status: error.status, body: error.message }),
+      }),
+    );
+
+    this.ctx.waitUntil(
+      Effect.runPromise(outcome).then(
+        (line) => {
+          report(JSON.stringify(line));
+
+          return writer.close();
+        },
+        (cause) => writer.abort(cause),
+      ),
+    );
+
+    return new Response(readable, { headers: { "content-type": PROGRESS, "cache-control": "no-store" } });
   }
 
   /** The request body, decoded as `schema`. */
@@ -220,12 +491,13 @@ export class Sandbox extends DurableObject<Bindings> {
     return report;
   });
 
-  readonly #score = Effect.fn("Sandbox.score")(function* (this: Sandbox, request: Request) {
+  readonly #score = Effect.fn("Sandbox.score")(function* (this: Sandbox, request: Request, say: Report) {
     const score = yield* this.#body(request, ScoreRequest, "score");
     const repo = repoOf(score.remote);
     const attempt = JSON.stringify({ remote: score.remote, base: score.base, head: score.head, checks: score.checks ?? [] });
 
-    yield* this.#ready();
+    say(stepLine("sandbox", "active"));
+    yield* this.#ready().pipe(Effect.tapError((error) => Effect.sync(() => say(stepLine("sandbox", "error", error.message)))));
     yield* this.#route(repo.host, { mode: "artifacts", repos: [{ repoPath: repo.repoPath, token: score.token }] });
 
     for (const host of NIX_HOSTS) {
@@ -236,10 +508,14 @@ export class Sandbox extends DurableObject<Bindings> {
     const trusted = yield* this.#exec(["/usr/local/bin/ficus-trust-egress"]);
 
     if (trusted.exitCode !== 0) {
+      say(stepLine("sandbox", "error", "could not trust the egress CA"));
+
       return yield* failure(503, `trusting the egress CA: ${trusted.stderr.trim()}`);
     }
 
-    const prepared = yield* this.#exec([SCORER, "prepare", attempt]);
+    say(stepLine("sandbox", "complete"));
+
+    const prepared = yield* this.#exec([SCORER, "prepare", attempt], say);
 
     // Close everything before any of the root's checks run.
     yield* this.#route(repo.host, { mode: "deny" });
@@ -249,12 +525,21 @@ export class Sandbox extends DurableObject<Bindings> {
     }
 
     const { workdir } = yield* this.#json(prepared, Prepared, "prepare");
-    const checked = yield* this.#exec([SCORER, "check", workdir]);
+    const checked = yield* this.#exec([SCORER, "check", workdir], say);
     const run = yield* this.#json(checked, CheckRun, "check");
 
     yield* Effect.promise(() => this.#container().destroy());
 
-    return yield* this.#judge(run, score.intent ?? "");
+    if (run.judges.length === 0) {
+      return run.report;
+    }
+
+    say(stepLine("judge", "active"));
+
+    return yield* this.#judge(run, score.intent ?? "").pipe(
+      Effect.tap(() => Effect.sync(() => say(stepLine("judge", "complete")))),
+      Effect.tapError((error) => Effect.sync(() => say(stepLine("judge", "error", error.message)))),
+    );
   });
 
   /** The report with the root's judges' outcomes added. A Clef failure is retryable: 503. */
@@ -294,12 +579,14 @@ export class Sandbox extends DurableObject<Bindings> {
   readonly #ready = Effect.fn("Sandbox.ready")(function* (this: Sandbox) {
     const container = this.#container();
 
-    if (!container.running) {
-      container.start({ enableInternet: false });
-    }
-
     yield* Effect.tryPromise({
       try: async () => {
+        // Started here, and again if it stopped while booting: several cold
+        // containers starting at once can take minutes.
+        if (!container.running) {
+          container.start({ enableInternet: false });
+        }
+
         const probe = await container.exec(["/bin/sh", "-c", "test -f /run/ficus-ready"], { env: { ...EXEC_ENV } });
 
         if ((await probe.exitCode) !== 0) {
@@ -307,7 +594,13 @@ export class Sandbox extends DurableObject<Bindings> {
         }
       },
       catch: (cause) => failure(503, `the sandbox did not become ready: ${String(cause)}`),
-    }).pipe(Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 120 }));
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: PROBE_TIMEOUT,
+        orElse: () => Effect.fail(failure(503, `the sandbox did not become ready: no answer within ${PROBE_TIMEOUT}`)),
+      }),
+      Effect.retry({ schedule: Schedule.spaced("1 second"), times: 240 }),
+    );
   });
 
   /** Route `host`'s HTTPS through `Egress` with `props`. Replaces any earlier route. */
@@ -320,21 +613,33 @@ export class Sandbox extends DurableObject<Bindings> {
     });
   });
 
-  readonly #exec = Effect.fn("Sandbox.exec")(function* (this: Sandbox, argv: ReadonlyArray<string>) {
+  /**
+   * Run `argv`. Its stderr is read as it is written: progress lines go to
+   * `report` at once, the rest is kept as the command's error text.
+   */
+  readonly #exec = Effect.fn("Sandbox.exec")(function* (this: Sandbox, argv: ReadonlyArray<string>, report: Report = quiet) {
     const container = this.#container();
 
-    const output = yield* Effect.tryPromise({
-      try: async () => (await container.exec([...argv], { env: { ...EXEC_ENV } })).output(),
+    return yield* Effect.tryPromise({
+      try: async () => {
+        const running = await container.exec([...argv], { env: { ...EXEC_ENV }, stdout: "pipe", stderr: "pipe" });
+        const kept: Array<string> = [];
+
+        const [stdout] = await Promise.all([
+          new Response(running.stdout).text(),
+          eachLine(running.stderr, (line) => {
+            if (line.startsWith(PROGRESS_PREFIX)) {
+              report(line.slice(PROGRESS_PREFIX.length));
+            } else {
+              kept.push(line);
+            }
+          }),
+        ]);
+
+        return { exitCode: await running.exitCode, stdout, stderr: kept.join("\n") } satisfies Ran;
+      },
       catch: (cause) => failure(503, `${argv.slice(0, 2).join(" ")}: ${String(cause)}`),
     });
-
-    const decoder = new TextDecoder();
-
-    return {
-      exitCode: output.exitCode,
-      stdout: decoder.decode(output.stdout),
-      stderr: decoder.decode(output.stderr),
-    } satisfies Ran;
   });
 
   /** A `ficus-scorer` result: 2 is the attempt's or root's fault, other failures the sandbox's. */

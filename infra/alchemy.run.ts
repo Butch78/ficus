@@ -12,36 +12,28 @@
 //                                  which hosts they reach (and adds the
 //                                  credentials they never see); asks Clef
 //                                  the root's judges once a container is gone
+//   Agents   src/agents/worker.ts  one AgentActor per attempt an agent works:
+//                                  pi on Workers AI, working in a sandbox,
+//                                  Clef at its handovers; the tree
+//                                  dispatches and polls them
+//
+//   The web UI is a stack of its own (web.run.ts), deployed after this one
+//   to the same stage; it binds `Api` by reference.
 //
 //   bun run plan | deploy | destroy        STAGE defaults to dev
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
-import * as GitHub from "alchemy/GitHub";
+import * as Drizzle from "alchemy/Drizzle";
 import * as Output from "alchemy/Output";
-import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
-import { OWNER, REPO } from "./src/github.ts";
-
-// Stated here rather than inherited from alchemy's default, which moves
-// between alchemy releases: the runtime's behaviour is ours to pin.
-const COMPATIBILITY = { date: "2026-09-10" } as const;
-
-// Logs and traces for every Worker (Durable Object calls, service bindings,
-// subrequests): queryable through the Workers Observability API, which is
-// how a failed run is diagnosed without re-running it.
-const OBSERVABILITY = {
-  enabled: true,
-  logs: { enabled: true, invocationLogs: true },
-  traces: { enabled: true },
-} as const;
+import { COMPATIBILITY, OBSERVABILITY } from "./src/platform.ts";
 
 export default Alchemy.Stack(
   "Ficus",
   {
-    providers: Layer.mergeAll(Cloudflare.providers(), Command.providers(), GitHub.providers()),
+    providers: Layer.mergeAll(Cloudflare.providers(), Command.providers(), Drizzle.providers()),
     state: Cloudflare.state(),
   },
   Effect.gen(function* () {
@@ -67,8 +59,11 @@ export default Alchemy.Stack(
     });
 
     // The scorer: ficus-scorer (static musl) in an image with nix + devenv.
-    // The binary's hash rides into the container's env, which is the edge
-    // that builds the binary before the image that copies it.
+    // The binary's hash rides into the container's env so a new binary
+    // redeploys the container. That edge does not order the image build
+    // after this one (the image builds in an earlier phase), so run
+    // scripts/build-scorer before deploying, as deploy.yml does; this build
+    // then finds it up to date.
     const scorerBinary = yield* Command.Build("ScorerBinary", {
       cwd: "..",
       command: "scripts/build-scorer",
@@ -112,6 +107,25 @@ export default Alchemy.Stack(
       env: { SANDBOX: sandboxContainer, AI: Cloudflare.Workers.AI() },
     });
 
+    // Agents: one AgentActor per attempt an agent works, a pi agent on Workers
+    // AI (Clef judges its plan and diff) working in its own sandbox. Internal:
+    // only the tree reaches it.
+    const agents = yield* Cloudflare.Worker("Agents", {
+      name: `ficus-agents-${stage}`,
+      main: "./src/agents/worker.ts",
+      compatibility: COMPATIBILITY,
+      observability: OBSERVABILITY,
+      workersDev: false,
+      env: {
+        AI: Cloudflare.Workers.AI(),
+        // `AgentActor` is the Durable Object class src/agents/worker.ts exports.
+        AGENTS: Cloudflare.DurableObject("AGENTS", { className: "AgentActor" }),
+        // An agent's workspace is a sandbox: the scorer's image, its egress.
+        SANDBOX: Cloudflare.DurableObject("SANDBOX", { className: "Sandbox", scriptName: `ficus-sandbox-${stage}` }),
+        FICUS_SANDBOX_SCRIPT: sandbox.workerName,
+      },
+    });
+
     // One namespace per stage; Artifacts creates it with the first repo.
     const artifacts = yield* Cloudflare.Artifacts.Namespace("Artifacts", { namespace: `ficus-${stage}` });
 
@@ -136,14 +150,27 @@ export default Alchemy.Stack(
         // deploys the sandbox Worker (and its class) before this one.
         SANDBOX: Cloudflare.DurableObject("SANDBOX", { className: "Sandbox", scriptName: `ficus-sandbox-${stage}` }),
         FICUS_SANDBOX_SCRIPT: sandbox.workerName,
+        // The agents that work attempts: `AgentActor` in the agents Worker, by
+        // literal name like SANDBOX, with the same deploy-order edge.
+        AGENTS: Cloudflare.DurableObject("AGENTS", { className: "AgentActor", scriptName: `ficus-agents-${stage}` }),
+        FICUS_AGENTS_SCRIPT: agents.workerName,
       },
     });
 
-    // Accounts. The schema is Better Auth's for src/api/auth.ts's plugins,
-    // compiled by `bun run auth:schema`; applied in order on deploy.
+    // Accounts and the tree directory. Migrations are drizzle-kit's: on each
+    // deploy, Drizzle.Schema writes one for any change to src/api/schema.ts
+    // (Ficus's tables), and the database applies the pending ones in order.
+    // Better Auth's tables come from `bun run auth:schema <name>`, which
+    // writes a custom migration into the same chain.
+    const apiSchema = yield* Drizzle.Schema("ApiSchema", {
+      schema: "./src/api/schema.ts",
+      out: "./src/api/migrations",
+      dialect: "sqlite",
+    });
+
     const authDb = yield* Cloudflare.D1.Database("AuthDb", {
       name: `ficus-auth-${stage}`,
-      migrations: "./src/api/migrations",
+      migrations: apiSchema,
     });
 
     // Signs sessions. Generated once per stage and kept in state.
@@ -161,23 +188,6 @@ export default Alchemy.Stack(
         TREE: worker,
       },
     });
-
-    // A pull request's preview stage says where it lives, on the pull request.
-    // The logical id is stable, so each push edits the same comment.
-    const pullRequest = yield* Config.option(Config.Int("PULL_REQUEST"));
-
-    if (Option.isSome(pullRequest)) {
-      yield* GitHub.Comment("PreviewComment", {
-        owner: OWNER,
-        repository: REPO,
-        issueNumber: pullRequest.value,
-        body: Output.interpolate`## 🌿 Ficus preview: \`${stage}\`
-
-API: ${api.url}
-
-Deployed from this pull request by \`deploy.yml\`; destroyed when it closes.`,
-      });
-    }
 
     return { api: api.url.as<string>() };
   }),
