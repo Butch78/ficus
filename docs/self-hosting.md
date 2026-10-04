@@ -84,7 +84,8 @@ Roughly in the order they block self-hosting:
    Cloudflare Workflow that runs the released commit's `[deploy]` in a sandbox, with the Cloudflare
    token added by Egress so it never enters the container. Ficus's own `[deploy]` builds its sandbox
    image with nix and pushes it to Cloudflare's registry (a sandbox has no Docker), and the deploy
-   token lives in the Secrets Store. Still missing: per-attempt preview stages, and per-tree secrets.
+   token lives in the Secrets Store. Deploys run in a deployer Worker of their own, which a scoring
+   sandbox deploys afterwards, so a deploy never replaces the Worker it runs under. Still missing: per-attempt preview stages, and per-tree secrets.
 9. **Mirror to and from GitHub during the transition.**
    - Ficus → GitHub: after each accept, push the head to GitHub `main` (from a sandbox, token added
      by Egress). Branch protection then allows only the mirror to push.

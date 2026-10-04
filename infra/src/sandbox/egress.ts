@@ -71,11 +71,14 @@ export class Egress extends WorkerEntrypoint<object, EgressProps> {
       case "cloudflare": {
         // The container holds a placeholder, swapped here: the token never reaches it.
         const authorized = new Request(request);
-        const authorization = withDeployToken(request.headers.get("authorization"), props.token);
+        const sent = request.headers.get("authorization");
+        const authorization = withDeployToken(sent, props.token);
 
         if (authorization !== null) {
           authorized.headers.set("authorization", authorization);
         }
+
+        console.log(`egress cloudflare: ${authorization === sent ? "credentials as sent" : "deploy token added"}`);
 
         return fetch(authorized);
       }

@@ -119,20 +119,26 @@ deadline 2026-10-14.
   Image: `infra/src/sandbox/context` (nix + devenv + bun; `ficus-scorer.js` from `scripts/build-scorer`). Run
   `scripts/build-scorer` before `bun run deploy`: alchemy builds the image before its ScorerBinary step, so
   otherwise the image copies a missing or stale bundle.
-- Deploys: `[deploy] {run, hosts?, timeout_secs?}` in ficus.toml, read from the released commit itself (accepted, so
+- Deploys: `[deploy] {run, deployer?, hosts?, timeout_secs?}` in ficus.toml, read from the released commit itself (accepted, so
   trusted). `POST /trees/<t>/release` starts one `Deploy` Workflow instance (`<tree>-deploy-<n>`, `src/deploys`: an
   Effect-native alchemy Worker, `Cloudflare.Workflow` + `Workflows.task`) and records it; `GET /trees/<t>/deploys`
-  reads each instance's status. The Workflow mints a read token and asks a Sandbox `POST /deploy`: `ficus-scorer
-  deploy-prepare` (clone, read `[deploy]`) → its hosts + `api.cloudflare.com` open (Egress `cloudflare` mode puts the
-  deploy token in `Authorization`; the container's `CLOUDFLARE_API_TOKEN` is a placeholder) → `ficus-scorer deploy`.
+  reads each instance's status. The Workflow mints a read token and asks a Sandbox `POST /deploy {part}`: `ficus-scorer
+  deploy-prepare` (clone, read `[deploy]`) → its hosts + `api.cloudflare.com` open (Egress `cloudflare` mode swaps the
+  container's placeholder `CLOUDFLARE_API_TOKEN` for the deploy token; credentials the API issued, like asset upload
+  JWTs, pass as sent) → `ficus-scorer deploy`. Step `deploy` runs `run` in the deployer (`ficus-deployer-<stage>`,
+  `deployer.run.ts`: the Sandbox code and image as a stack of its own); once it passed, step `deployer` runs
+  `deployer` in a scoring sandbox. So a deploy never replaces the Worker its container runs under (a redeploy resets
+  its Durable Objects and cuts the exec off). Deploy the deployer stack before the Ficus stack on a deploys stage: the
+  deploys Worker binds it by `Worker.ref`. A fresh deployer stack fails its first deploy at the container's precreate
+  (the image is still an unresolved build output); the image is built by then, so run it again.
   Only a stage deployed with `FICUS_DEPLOYS=true` gets the deploys Worker and the tree's `DEPLOYS` binding; the
   Workflow binds the stage's deploy token from the Secrets Store by reference (`secrets.run.ts`, stack
   `FicusSecrets`: `STAGE=prod bun run deploy:secrets` mints `ficus-deploy-<stage>` with `src/permissions.ts`, or
   keeps a given `FICUS_DEPLOY_TOKEN`), so deploying never needs the token's value.
-- Ficus deploys itself: `[deploy]` in ficus.toml is `bun run deploy` + `deploy:web` as prod, after
-  `scripts/restore-builds prod`: Command.Build calls a missing outdir changed, so in the deploy's fresh clone the
-  scorer and image builds would always update, the sandbox Worker hosting the deploy would be redeployed, and the
-  deploy's container cut off (each Workflow retry the same). Rebuilt first (both reproducible), they noop. The stack builds
+- Ficus deploys itself: `[deploy] run` in ficus.toml is `bun run deploy` + `deploy:web` as prod, `deployer` is
+  `deploy:deployer`, each after `scripts/restore-builds prod`: Command.Build calls a missing outdir changed, so in a
+  fresh clone the scorer and image builds would always update and redeploy the sandbox (resetting the scoring and
+  agents it runs). Rebuilt first (both reproducible), they noop when unchanged. The stack builds
   the sandbox image itself: `Command.Build("SandboxImage")` (src/sandbox/stack.ts, memoized on nix/sandbox-image.nix,
   the context and devenv.lock) runs `scripts/sandbox-image`: nix `dockerTools` build, skopeo push (from the devenv,
   15-minute registry credentials), the reference into `infra/.sandbox-image/reference`; the container deploys it
