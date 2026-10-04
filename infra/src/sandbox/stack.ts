@@ -5,24 +5,24 @@
  * too: alchemy registers a resource once however often it is yielded, and
  * the yield is the edge that deploys the sandbox first.
  */
+import { readFileSync } from "node:fs";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
 import * as Output from "alchemy/Output";
-import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import { COMPATIBILITY, OBSERVABILITY } from "../platform.ts";
+
+/** The repository root, where the image build runs. */
+const REPO_ROOT = `${import.meta.dirname}/../../..`;
+
+/** Where scripts/sandbox-image leaves the pushed image's reference, from the root (gitignored). */
+const SANDBOX_IMAGE_DIR = "infra/.sandbox-image";
 
 export const SandboxWorker = Effect.gen(function* () {
   const { stage } = yield* Alchemy.Stack;
 
-  // The scorer: ficus-scorer (src/scorer, bundled, run by bun) in an image
-  // with nix + devenv. The bundle's hash rides into the container's env so
-  // a new scorer redeploys the container. That edge does not order the image build
-  // after this one (the image builds in an earlier phase), so run
-  // scripts/build-scorer before deploying, as deploy.yml does; this build
-  // then finds it up to date.
+  // The scorer: ficus-scorer (src/scorer), bundled for bun into the image's context.
   const scorerBinary = yield* Command.Build("ScorerBinary", {
     cwd: "..",
     command: "scripts/build-scorer",
@@ -33,19 +33,40 @@ export const SandboxWorker = Effect.gen(function* () {
     },
   });
 
-  // The image: one already in Cloudflare's registry when FICUS_SANDBOX_IMAGE
-  // names it (nix-built by scripts/build-sandbox-image and pushed by
-  // scripts/push-sandbox-image, as a deploy without Docker does), else
-  // context/Dockerfile built with Docker. The bundle's hash rides along with
-  // the Dockerfile build, so a new scorer redeploys the container.
-  const prebuilt = yield* Config.option(Config.String("FICUS_SANDBOX_IMAGE"));
+  const scorerHash = Output.map(scorerBinary.hash.output, (hash) => hash ?? "unhashed");
 
-  const image = Option.isSome(prebuilt)
-    ? { image: prebuilt.value }
-    : {
-        context: `${import.meta.dirname}/context`,
-        env: { FICUS_SCORER_HASH: Output.map(scorerBinary.hash.output, (hash) => hash ?? "unhashed") },
-      };
+  // The image. `alchemy dev` (stage local) builds context/Dockerfile with
+  // Docker. Every other stage builds it with nix and pushes it to
+  // Cloudflare's registry (scripts/sandbox-image), which a deploy sandbox can
+  // do with no Docker: Ficus deploys itself that way. Memoized on what the
+  // image is made of; the scorer's hash in its env rebuilds it for a new
+  // scorer, and orders it after the scorer's build.
+  const image =
+    stage === "local"
+      ? { context: `${import.meta.dirname}/context`, env: { FICUS_SCORER_HASH: scorerHash } }
+      : {
+          image: Output.map(
+            (yield* Command.Build("SandboxImage", {
+              cwd: "..",
+              command: `scripts/sandbox-image ${stage} ${SANDBOX_IMAGE_DIR}`,
+              outdir: SANDBOX_IMAGE_DIR,
+              env: { FICUS_SCORER_HASH: scorerHash },
+              memo: {
+                include: [
+                  "nix/sandbox-image.nix",
+                  "infra/src/sandbox/context/**",
+                  "devenv.lock",
+                  "scripts/sandbox-image",
+                  "scripts/build-sandbox-image",
+                  "scripts/push-sandbox-image",
+                ],
+                lockfile: false,
+              },
+            })).hash.output,
+            // The script wrote the pushed image's reference; read once it has run.
+            () => readFileSync(`${REPO_ROOT}/${SANDBOX_IMAGE_DIR}/reference`, "utf8").trim(),
+          ),
+        };
 
   const container = Cloudflare.Container("SandboxContainer", {
     name: `ficus-sandbox-${stage}`,

@@ -11,3 +11,4 @@ infra/src/sandbox/context/ficus-scorer.js
 infra/src/web/dist/
 infra/src/web/.next/
 infra/src/web/next-env.d.ts
+infra/.sandbox-image/

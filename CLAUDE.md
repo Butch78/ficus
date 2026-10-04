@@ -129,11 +129,12 @@ deadline 2026-10-14.
   Workflow binds the stage's deploy token from the Secrets Store by reference (`secrets.run.ts`, stack
   `FicusSecrets`: `STAGE=prod bun run deploy:secrets` mints `ficus-deploy-<stage>` with `src/permissions.ts`, or
   keeps a given `FICUS_DEPLOY_TOKEN`), so deploying never needs the token's value.
-- Ficus deploys itself: `[deploy]` in ficus.toml runs `scripts/deploy-ficus` (STAGE=prod): `scripts/build-scorer`,
-  `scripts/build-sandbox-image` (nix `dockerTools`, `nix/sandbox-image.nix`; no Docker in a sandbox),
-  `scripts/push-sandbox-image` (skopeo, 15-minute registry credentials), then the stacks with
-  `FICUS_SANDBOX_IMAGE=<registry ref>` (alchemy deploys an image already in registry.cloudflare.com as-is; without
-  it the sandbox builds `context/Dockerfile` with Docker, as `alchemy dev` does).
+- Ficus deploys itself: `[deploy]` in ficus.toml is plain `bun run deploy` + `deploy:web` as prod. The stack builds
+  the sandbox image itself: `Command.Build("SandboxImage")` (src/sandbox/stack.ts, memoized on nix/sandbox-image.nix,
+  the context and devenv.lock) runs `scripts/sandbox-image`: nix `dockerTools` build, skopeo push (from the devenv,
+  15-minute registry credentials), the reference into `infra/.sandbox-image/reference`; the container deploys it
+  as-is. Stage `local` (`alchemy dev`) builds `context/Dockerfile` with Docker instead. Inside the devenv shell,
+  secretspec loads `~/.config/ficus/.env` over your environment: run deploys with another token outside it.
 - Backups: `GET /trees/<t>/export` (all storage, assignments left out); the Api's nightly cron writes every tree in
   the directory to R2 `ficus-backups-<stage>` as `trees/<org>/<tree>/<date>.json`, expired after 90 days.
 - On expanse-5950x one of Cloudflare's IPv6 edges for workers.dev is unreachable: run scripts against deployed

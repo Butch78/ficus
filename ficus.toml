@@ -39,12 +39,12 @@ yes = "The whole task is done, and nothing else is changed."
 no = "Part of the task is missing, or the diff changes unrelated code."
 
 # How a released node deploys (src/deploys): the tree's release starts a
-# Deploy Workflow that runs this in a sandbox, from the released commit. It
-# builds the sandbox image with nix (no Docker there), pushes it, and deploys
-# prod. The Cloudflare token is the stage's deploy token, added by the
-# sandbox's egress; the command only ever sees a placeholder.
+# Deploy Workflow that runs this in a sandbox, from the released commit: the
+# alchemy stacks, as prod. The stack builds the sandbox image with nix and
+# pushes it (no Docker there). The Cloudflare token is prod's deploy token,
+# added by the sandbox's egress; the command only ever sees a placeholder.
 [deploy]
-run = "STAGE=prod scripts/deploy-ficus"
+run = "cd infra && bun install --frozen-lockfile && STAGE=prod FICUS_DEPLOYS=true bun run deploy && STAGE=prod bun run deploy:web"
 hosts = [
   "registry.npmjs.org",
   "registry.cloudflare.com",

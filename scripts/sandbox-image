@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# The sandbox image for a stage, as alchemy's `SandboxImage` build runs it
+# (infra/src/sandbox/stack.ts): built with nix, pushed to Cloudflare's
+# registry, and its reference written to <outdir>/reference for the
+# container to deploy as-is. No Docker: a deploy sandbox has none.
+#
+#   scripts/sandbox-image <stage> <outdir>
+set -euo pipefail
+cd "$(dirname "$0")/.."
+stage=${1:?usage: sandbox-image <stage> <outdir>}
+outdir=${2:?usage: sandbox-image <stage> <outdir>}
+
+image=$(scripts/build-sandbox-image "$stage")
+reference=$(scripts/push-sandbox-image "$image" "ficus-sandbox-$stage")
+mkdir -p "$outdir"
+printf '%s\n' "$reference" > "$outdir/reference"
+echo "sandbox image: $reference" >&2
