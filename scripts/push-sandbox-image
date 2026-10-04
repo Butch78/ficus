@@ -22,10 +22,18 @@ credentials=$(curl -sf -X POST "https://api.cloudflare.com/client/v4/accounts/$C
 user=$(jq -r '.result.username // .result.user' <<<"$credentials")
 password=$(jq -r '.result.password' <<<"$credentials")
 
+target="docker://$registry/$CLOUDFLARE_ACCOUNT_ID/$repository:$tag"
+
+# The tag is the image's nix hash: if the registry has it, it has this image.
+if existing=$(skopeo inspect --no-tags --creds "$user:$password" --format '{{.Digest}}' "$target" 2>/dev/null); then
+  echo "$registry/$CLOUDFLARE_ACCOUNT_ID/$repository@$existing"
+  exit 0
+fi
+
 digest=$(mktemp)
 trap 'rm -f "$digest"' EXIT
 # No trust policy: this pushes a local archive; nothing is pulled.
-skopeo --insecure-policy copy --quiet --digestfile "$digest" \
+skopeo --insecure-policy copy --quiet --retry-times 3 --digestfile "$digest" \
   --dest-creds "$user:$password" \
-  "docker-archive:$image" "docker://$registry/$CLOUDFLARE_ACCOUNT_ID/$repository:$tag" >&2
+  "docker-archive:$image" "$target" >&2
 echo "$registry/$CLOUDFLARE_ACCOUNT_ID/$repository@$(cat "$digest")"
