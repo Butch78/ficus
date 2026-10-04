@@ -181,6 +181,11 @@ const handle = Effect.fn("Api.handle")(function* (env: Bindings, request: Reques
     return new Response("ficus 🌿 — https://github.com/Butch78/ficus\n");
   }
 
+  // No authentication, and nothing beyond this Worker: a liveness probe.
+  if (pathname === "/v1/health") {
+    return Response.json({ ok: true });
+  }
+
   if (pathname.startsWith(`${AUTH_BASE_PATH}/`)) {
     const auth = yield* Auth;
 
@@ -206,8 +211,14 @@ const handle = Effect.fn("Api.handle")(function* (env: Bindings, request: Reques
 });
 
 export default {
-  fetch: (request: Request, env: Bindings) =>
-    Effect.runPromise(
+  fetch: (request: Request, env: Bindings) => {
+    // A liveness probe: no authentication, no layers (building the auth layer
+    // would construct Better Auth), and nothing beyond this Worker.
+    if (new URL(request.url).pathname === "/v1/health") {
+      return Promise.resolve(Response.json({ ok: true }));
+    }
+
+    return Effect.runPromise(
       handle(env, request).pipe(
         Effect.catchTag("Api.Failure", (error) =>
           Effect.succeed(Response.json({ error: error.message }, { status: error.status })),
@@ -223,7 +234,8 @@ export default {
           ),
         ),
       ),
-    ),
+    );
+  },
   // The nightly backup (backups.ts), on the cron alchemy.run.ts sets.
   scheduled: (controller: ScheduledController, env: Bindings, ctx: ExecutionContext) =>
     ctx.waitUntil(
