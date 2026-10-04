@@ -324,7 +324,7 @@ describe("deploying", () => {
   test("runs the released commit's own [deploy], having named its hosts", async () => {
     const repo = fixture();
     const released = repo.commit([["ficus.toml", `${ROOT}\n[deploy]\nrun = "echo deployed $(cat greeting.txt)"\nhosts = ["registry.npmjs.org"]\n`], ["greeting.txt", "hello\n"]]);
-    const prepared = await ok(deployPrepare(repo.work, { remote: repo.origin, commit: released }));
+    const prepared = await ok(deployPrepare(repo.work, { remote: repo.origin, commit: released, part: "run" }));
 
     expect([prepared.deploys, prepared.hosts]).toEqual([true, ["registry.npmjs.org"]]);
 
@@ -338,12 +338,28 @@ describe("deploying", () => {
     const repo = fixture();
     const plain = repo.commit([["ficus.toml", ROOT], ["greeting.txt", "hello\n"]]);
 
-    expect(await ok(deployPrepare(repo.work, { remote: repo.origin, commit: plain }).pipe(Effect.flatMap((prepared) => deploy(prepared.workdir))))).toMatchObject({ deployed: false });
+    expect(await ok(deployPrepare(repo.work, { remote: repo.origin, commit: plain, part: "run" }).pipe(Effect.flatMap((prepared) => deploy(prepared.workdir))))).toMatchObject({ deployed: false });
 
     const broken = repo.commit([["ficus.toml", `${ROOT}\n[deploy]\nrun = "echo no token >&2; exit 3"\n`]]);
-    const report = await ok(deployPrepare(repo.work, { remote: repo.origin, commit: broken }).pipe(Effect.flatMap((prepared) => deploy(prepared.workdir))));
+    const report = await ok(deployPrepare(repo.work, { remote: repo.origin, commit: broken, part: "run" }).pipe(Effect.flatMap((prepared) => deploy(prepared.workdir))));
 
     expect([report.deployed, report.passed]).toEqual([true, false]);
     expect(report.tail).toContain("no token");
+  });
+
+  test("the deployer part runs [deploy] deployer, and nothing when there is none", async () => {
+    const repo = fixture();
+    const both = repo.commit([["ficus.toml", `${ROOT}\n[deploy]\nrun = "echo the stacks"\ndeployer = "echo the deployer"\n`]]);
+    const report = await ok(deployPrepare(repo.work, { remote: repo.origin, commit: both, part: "deployer" }).pipe(Effect.flatMap((prepared) => deploy(prepared.workdir))));
+
+    expect([report.deployed, report.passed]).toEqual([true, true]);
+    expect(report.tail).toContain("the deployer");
+    expect(report.tail).not.toContain("the stacks");
+
+    const runOnly = repo.commit([["ficus.toml", `${ROOT}\n[deploy]\nrun = "echo the stacks"\n`]]);
+    const prepared = await ok(deployPrepare(repo.work, { remote: repo.origin, commit: runOnly, part: "deployer" }));
+
+    expect(prepared.deploys).toBe(false);
+    expect(await ok(deploy(prepared.workdir))).toMatchObject({ deployed: false });
   });
 });

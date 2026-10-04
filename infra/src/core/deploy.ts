@@ -21,30 +21,40 @@ export const DeployParams = Schema.Struct({
 
 export type DeployParams = typeof DeployParams.Type;
 
+/**
+ * Which command of the released commit's `[deploy]` a sandbox runs: `run`
+ * (in the deployer), or `deployer` (in a scoring sandbox, once `run` passed).
+ */
+export const DeployPart = Schema.Literals(["run", "deployer"]);
+
+export type DeployPart = typeof DeployPart.Type;
+
 /** What the Workflow asks a sandbox: deploy `commit` of the repo at `remote`, read with `token`. */
 export const DeployRequest = Schema.Struct({
   remote: Schema.String,
   token: Schema.String,
   commit: Oid,
+  part: DeployPart,
 });
 
 export type DeployRequest = typeof DeployRequest.Type;
 
 /** What the container is told: no credentials, which the sandbox's egress adds. */
-export const DeployRef = Schema.Struct({ remote: Schema.String, commit: Oid });
+export const DeployRef = Schema.Struct({ remote: Schema.String, commit: Oid, part: DeployPart });
 
 export type DeployRef = typeof DeployRef.Type;
 
 /** `ficus-scorer deploy-prepare`: the workdir, whether the root deploys at all, and the hosts its `[deploy]` opens. */
 export const DeployPrepared = Schema.Struct({
   workdir: Schema.String,
+  /** Whether its `[deploy]` has the part asked for. */
   deploys: Schema.Boolean,
   hosts: Schema.Array(Schema.String),
 });
 
 export type DeployPrepared = typeof DeployPrepared.Type;
 
-/** How a deploy went: `deployed` is false when the released commit's `ficus.toml` has no `[deploy]`. */
+/** How a deploy went: `deployed` is false when the released commit's `ficus.toml` has no `[deploy]` (or not the part asked for). */
 export const DeployReport = Schema.Struct({
   deployed: Schema.Boolean,
   passed: Schema.Boolean,
@@ -54,6 +64,14 @@ export const DeployReport = Schema.Struct({
 });
 
 export type DeployReport = typeof DeployReport.Type;
+
+/** What a Deploy Workflow instance answers: how `run` went, and `deployer` when it ran too. */
+export const DeployOutcome = Schema.Struct({
+  ...DeployReport.fields,
+  deployer: Schema.optionalKey(DeployReport),
+});
+
+export type DeployOutcome = typeof DeployOutcome.Type;
 
 /** The tree's record of a release's deploy: the Workflow instance that runs it. */
 export const DeployRecord = Schema.Struct({

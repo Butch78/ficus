@@ -25,7 +25,8 @@
  *       clones the released commit, reads its `[deploy]`; prints
  *       {"workdir": "...", "deploys": bool, "hosts": [...]}
  *   ficus-scorer deploy <workdir>      network: nix caches, those hosts, the Cloudflare API
- *       builds the root's devenv shell and runs its deploy; prints a DeployReport
+ *       builds the root's devenv shell and runs the part of its `[deploy]`
+ *       the ref named (`run` or `deployer`); prints a DeployReport
  *
  * Exit 0 with JSON on stdout on success; 2 when the attempt or root cannot
  * be scored or the replay conflicts (retrying will not help); 1 for anything

@@ -18,8 +18,9 @@
 //                                  dispatches and polls them
 //   Deploys  src/deploys/worker.ts Effect-native: the `Deploy` Workflow, one
 //                                  instance per release, running the root's
-//                                  `[deploy]` in a sandbox. Only with
-//                                  FICUS_DEPLOYS=true, after secrets.run.ts
+//                                  `[deploy]` in the deployer's sandboxes.
+//                                  Only with FICUS_DEPLOYS=true, after
+//                                  secrets.run.ts and deployer.run.ts
 //
 //   The web UI is a stack of its own (web.run.ts), deployed after this one
 //   to the same stage; it binds `Api` by reference.

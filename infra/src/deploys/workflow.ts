@@ -4,12 +4,16 @@
  * with the node's repo and commit, and reads the instance's status when it
  * is asked how its deploys went. Nothing calls the tree back.
  *
- * One durable step: mint a short-lived read token for the node's repo, ask
- * a sandbox (src/sandbox, `POST /deploy`) to run the released commit's own
- * `[deploy]` with the Cloudflare API open, revoke the token. The deploy
- * token stays here and in Egress: the container sees a placeholder. A
- * sandbox that fails is retried; a deploy command that fails is an answer,
- * not retried: running it again would not change it.
+ * Each durable step mints a short-lived read token for the node's repo, asks
+ * a sandbox (src/sandbox, `POST /deploy`) to run part of the released
+ * commit's own `[deploy]` with the Cloudflare API open, and revokes the
+ * token. Step `deploy` runs `run` in the deployer (deployer.run.ts); once it
+ * passed, step `deployer` runs `deployer`, when there is one, in a scoring
+ * sandbox. So a root that deploys Ficus never replaces the Worker its
+ * container runs under: `run` replaces the scoring sandbox's, `deployer` the
+ * deployer's. The deploy token stays here and in Egress: the container sees
+ * a placeholder. A sandbox that fails is retried; a deploy command that
+ * fails is an answer, not retried: running it again would not change it.
  */
 import type * as cf from "@cloudflare/workers-types";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -18,7 +22,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
-import { DeployParams, DeployReport } from "../core/deploy.ts";
+import { DeployOutcome, type DeployPart, DeployParams, DeployReport } from "../core/deploy.ts";
 import { artifactsNamespace } from "../platform.ts";
 
 /** How long the sandbox may read the node's repo: the deploy clones it first thing. */
@@ -42,15 +46,17 @@ export default class Deploy extends Cloudflare.Workflow<Deploy>()(
     // The account it deploys into.
     const accountId = yield* Config.String("CLOUDFLARE_ACCOUNT_ID");
 
-    /** The sandbox Durable Object namespace the deploys Worker binds by name (worker.ts). */
-    const sandboxes = Effect.gen(function* () {
-      const env = yield* Cloudflare.Workers.WorkerEnvironment;
-      const namespace: cf.DurableObjectNamespace | undefined = env["SANDBOX"];
+    /** Where each part runs: a Durable Object namespace the deploys Worker binds by name (worker.ts). */
+    const BINDINGS = { run: "DEPLOYER", deployer: "SANDBOX" } as const satisfies Record<DeployPart, string>;
 
-      return namespace === undefined ? yield* Effect.die(new Error("the deploys Worker has no SANDBOX binding")) : namespace;
+    const sandboxes = Effect.fn("Deploy.sandboxes")(function* (part: DeployPart) {
+      const env = yield* Cloudflare.Workers.WorkerEnvironment;
+      const namespace: cf.DurableObjectNamespace | undefined = env[BINDINGS[part]];
+
+      return namespace === undefined ? yield* Effect.die(new Error(`the deploys Worker has no ${BINDINGS[part]} binding`)) : namespace;
     });
 
-    const deployOnce = Effect.fn("Deploy.once")(function* (params: DeployParams) {
+    const deployOnce = Effect.fn("Deploy.once")(function* (params: DeployParams, part: DeployPart) {
       const repo = yield* artifacts.get(params.repo).pipe(Effect.mapError((error) => failed(`reading repo ${params.repo}: ${error.message}`)));
 
       const info = yield* Effect.tryPromise({ try: () => repo.raw.info(), catch: (cause) => failed(`reading repo ${params.repo}: ${String(cause)}`) }).pipe(
@@ -59,7 +65,7 @@ export default class Deploy extends Cloudflare.Workflow<Deploy>()(
 
       const token = yield* repo.createToken("read", READ_TOKEN_TTL_SECS).pipe(Effect.mapError((error) => failed(`minting a read token: ${error.message}`)));
       const cloudflareToken = yield* deployToken.pipe(Effect.mapError((error) => failed(`reading the deploy token: ${error.message}`)));
-      const namespace = yield* sandboxes;
+      const namespace = yield* sandboxes(part);
       const sandbox = namespace.get(namespace.idFromName(`deploy:${params.tree}`));
 
       const answer = yield* Effect.tryPromise({
@@ -71,6 +77,7 @@ export default class Deploy extends Cloudflare.Workflow<Deploy>()(
               remote: info.remote,
               token: token.plaintext,
               commit: params.commit,
+              part,
               account_id: accountId,
               cloudflare_token: Redacted.value(cloudflareToken),
             }),
@@ -90,12 +97,24 @@ export default class Deploy extends Cloudflare.Workflow<Deploy>()(
       );
     });
 
-    return Effect.fn("Deploy.run")(function* (input: DeployParams) {
-      return yield* Cloudflare.Workflows.task("deploy", deployOnce(input), {
+    const step = (name: string, input: DeployParams, part: DeployPart) =>
+      Cloudflare.Workflows.task(name, deployOnce(input, part), {
         retries: { limit: 2, delay: "1 minute", backoff: "exponential" },
         // Past a cold devenv build and the root's own deploy timeout (scoring.ts DEFAULT_DEPLOY_TIMEOUT_SECS).
         timeout: "1 hour",
       });
+
+    return Effect.fn("Deploy.run")(function* (input: DeployParams) {
+      const ran = yield* step("deploy", input, "run");
+
+      if (!ran.deployed || !ran.passed) {
+        return DeployOutcome.make(ran);
+      }
+
+      const deployer = yield* step("deployer", input, "deployer");
+
+      // A root with no `deployer` (any but Ficus's own) has nothing more to say.
+      return DeployOutcome.make(deployer.deployed ? { ...ran, deployer } : ran);
     });
     // oxlint-disable-next-line effecttsgo/strict-effect-provide -- alchemy's binding layers, provided where the Workflow is declared
   }).pipe(Effect.provide(Layer.mergeAll(Cloudflare.Artifacts.ReadNamespaceBinding, Cloudflare.SecretsStore.ReadSecretBinding))),

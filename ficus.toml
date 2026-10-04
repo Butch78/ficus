@@ -39,14 +39,18 @@ yes = "The whole task is done, and nothing else is changed."
 no = "Part of the task is missing, or the diff changes unrelated code."
 
 # How a released node deploys (src/deploys): the tree's release starts a
-# Deploy Workflow that runs this in a sandbox, from the released commit: the
-# alchemy stacks, as prod. The stack builds the sandbox image with nix and
-# pushes it (no Docker there); scripts/restore-builds first rebuilds what the
-# last deploy built, so an unchanged sandbox (the one this runs in) is left
-# alone instead of redeployed under it. The Cloudflare token is prod's deploy token,
-# added by the sandbox's egress; the command only ever sees a placeholder.
+# Deploy Workflow that runs this from the released commit: `run` in the
+# deployer (infra/deployer.run.ts) deploys the Ficus and web stacks as prod,
+# then `deployer` in a scoring sandbox deploys the deployer, so neither
+# replaces the Worker its own container runs under. The stacks build the
+# sandbox image with nix and push it (no Docker there); scripts/restore-builds
+# first rebuilds what the last deploy built, so an unchanged sandbox is left
+# alone rather than redeployed under the scoring and agents it is running.
+# The Cloudflare token is prod's deploy token, added by the sandbox's egress;
+# the commands only ever see a placeholder.
 [deploy]
 run = "cd infra && bun install --frozen-lockfile && ../scripts/restore-builds prod && STAGE=prod FICUS_DEPLOYS=true bun run deploy && STAGE=prod bun run deploy:web"
+deployer = "cd infra && bun install --frozen-lockfile && ../scripts/restore-builds prod && STAGE=prod bun run deploy:deployer"
 hosts = [
   "registry.npmjs.org",
   "registry.cloudflare.com",

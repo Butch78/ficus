@@ -22,6 +22,9 @@
     "plan:web": "bun --bun alchemy plan web.run.ts --stage ${STAGE:-dev}",
     "deploy:web": "bun --bun alchemy deploy web.run.ts --stage ${STAGE:-dev} --yes",
     "deploy:secrets": "bun --bun alchemy deploy secrets.run.ts --stage ${STAGE:-dev} --yes",
+    "plan:deployer": "bun --bun alchemy plan deployer.run.ts --stage ${STAGE:-dev}",
+    "deploy:deployer": "bun --bun alchemy deploy deployer.run.ts --stage ${STAGE:-dev} --yes",
+    "destroy:deployer": "bun --bun alchemy destroy deployer.run.ts --stage ${STAGE:-dev}",
     "destroy:web": "bun --bun alchemy destroy web.run.ts --stage ${STAGE:-dev}",
     "destroy:web:ci": "bun --bun alchemy destroy web.run.ts --stage ${STAGE:?a pr-<n> stage} --yes"
   },

@@ -1,8 +1,9 @@
 /**
  * The `ficus-deploys` Worker, Effect-native: hosts the `Deploy` Workflow
  * (workflow.ts). No routes of its own: the tree starts and reads instances
- * through its `DEPLOYS` Workflow binding, and the Workflow reaches the
- * sandbox Worker's `Sandbox` objects through `SANDBOX`.
+ * through its `DEPLOYS` Workflow binding. The Workflow deploys a release in
+ * the deployer's `Sandbox` objects (`DEPLOYER`, deployer.run.ts), then the
+ * deployer itself from the scoring sandbox's (`SANDBOX`).
  *
  * Deployed only to a stage given a deploy token (alchemy.run.ts): a stage
  * without one has no way to deploy, and its tree releases without deploying.
@@ -21,6 +22,8 @@ export default class DeploysWorker extends Cloudflare.Worker<DeploysWorker>()(
     const { stage } = yield* Alchemy.Stack;
     // The same resource alchemy.run.ts yields.
     const sandbox = yield* SandboxWorker;
+    // The deployer, from its own stack (deployer.run.ts), deployed first.
+    const deployer = yield* Cloudflare.Worker.ref("Sandbox", { stack: "FicusDeployer", stage });
 
     return {
       name: `ficus-deploys-${stage}`,
@@ -34,6 +37,8 @@ export default class DeploysWorker extends Cloudflare.Worker<DeploysWorker>()(
         // the sandbox Worker (and its class) before this one.
         SANDBOX: Cloudflare.DurableObject("SANDBOX", { className: "Sandbox", scriptName: `ficus-sandbox-${stage}` }),
         FICUS_SANDBOX_SCRIPT: sandbox.workerName,
+        DEPLOYER: Cloudflare.DurableObject("DEPLOYER", { className: "Sandbox", scriptName: `ficus-deployer-${stage}` }),
+        FICUS_DEPLOYER_SCRIPT: deployer.workerName,
       },
     };
   }),

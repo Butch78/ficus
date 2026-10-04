@@ -94,6 +94,12 @@ export const DEFAULT_DEPLOY_TIMEOUT_SECS = 1800;
 export const DeploySpec = Schema.Struct({
   /** A bash command, run from the repo root inside the root's devenv shell when it has one. */
   run: Schema.String,
+  /**
+   * For a root that deploys Ficus itself: the command that deploys the
+   * deployer (the sandbox `run` ran in), run once `run` passed, the same way
+   * but in a scoring sandbox, so no deploy replaces the Worker it runs in.
+   */
+  deployer: Schema.optionalKey(Schema.String),
   /** Hostnames, exactly, as for `[fetch]`. */
   hosts: Schema.optionalKey(Schema.Array(Schema.String)),
   timeout_secs: Schema.optionalKey(Seconds),
@@ -228,6 +234,10 @@ const checkDeploy = (deploy: DeploySpec | undefined) =>
 
     if (deploy.run.trim() === "") {
       return yield* refuse("EmptyDeploy", "[deploy] has an empty `run`");
+    }
+
+    if (deploy.deployer?.trim() === "") {
+      return yield* refuse("EmptyDeploy", "[deploy] has an empty `deployer`");
     }
   });
 

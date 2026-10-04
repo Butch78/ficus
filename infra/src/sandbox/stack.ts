@@ -4,6 +4,12 @@
  * Its own module so every Worker that binds the sandbox by name can yield it
  * too: alchemy registers a resource once however often it is yielded, and
  * the yield is the edge that deploys the sandbox first.
+ *
+ * Two of them, the same code and image: `ficus-sandbox-<stage>` (scoring,
+ * rebases, agents' workspaces, alchemy.run.ts) and `ficus-deployer-<stage>`
+ * (the Deploy Workflow's deploys, deployer.run.ts). A deploy never replaces
+ * the Worker it runs in: the deployer deploys the Ficus stack, then a
+ * sandbox deploys the deployer.
  */
 import { readFileSync } from "node:fs";
 import * as Alchemy from "alchemy";
@@ -19,7 +25,10 @@ const REPO_ROOT = `${import.meta.dirname}/../../..`;
 /** Where scripts/sandbox-image leaves the pushed image's reference, from the root (gitignored). */
 const SANDBOX_IMAGE_DIR = "infra/.sandbox-image";
 
-export const SandboxWorker = Effect.gen(function* () {
+/** Which of the two: the name of its Worker and container, `ficus-<role>-<stage>`. */
+export type SandboxRole = "sandbox" | "deployer";
+
+export const sandboxWorker = (role: SandboxRole) => Effect.gen(function* () {
   const { stage } = yield* Alchemy.Stack;
 
   // The scorer: ficus-scorer (src/scorer), bundled for bun into the image's context.
@@ -69,12 +78,13 @@ export const SandboxWorker = Effect.gen(function* () {
         };
 
   const container = Cloudflare.Container("SandboxContainer", {
-    name: `ficus-sandbox-${stage}`,
+    name: `ficus-${role}-${stage}`,
     // The Durable Object class in sandbox.ts that drives it.
     className: "Sandbox",
     ...image,
     instances: 0,
-    maxInstances: 20,
+    // Scoring and agents run many at once; deploys one per tree at a time.
+    maxInstances: role === "sandbox" ? 20 : 4,
     // A root's devenv shell plus its checks. Ficus's own, when it was
     // Rust, filled standard-1's disk; standard-4 stays until a TS-only
     // root is seen to fit a smaller one. Billed while a sandbox runs:
@@ -84,7 +94,7 @@ export const SandboxWorker = Effect.gen(function* () {
   });
 
   return yield* Cloudflare.Worker("Sandbox", {
-    name: `ficus-sandbox-${stage}`,
+    name: `ficus-${role}-${stage}`,
     main: `${import.meta.dirname}/worker.ts`,
     compatibility: COMPATIBILITY,
     observability: OBSERVABILITY,
@@ -93,3 +103,6 @@ export const SandboxWorker = Effect.gen(function* () {
     env: { SANDBOX: container, AI: Cloudflare.Workers.AI() },
   });
 });
+
+/** The scoring sandbox, `ficus-sandbox-<stage>`. */
+export const SandboxWorker = sandboxWorker("sandbox");

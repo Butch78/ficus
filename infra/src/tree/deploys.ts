@@ -10,7 +10,7 @@
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { DeployRecord, deployId, type DeployParams, DeployReport } from "../core/deploy.ts";
+import { DeployOutcome, DeployRecord, deployId, type DeployParams } from "../core/deploy.ts";
 import { refuse } from "./http.ts";
 
 /** The tree's deploy records, newest last. */
@@ -62,7 +62,7 @@ const statusOf = Effect.fn("Deploys.statusOf")(function* (deploys: Workflow<Depl
   }
 
   const { status: state, error, output } = status.value;
-  const report = Option.getOrUndefined(Schema.decodeUnknownOption(DeployReport)(output));
+  const report = Option.getOrUndefined(Schema.decodeUnknownOption(DeployOutcome)(output));
 
   return { ...record, status: state, report, error: error?.message };
 });

@@ -31,7 +31,8 @@
  *     caches; `ficus-scorer deploy-prepare` clones the commit and reads its
  *     own `[deploy]`; then its hosts and the Cloudflare API (token added by
  *     Egress: the container sees a placeholder) while `ficus-scorer deploy`
- *     runs it. The answer is the DeployReport.
+ *     runs the part asked for: `run` in the deployer (deployer.run.ts),
+ *     `deployer` here in a scoring sandbox. The answer is the DeployReport.
  *
  *   `/score` with `Accept: application/x-ndjson` answers with a stream
  *   instead (src/core/progress.ts): each step as it happens, the
@@ -537,7 +538,7 @@ export class Sandbox extends DurableObject<Bindings> {
 
   readonly #deployIn = Effect.fn("Sandbox.deployIn")(function* (this: Sandbox, call: typeof DeployCall.Type) {
     const repo = repoOf(call.remote);
-    const ref = JSON.stringify({ remote: call.remote, commit: call.commit });
+    const ref = JSON.stringify({ remote: call.remote, commit: call.commit, part: call.part });
 
     yield* this.#ready();
     yield* this.#route(repo.host, { mode: "artifacts", repos: [{ repoPath: repo.repoPath, token: call.token }] });
@@ -555,7 +556,7 @@ export class Sandbox extends DurableObject<Bindings> {
     const prepared = yield* this.#json(yield* this.#exec([SCORER, "deploy-prepare", ref]), DeployPrepared, "deploy-prepare");
 
     if (!prepared.deploys) {
-      return DeployReport.make({ deployed: false, passed: true, millis: 0, tail: "the released commit's ficus.toml has no [deploy]" });
+      return DeployReport.make({ deployed: false, passed: true, millis: 0, tail: `the released commit's ficus.toml has no [deploy] ${call.part}` });
     }
 
     for (const host of prepared.hosts) {

@@ -85,6 +85,8 @@ describe("a root's ficus.toml", () => {
     expect(deployTimeoutSecs(root.deploy ?? { run: "" })).toBe(DEFAULT_DEPLOY_TIMEOUT_SECS);
     expect(refusal('[deploy]\nrun = "x"\nhosts = ["*.example.com"]\n[[check]]\nname = "t"\nrun = "true"\n')).toBe("DeployHost");
     expect(refusal('[deploy]\nrun = " "\n[[check]]\nname = "t"\nrun = "true"\n')).toBe("EmptyDeploy");
+    expect(refusal('[deploy]\nrun = "x"\ndeployer = ""\n[[check]]\nname = "t"\nrun = "true"\n')).toBe("EmptyDeploy");
+    expect(ok(parse('[deploy]\nrun = "x"\ndeployer = "y"\n[[check]]\nname = "t"\nrun = "true"\n')).deploy?.deployer).toBe("y");
     expect(refusal('[deploy]\nhosts = []\n[[check]]\nname = "t"\nrun = "true"\n')).toBe("Unparsable");
   });
 

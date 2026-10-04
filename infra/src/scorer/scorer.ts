@@ -17,7 +17,7 @@ import { join } from "node:path";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import { DeployPrepared, type DeployRef, type DeployReport } from "../core/deploy.ts";
+import { DeployPart, DeployPrepared, type DeployRef, type DeployReport } from "../core/deploy.ts";
 import { stepLine, type ScoreStep, type StepState } from "../core/progress.ts";
 import {
   AttemptRef,
@@ -391,7 +391,11 @@ const PreparedDeploy = Schema.Struct({
   in_devenv: Schema.Boolean,
   /** The released commit's own `[deploy]`; absent when it has none. */
   deploy: Schema.optionalKey(DeploySpec),
+  part: DeployPart,
 });
+
+/** The command a `[deploy]` runs for `part`, if it has one. */
+const partCommand = (deploy: DeploySpec | undefined, part: DeployPart) => (part === "run" ? deploy?.run : deploy?.deployer);
 
 /**
  * Phase one of a deploy, with the network open to the node's repo: clone the
@@ -411,11 +415,11 @@ export const deployPrepare = Effect.fn("Scorer.deployPrepare")(function* (root: 
   const hasToml = yield* succeeds(repo, ["cat-file", "-e", "HEAD:ficus.toml"]);
   const deploy = hasToml ? (yield* Effect.fromResult(parseRoot(yield* git(repo, "read ficus.toml", ["show", "HEAD:ficus.toml"])))).deploy : undefined;
   const inDevenv = yield* succeeds(repo, ["cat-file", "-e", "HEAD:devenv.nix"]);
-  const prepared: typeof PreparedDeploy.Type = deploy === undefined ? { in_devenv: inDevenv } : { in_devenv: inDevenv, deploy };
+  const prepared: typeof PreparedDeploy.Type = deploy === undefined ? { in_devenv: inDevenv, part: ref.part } : { in_devenv: inDevenv, deploy, part: ref.part };
 
   yield* Effect.tryPromise({ try: () => writeFile(join(workdir, DEPLOY_FILE), JSON.stringify(prepared)), catch: io("writing the prepared deploy") });
 
-  return DeployPrepared.make({ workdir, deploys: deploy !== undefined, hosts: deploy?.hosts ?? [] });
+  return DeployPrepared.make({ workdir, deploys: partCommand(deploy, ref.part) !== undefined, hosts: deploy?.hosts ?? [] });
 });
 
 /**
@@ -428,8 +432,10 @@ export const deploy = Effect.fn("Scorer.deploy")(function* (workdir: string) {
   const prepared = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(PreparedDeploy))(text).pipe(Effect.mapError(io("decoding the prepared deploy")));
   const repo = join(workdir, "node");
 
-  if (prepared.deploy === undefined) {
-    return { deployed: false, passed: true, millis: 0, tail: "the released commit's ficus.toml has no [deploy]" } satisfies DeployReport;
+  const command = partCommand(prepared.deploy, prepared.part);
+
+  if (prepared.deploy === undefined || command === undefined) {
+    return { deployed: false, passed: true, millis: 0, tail: `the released commit's ficus.toml has no [deploy] ${prepared.part}` } satisfies DeployReport;
   }
 
   if (prepared.in_devenv) {
@@ -440,7 +446,7 @@ export const deploy = Effect.fn("Scorer.deploy")(function* (workdir: string) {
     }
   }
 
-  const ran = yield* run(repo, inShell(prepared.in_devenv, prepared.deploy.run), deployTimeoutSecs(prepared.deploy));
+  const ran = yield* run(repo, inShell(prepared.in_devenv, command), deployTimeoutSecs(prepared.deploy));
 
   yield* removeAll(workdir);
 
