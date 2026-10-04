@@ -518,6 +518,26 @@ export class Sandbox extends DurableObject<Bindings> {
   /** Deploy a released node: clone its commit, then run its own `[deploy]` with the Cloudflare API open. */
   readonly #deploy = Effect.fn("Sandbox.deploy")(function* (this: Sandbox, request: Request) {
     const call = yield* this.#body(request, DeployCall, "deploy");
+
+    // A container an earlier deploy left (one that failed half-way) carries
+    // that deploy's state: start from a fresh one, and leave none behind.
+    yield* this.#discard();
+
+    return yield* this.#deployIn(call).pipe(Effect.ensuring(this.#discard()));
+  });
+
+  /** Stop and remove the container, if one is running. */
+  #discard() {
+    return Effect.promise(async () => {
+      const container = this.#container();
+
+      if (container.running) {
+        await container.destroy();
+      }
+    });
+  }
+
+  readonly #deployIn = Effect.fn("Sandbox.deployIn")(function* (this: Sandbox, call: typeof DeployCall.Type) {
     const repo = repoOf(call.remote);
     const ref = JSON.stringify({ remote: call.remote, commit: call.commit });
 
@@ -537,8 +557,6 @@ export class Sandbox extends DurableObject<Bindings> {
     const prepared = yield* this.#json(yield* this.#exec([SCORER, "deploy-prepare", ref]), DeployPrepared, "deploy-prepare");
 
     if (!prepared.deploys) {
-      yield* Effect.promise(() => this.#container().destroy());
-
       return DeployReport.make({ deployed: false, passed: true, millis: 0, tail: "the released commit's ficus.toml has no [deploy]" });
     }
 
@@ -553,11 +571,7 @@ export class Sandbox extends DurableObject<Bindings> {
       CLOUDFLARE_API_TOKEN: TOKEN_PLACEHOLDER,
     });
 
-    const report = yield* this.#json(deployed, DeployReport, "deploy");
-
-    yield* Effect.promise(() => this.#container().destroy());
-
-    return report;
+    return yield* this.#json(deployed, DeployReport, "deploy");
   });
 
   readonly #score = Effect.fn("Sandbox.score")(function* (this: Sandbox, request: Request, say: Report) {
