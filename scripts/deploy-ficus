@@ -12,12 +12,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 stage=${STAGE:?set STAGE, e.g. prod}
 
+# Dependencies first: a fresh checkout has none, and the scorer bundles them.
+(cd infra && bun install --frozen-lockfile)
 scripts/build-scorer
 image=$(scripts/build-sandbox-image "$stage")
 reference=$(scripts/push-sandbox-image "$image" "ficus-sandbox-$stage")
 echo "sandbox image: $reference" >&2
 
 cd infra
-bun install --frozen-lockfile
 STAGE=$stage FICUS_DEPLOYS=true FICUS_SANDBOX_IMAGE=$reference bun run deploy
 STAGE=$stage bun run deploy:web
