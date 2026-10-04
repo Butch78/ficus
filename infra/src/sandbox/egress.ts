@@ -14,10 +14,12 @@
  *                sandbox revokes it. Scoring lists one repo; a rebase
  *                lists two: the behind attempt to read and the fresh one to push.
  * - `cloudflare`: the Cloudflare API, for a deploy: forward, with the deploy
- *                token in place of whatever credentials the container sent.
+ *                token in place of the container's placeholder; credentials
+ *                the API issued mid-deploy (asset upload JWTs) pass as sent.
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
 import * as Schema from "effect/Schema";
+import { withDeployToken } from "./deploy-token.ts";
 import { isRepoRequest } from "./repo.ts";
 
 export const RepoGrant = Schema.Struct({ repoPath: Schema.String, token: Schema.String });
@@ -67,10 +69,13 @@ export class Egress extends WorkerEntrypoint<object, EgressProps> {
       }
 
       case "cloudflare": {
-        // Whatever the container sent (a placeholder) is replaced: the token never reaches it.
+        // The container holds a placeholder, swapped here: the token never reaches it.
         const authorized = new Request(request);
+        const authorization = withDeployToken(request.headers.get("authorization"), props.token);
 
-        authorized.headers.set("authorization", `Bearer ${props.token}`);
+        if (authorization !== null) {
+          authorized.headers.set("authorization", authorization);
+        }
 
         return fetch(authorized);
       }

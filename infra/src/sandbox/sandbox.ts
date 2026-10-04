@@ -58,6 +58,7 @@ import * as DecisionModel from "effect/ai/DecisionModel";
 import { Clef } from "../clef/clef.ts";
 import { DeployPrepared, DeployReport, DeployRequest } from "../core/deploy.ts";
 import { RebaseReport, RebaseRequest, ScoreRequest } from "../core/scoring.ts";
+import { TOKEN_PLACEHOLDER } from "./deploy-token.ts";
 import type { EgressProps } from "./egress.ts";
 import { type CheckOutcome, CheckRun, judged, judging } from "./judges.ts";
 import { repoOf } from "./repo.ts";
@@ -106,9 +107,6 @@ const SCORER = "/usr/local/bin/ficus-scorer";
 
 /** The Cloudflare API, which a deploy reaches through Egress with the deploy token added. */
 const CLOUDFLARE_API = "api.cloudflare.com";
-
-/** What a deploy's command sees as its token: Egress replaces it on the way out. */
-const TOKEN_PLACEHOLDER = "ficus-egress-adds-the-deploy-token";
 
 /** A deploy: the released node, and the Cloudflare account and token it deploys with. The token goes to Egress only. */
 const DeployCall = Schema.Struct({
