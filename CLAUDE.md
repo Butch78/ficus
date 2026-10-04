@@ -129,7 +129,10 @@ deadline 2026-10-14.
   Workflow binds the stage's deploy token from the Secrets Store by reference (`secrets.run.ts`, stack
   `FicusSecrets`: `STAGE=prod bun run deploy:secrets` mints `ficus-deploy-<stage>` with `src/permissions.ts`, or
   keeps a given `FICUS_DEPLOY_TOKEN`), so deploying never needs the token's value.
-- Ficus deploys itself: `[deploy]` in ficus.toml is plain `bun run deploy` + `deploy:web` as prod. The stack builds
+- Ficus deploys itself: `[deploy]` in ficus.toml is `bun run deploy` + `deploy:web` as prod, after
+  `scripts/restore-builds prod`: Command.Build calls a missing outdir changed, so in the deploy's fresh clone the
+  scorer and image builds would always update, the sandbox Worker hosting the deploy would be redeployed, and the
+  deploy's container cut off (each Workflow retry the same). Rebuilt first (both reproducible), they noop. The stack builds
   the sandbox image itself: `Command.Build("SandboxImage")` (src/sandbox/stack.ts, memoized on nix/sandbox-image.nix,
   the context and devenv.lock) runs `scripts/sandbox-image`: nix `dockerTools` build, skopeo push (from the devenv,
   15-minute registry credentials), the reference into `infra/.sandbox-image/reference`; the container deploys it
