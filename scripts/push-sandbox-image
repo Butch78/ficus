@@ -5,6 +5,7 @@
 #
 #   scripts/push-sandbox-image <image.tar.gz> <repository> [tag]
 #
+# Runs in the devenv shell (it has skopeo; nothing is looked up online).
 # Needs CLOUDFLARE_ACCOUNT_ID, and a CLOUDFLARE_API_TOKEN with Containers:
 # Edit: it mints push credentials good for 15 minutes. In a deploy sandbox
 # the token is a placeholder that the sandbox's egress replaces.
@@ -24,7 +25,7 @@ password=$(jq -r '.result.password' <<<"$credentials")
 digest=$(mktemp)
 trap 'rm -f "$digest"' EXIT
 # No trust policy: this pushes a local archive; nothing is pulled.
-nix run nixpkgs#skopeo -- --insecure-policy copy --quiet --digestfile "$digest" \
+skopeo --insecure-policy copy --quiet --digestfile "$digest" \
   --dest-creds "$user:$password" \
   "docker-archive:$image" "docker://$registry/$CLOUDFLARE_ACCOUNT_ID/$repository:$tag" >&2
 echo "$registry/$CLOUDFLARE_ACCOUNT_ID/$repository@$(cat "$digest")"

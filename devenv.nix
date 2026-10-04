@@ -22,6 +22,10 @@ in
     git
     jq
     curl
+
+    # scripts/push-sandbox-image: pushes the nix-built sandbox image to
+    # Cloudflare's registry without Docker (a deploy sandbox has none).
+    skopeo
   ];
 
   # Filtered rather than defaulted to "": Effect's Config treats an empty
