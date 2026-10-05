@@ -98,7 +98,7 @@ export const createOrganization = (name: string, slug: string) =>
 
 export const trees = (org: string) => get(Answers.Trees, `/v1/orgs/${encodeURIComponent(org)}/trees`);
 
-/** Progress lines, one JSON object each (crates/ficus-core/src/progress.rs). */
+/** Progress lines, one JSON object each (src/core/progress.ts). */
 export const PROGRESS = "application/x-ndjson";
 
 /**

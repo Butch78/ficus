@@ -6,7 +6,8 @@
 set -eu
 ca=/etc/cloudflare/certs/cloudflare-containers-ca.crt
 original=/nix/var/nix/profiles/default/etc/ssl/certs/ca-bundle.crt
-for _ in $(seq 1 100); do
+# A fresh container can take a while: up to a minute.
+for _ in $(seq 1 600); do
   [ -s "$ca" ] && break
   sleep 0.1
 done

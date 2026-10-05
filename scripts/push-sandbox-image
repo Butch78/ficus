@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Push the nix-built sandbox image (scripts/build-sandbox-image) to
+# Cloudflare's registry without Docker, and print its reference by digest:
+# registry.cloudflare.com/<account>/<repository>@sha256:...
+#
+#   scripts/push-sandbox-image <image.tar.gz> <repository> [tag]
+#
+# Runs in the devenv shell (it has skopeo; nothing is looked up online).
+# Needs CLOUDFLARE_ACCOUNT_ID, and a CLOUDFLARE_API_TOKEN with Containers:
+# Edit: it mints push credentials good for 15 minutes. In a deploy sandbox
+# the token is a placeholder that the sandbox's egress replaces.
+set -euo pipefail
+image=${1:?usage: push-sandbox-image <image.tar.gz> <repository> [tag]}
+repository=${2:?usage: push-sandbox-image <image.tar.gz> <repository> [tag]}
+tag=${3:-$(basename "$image" | cut -d- -f1)}
+: "${CLOUDFLARE_ACCOUNT_ID:?set CLOUDFLARE_ACCOUNT_ID}" "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
+registry=registry.cloudflare.com
+
+credentials=$(curl -sf -X POST "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/containers/registries/$registry/credentials" \
+  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "content-type: application/json" \
+  -d '{"expiration_minutes":15,"permissions":["push","pull"]}')
+user=$(jq -r '.result.username // .result.user' <<<"$credentials")
+password=$(jq -r '.result.password' <<<"$credentials")
+
+target="docker://$registry/$CLOUDFLARE_ACCOUNT_ID/$repository:$tag"
+
+# The tag is the image's nix hash: if the registry has it, it has this image.
+if existing=$(skopeo inspect --no-tags --creds "$user:$password" --format '{{.Digest}}' "$target" 2>/dev/null); then
+  echo "$registry/$CLOUDFLARE_ACCOUNT_ID/$repository@$existing"
+  exit 0
+fi
+
+digest=$(mktemp)
+trap 'rm -f "$digest"' EXIT
+# No trust policy: this pushes a local archive; nothing is pulled.
+skopeo --insecure-policy copy --quiet --retry-times 3 --digestfile "$digest" \
+  --dest-creds "$user:$password" \
+  "docker-archive:$image" "$target" >&2
+echo "$registry/$CLOUDFLARE_ACCOUNT_ID/$repository@$(cat "$digest")"

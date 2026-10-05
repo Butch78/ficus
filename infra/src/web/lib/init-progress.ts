@@ -1,6 +1,6 @@
 /**
  * An init as it happens: the progress lines the tree streams
- * (crates/ficus-core/src/progress.rs, plus the Api's `record`), folded into
+ * (src/core/progress.ts, plus the Api's `record`), folded into
  * the state of each step the person sees. Pure, so it tests without a stream.
  */
 import * as Option from "effect/Option";

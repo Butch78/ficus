@@ -7,7 +7,7 @@ const a = "a".repeat(40);
 
 const b = "b".repeat(40);
 
-// The shape `GET /trees/<t>` answers after one accept, as serde writes it.
+// The shape `GET /trees/<t>` answers after one accept, as the tree stores it.
 const accepted = Schema.decodeUnknownSync(Tree)({
   name: "abcdefghij-site",
   head: 1,
@@ -44,7 +44,7 @@ const accepted = Schema.decodeUnknownSync(Tree)({
 });
 
 describe("the tree as a page reads it", () => {
-  test("decodes serde's externally tagged enums", () => {
+  test("decodes the tree's externally tagged enums", () => {
     expect(accepted.attempts["5"]?.state).toBe("Working");
     expect(accepted.tasks["1"]?.state).toEqual({ Done: { attempt: 2, node: 1 } });
   });

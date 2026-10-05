@@ -1,6 +1,6 @@
 /**
  * An attempt's scoring, said as it goes: the steps its sandbox streams
- * (crates/ficus-core/src/progress.rs `ScoreStep`), in words. Pure.
+ * (src/core/progress.ts `ScoreStep`), in words. Pure.
  */
 import type { StepStatus } from "../components/elements/chain-of-thought.tsx";
 import type { Ledger } from "./answers.ts";

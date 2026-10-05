@@ -17,7 +17,7 @@
     // keeps hovers and refactors without reporting every finding twice.
     "plugins": [{ "name": "@effect/language-service", "diagnostics": false }]
   },
-  "include": ["alchemy.run.ts", "bootstrap.run.ts", "web.run.ts", "src", "scripts"],
+  "include": ["alchemy.run.ts", "bootstrap.run.ts", "deployer.run.ts", "web.run.ts", "src", "scripts"],
   // Each has its own tsconfig.json with its runtime's types.
-  "exclude": ["src/agents", "src/api", "src/observability", "src/sandbox", "src/web"]
+  "exclude": ["src/agents", "src/api", "src/observability", "src/sandbox", "src/tree", "src/web"]
 }

@@ -45,6 +45,17 @@ export const record = Effect.fn("Directory.record")(function* (
     .pipe(Effect.mapError(failure("could not record the tree")));
 });
 
+/** Every tree, in every organization: what the nightly backup exports. */
+export const all = Effect.fn("Directory.all")(function* () {
+  const db = yield* directory;
+
+  return yield* db
+    .select({ organizationId: ficusTree.organizationId, name: ficusTree.name })
+    .from(ficusTree)
+    .orderBy(asc(ficusTree.organizationId), asc(ficusTree.name))
+    .pipe(Effect.mapError(failure("could not list every tree")));
+});
+
 export const list = Effect.fn("Directory.list")(function* (organizationId: string) {
   const db = yield* directory;
 

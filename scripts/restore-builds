@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Rebuild the stack's gitignored build outputs (the scorer bundle and the
+# sandbox image's reference) in a fresh clone, before `bun run deploy`.
+#
+#   scripts/restore-builds <stage>
+#
+# alchemy's Command.Build judges a build changed when its outdir is missing
+# or differs on disk, and a deploy sandbox always starts from a fresh clone.
+# Without this, every self-deploy would rebuild both, update the sandbox
+# Worker that hosts the deploy, and cut its own container off mid-run.
+# Rebuilt here they hash the same as the last deploy's, so an unchanged
+# sandbox is a noop. Both builds are reproducible, and the push skips an
+# image the registry already has. Run after `bun install`.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+stage=${1:?usage: restore-builds <stage>}
+
+scripts/build-scorer >&2
+scripts/sandbox-image "$stage" infra/.sandbox-image

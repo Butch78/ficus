@@ -26,6 +26,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import { REPOSITORY, secret, variable } from "./src/github.ts";
+import { deployPolicy } from "./src/permissions.ts";
 
 export default Alchemy.Stack(
   "FicusBootstrap",
@@ -42,29 +43,11 @@ export default Alchemy.Stack(
 
     const accountId = yield* Config.String("CLOUDFLARE_ACCOUNT_ID");
 
-    // What `alchemy deploy alchemy.run.ts` needs, and nothing else. Artifacts
-    // is absent on purpose: a namespace is a binding, created by the runtime,
-    // so deploying it makes no Artifacts API call.
+    // What deploying the stacks needs, and nothing else (src/permissions.ts).
     const ci = yield* Cloudflare.ApiToken.AccountApiToken("CiToken", {
       name: "ficus-ci",
       accountId,
-      policies: [
-        {
-          effect: "allow",
-          permissionGroups: [
-            "Workers Scripts Write", // the Api, tree and sandbox Workers, and their Durable Objects
-            "Workers KV Storage Write", // the alchemy state store's index
-            "Workers R2 Storage Write", // the alchemy state store's bucket
-            "Secrets Store Write", // Cloudflare.state() binds the store's bearer each run
-            "Workers Containers Write", // the sandbox's container application and image
-            "Workers Observability Write", // logs and traces on every Worker
-            "D1 Write", // the accounts database and its migrations
-            "Workers Tail Read", // deploy-time log streaming
-            "Account Settings Write", // the workers.dev subdomain lookup
-          ],
-          resources: { [`com.cloudflare.api.account.${accountId}`]: "*" },
-        },
-      ],
+      policies: [deployPolicy(accountId)],
     });
 
     // What the deployed web UI holds at runtime to show an operation's trace:

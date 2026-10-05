@@ -1,33 +1,9 @@
 default:
     @just --list
 
-# Run the main Worker locally (rebuilds on change)
+# The whole stack on localhost (alchemy dev, stage `local`), containers via local Docker
 dev:
-    wrangler dev
-
-# Build the main Worker (wasm32-unknown-unknown)
-build:
-    cd crates/ficus-worker && worker-build --release
-
-# Run the git engine Worker locally (wasm32-unknown-emscripten, experimental)
-git-dev:
-    cd crates/ficus-git && wrangler dev
-
-# Build the git engine Worker. First run downloads worker-build's pinned emsdk.
-git-build:
-    cd crates/ficus-git && worker-build --emscripten --release
-
-# Native tests (ficus-core and anything host-testable)
-test:
-    cargo nextest run --workspace --exclude ficus-worker --no-tests=warn
-
-# Format + lint, all three targets
-fl:
-    cargo fmt --all
-    cargo fmt --manifest-path crates/ficus-git/Cargo.toml
-    cargo clippy --workspace --exclude ficus-worker --all-targets -- -D warnings
-    cargo clippy -p ficus-worker --target wasm32-unknown-unknown -- -D warnings
-    cargo clippy --manifest-path crates/ficus-git/Cargo.toml --target wasm32-unknown-emscripten -- -D warnings
+    cd infra && bun run dev
 
 # Typecheck + lint (effect-tsgo, anti-slop) + test infra/
 infra-check:
@@ -42,7 +18,7 @@ clef-review base="HEAD":
     if [ -z "$files" ]; then echo "no changed .ts files"; exit 0; fi
     bun run clef-review $files
 
-# Deploy the main Worker through alchemy (STAGE defaults to dev)
+# Deploy the Ficus stack through alchemy (STAGE defaults to dev)
 deploy:
     cd infra && bun run deploy
 
@@ -61,7 +37,3 @@ e2e-agents:
 # Deploy the web UI stack (after `just deploy`, same STAGE)
 deploy-web:
     cd infra && bun run deploy:web
-
-# Deploy the emscripten git engine Worker
-git-deploy:
-    cd crates/ficus-git && wrangler deploy

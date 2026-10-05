@@ -61,6 +61,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { Type } from "typebox";
 import { Clef } from "../clef/clef.ts";
+import { LOCKED_PATHS } from "../core/scoring.ts";
 import { activity } from "./activity.ts";
 import { clip, describe, DIFF, effort, MAX_REJECTIONS, objections, type Objection, PLAN } from "./gates.ts";
 import { ContainerEnv, type SandboxStub } from "./sandbox-env.ts";
@@ -116,8 +117,6 @@ const STOPPED_KEY = "stopped";
 /** The plan `plan_change` accepted, for the diff gate. */
 const PLAN_KEY = "plan";
 
-/** The root's files, as `crates/ficus-core` `LOCKED_PATHS`: restored before scoring, so out of the diff. */
-const LOCKED_PATHS = ["ficus.toml", "devenv.nix", "devenv.yaml", "devenv.lock", ".envrc"] as const;
 
 type Gate = "plan" | "submit";
 
@@ -219,12 +218,12 @@ export const prompt = (assignment: Assignment): string => {
     "",
     done,
     "",
-    `Your checkout is ${ATTEMPT_DIR} (git, on main, already configured to push). It starts at commit ${assignment.base_commit}.`,
+    `Your checkout is ${ATTEMPT_DIR} (git, on the repo's default branch, already configured to push). It starts at commit ${assignment.base_commit}.`,
     "",
     "The repository's `ficus.toml` lists the checks the change must not break; the task's own checks above say when it is done. If the repository has a `devenv.nix`, run checks as `devenv shell -- <command>` (the first run builds the environment and can take a few minutes). The checks cannot be changed: `ficus.toml` and the devenv files are restored from the base before scoring.",
     "",
     "Your environment:",
-    "- The network reaches only your attempt's git remote (pushing is already authorised: just `git push origin HEAD:main`) and the nix/devenv binary caches. Everything else is closed, so do not install packages from the internet.",
+    "- The network reaches only your attempt's git remote (pushing is already authorised: just `git push origin HEAD`, which pushes the branch you are on) and the nix/devenv binary caches. Everything else is closed, so do not install packages from the internet.",
     "- The root's devenv environment is already being built in the background (its log: /tmp/devenv-warm.log). A `devenv shell -- <command>` waits for that build, which can take several minutes from cold: give it a long timeout (10 minutes) and do not kill it. Later runs are fast.",
     "",
     "Earlier attempts at this task (the history):",
@@ -254,7 +253,7 @@ const changeRules = (plan: string): string =>
     "The scout has read the code; its plan is below. Follow it unless the code says otherwise.",
     "- Keep the change as small as the task allows. Do not reformat or touch unrelated code.",
     "- Run every check in `ficus.toml` yourself.",
-    "- When the checks pass, commit, `git push origin HEAD:main`, then call the `submit` tool. Submitting freezes your attempt; you cannot push after it.",
+    "- When the checks pass, commit, `git push origin HEAD`, then call the `submit` tool. Submitting freezes your attempt; you cannot push after it.",
     "- If you cannot complete the task, say why instead of submitting.",
     "",
     "The scout's plan:",

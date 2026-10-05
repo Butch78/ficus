@@ -19,12 +19,15 @@ import * as CloudflareTracer from "../observability/tracer.ts";
 import { API_KEY_HEADER, AUTH_BASE_PATH, Auth, layer as authLayer } from "./auth.ts";
 import * as Directory from "./directory.ts";
 import * as Progress from "./progress.ts";
+import { backUpTrees } from "./backups.ts";
 import { TENANT_HEADER, tenantKey } from "./tenant.ts";
 
 interface Bindings {
   readonly AUTH_DB: D1Database;
   readonly TREE: Fetcher;
   readonly BETTER_AUTH_SECRET: string;
+  /** Nightly tree exports (backups.ts). */
+  readonly BACKUPS: R2Bucket;
 }
 
 /** Headers that carry the caller's credentials or claims, never forwarded. */
@@ -218,6 +221,17 @@ export default {
             Directory.directoryLayer(env.AUTH_DB),
             CloudflareTracer.layer,
           ),
+        ),
+      ),
+    ),
+  // The nightly backup (backups.ts), on the cron alchemy.run.ts sets.
+  scheduled: (controller: ScheduledController, env: Bindings, ctx: ExecutionContext) =>
+    ctx.waitUntil(
+      Effect.runPromise(
+        backUpTrees(env, new Date(controller.scheduledTime)).pipe(
+          Effect.asVoid,
+          // oxlint-disable-next-line effecttsgo/strict-effect-provide -- the Worker's entry point
+          Effect.provide(Layer.mergeAll(Directory.directoryLayer(env.AUTH_DB), CloudflareTracer.layer)),
         ),
       ),
     ),

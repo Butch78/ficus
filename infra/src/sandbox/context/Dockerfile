@@ -1,5 +1,5 @@
 # The sandbox: nix + devenv (so any root's `devenv shell` builds here) and
-# ficus-scorer (static musl, copied in by scripts/build-scorer). Work arrives
+# ficus-scorer (infra/src/scorer, bundled by scripts/build-scorer, run by bun). Work arrives
 # through the platform's exec; see entrypoint.sh.
 FROM nixos/nix:2.35.2
 
@@ -13,10 +13,12 @@ RUN mkdir -p /etc/nix && printf '%s\n' \
       'extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw=' \
       >> /etc/nix/nix.conf
 
-RUN nix profile add nixpkgs#devenv \
+RUN nix profile add nixpkgs#devenv nixpkgs#bun \
  && nix-collect-garbage -d \
- && devenv version
+ && devenv version \
+ && bun --version
 
+COPY ficus-scorer.js /usr/local/lib/ficus-scorer.js
 COPY ficus-scorer /usr/local/bin/ficus-scorer
 COPY entrypoint.sh /usr/local/bin/ficus-entrypoint
 COPY trust-egress.sh /usr/local/bin/ficus-trust-egress

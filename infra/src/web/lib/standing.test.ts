@@ -12,7 +12,7 @@ const report = (cost: number, passed: ReadonlyArray<boolean>) => ({
   checks: passed.map((ok, index) => ({ name: `check${index}`, passed: ok, millis: 10, tail: "" })),
 });
 
-// GET .../tasks/1, as the tree Worker answers mid-race (serde's shapes).
+// GET .../tasks/1, as the tree Worker answers mid-race (the stored shapes).
 const race = Schema.decodeUnknownSync(TaskRace)({
   task: { id: 1, intent: "slugify should drop punctuation", state: "Open" },
   head: 0,

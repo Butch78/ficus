@@ -1,0 +1,61 @@
+# Ficus's own checks: what an attempt at this repo must pass to be accepted.
+# The same as .github/workflows/ci.yml, so the two can be compared until Ficus
+# replaces it (docs/self-hosting.md, step 1). Each runs in the root's devenv
+# shell, in a sandbox with the network off.
+
+# Before the network closes: the packages the checks compile against.
+[fetch]
+hosts = ["registry.npmjs.org"]
+run = "cd infra && bun install --frozen-lockfile"
+timeout_secs = 1200
+
+[[check]]
+name = "typecheck"
+run = "cd infra && bun run typecheck"
+timeout_secs = 900
+
+[[check]]
+name = "lint"
+run = "cd infra && bun run lint"
+timeout_secs = 900
+
+[[check]]
+name = "test"
+run = "cd infra && bun run test"
+timeout_secs = 900
+
+[[check]]
+name = "workflows"
+run = "actionlint && zizmor --offline --min-severity medium .github"
+timeout_secs = 300
+
+# A judge: a yes/no question about the attempt's diff, put to Clef with the
+# task's intent as `task`. It counts as a check; on equal cost, the attempt
+# the judges were surest of wins.
+[[judge]]
+name = "does_the_task"
+ask = "Does `diff` do everything `task` asks, without changing anything the task does not need?"
+yes = "The whole task is done, and nothing else is changed."
+no = "Part of the task is missing, or the diff changes unrelated code."
+
+# How a released node deploys (src/deploys): the tree's release starts a
+# Deploy Workflow that runs this from the released commit: `run` in the
+# deployer (infra/deployer.run.ts) deploys the Ficus and web stacks as prod,
+# then `deployer` in a scoring sandbox deploys the deployer, so neither
+# replaces the Worker its own container runs under. The stacks build the
+# sandbox image with nix and push it (no Docker there); scripts/restore-builds
+# first rebuilds what the last deploy built, so an unchanged sandbox is left
+# alone rather than redeployed under the scoring and agents it is running.
+# The Cloudflare token is prod's deploy token, added by the sandbox's egress;
+# the commands only ever see a placeholder.
+[deploy]
+run = "cd infra && bun install --frozen-lockfile && ../scripts/restore-builds prod && STAGE=prod FICUS_DEPLOYS=true bun run deploy && STAGE=prod bun run deploy:web"
+deployer = "cd infra && bun install --frozen-lockfile && ../scripts/restore-builds prod && STAGE=prod bun run deploy:deployer"
+hosts = [
+  "registry.npmjs.org",
+  "registry.cloudflare.com",
+  # alchemy's state store (Cloudflare.state()), on the account's workers.dev subdomain.
+  "alchemy-state-store.fruitcards.workers.dev",
+]
+# Under the Deploy Workflow step's hour (src/deploys/workflow.ts).
+timeout_secs = 3000

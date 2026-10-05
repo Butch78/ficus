@@ -1,3 +1,7 @@
+import * as Alchemy from "alchemy";
+import * as Cloudflare from "alchemy/Cloudflare";
+import * as Effect from "effect/Effect";
+
 /**
  * Settings every Ficus Worker shares, across the stacks (alchemy.run.ts,
  * web.run.ts).
@@ -15,3 +19,14 @@ export const OBSERVABILITY = {
   logs: { enabled: true, invocationLogs: true },
   traces: { enabled: true },
 } as const;
+
+/**
+ * The stage's Artifacts namespace, where every tree's repos live. A
+ * namespace is implicit (Artifacts creates it with its first repo), so this
+ * is only its description: any Worker that binds it declares the same one.
+ */
+export const artifactsNamespace = Effect.gen(function* () {
+  const { stage } = yield* Alchemy.Stack;
+
+  return yield* Cloudflare.Artifacts.Namespace("Artifacts", { namespace: `ficus-${stage}` });
+});

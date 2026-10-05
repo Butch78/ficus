@@ -1,0 +1,3 @@
+#!/bin/sh
+# ficus-scorer: infra/src/scorer, bundled by scripts/build-scorer, run by bun.
+exec bun /usr/local/lib/ficus-scorer.js "$@"

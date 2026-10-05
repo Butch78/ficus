@@ -1,5 +1,5 @@
 /**
- * A tree operation's streamed progress (crates/ficus-core/src/progress.rs),
+ * A tree operation's streamed progress (src/core/progress.ts),
  * passing through the Api: one JSON object per line, the last one the
  * outcome. The Api adds its own steps after the tree's, before the stream
  * closes.

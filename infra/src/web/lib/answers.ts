@@ -1,6 +1,6 @@
 /**
  * What the Api answers, decoded at the boundary. The tree shapes are
- * ficus-core's serde output (crates/ficus-core/src/tree.rs): enums are
+ * the tree as stored (src/core/tree.ts): enums are
  * externally tagged, so a unit variant is a bare string ("Working") and a
  * struct variant an object with one key ({ "Scored": { ... } }).
  */
@@ -61,7 +61,7 @@ export const TaskState = Schema.Union([
   Schema.Struct({ Done: Schema.Struct({ attempt: Id, node: Id }) }),
 ]);
 
-/** A task's own check (ficus-core `CheckSpec`): run after the root's. */
+/** A task's own check (src/core/scoring.ts `CheckSpec`): run after the root's. */
 export const TaskCheck = Schema.Struct({ name: Schema.String, run: Schema.String, timeout_secs: Schema.optional(Schema.NullOr(Schema.Number)) });
 
 export const Task = Schema.Struct({
@@ -120,7 +120,7 @@ export const CheckOutcome = Schema.Struct({
   confidence: Schema.optional(Schema.Number),
 });
 
-/** ficus-core `Ledger`: an operation's steps as they went (an attempt's scoring). */
+/** src/core/progress.ts `Ledger`: an operation's steps as they went (an attempt's scoring). */
 export const Ledger = Schema.Struct({
   entries: Schema.Array(
     Schema.Struct({
@@ -194,7 +194,7 @@ export const Session = Schema.NullOr(
   Schema.Struct({ user: Schema.Struct({ id: Schema.String, email: Schema.String, name: Schema.String }) }),
 );
 
-/** ficus-core `Standing`: where an attempt stands if its task were accepted now. */
+/** src/core/tree.ts `Standing`: where an attempt stands if its task were accepted now. */
 export const Standing = Schema.Union([
   Schema.Literals(["Best", "Behind", "Working", "Checking"]),
   Schema.Struct({ Outscored: Schema.Struct({ by: Id }) }),

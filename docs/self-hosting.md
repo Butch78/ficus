@@ -32,7 +32,7 @@ Two consequences shape the plan:
   leans on rebases applying cleanly.
 - **Accept picks, people approve.** Accept takes the cheapest passing attempt. For agent swarms that
   is the point. For a project people maintain, someone has to say yes first, and nothing in
-  `ficus-core::tree` models that yet.
+  `infra/src/core/tree.ts` models that yet.
 
 ## What works today
 
@@ -53,16 +53,17 @@ Two consequences shape the plan:
 
 Roughly in the order they block self-hosting:
 
-1. **Checks for this repo.** There is no `ficus.toml` at the root. Its checks are `just fl`,
-   `just test`, and `just infra-check`, and they need crates.io, the npm registry, and the
-   devenv/nix caches. Egress only lets the prepare phase reach the attempt repo and the nix caches, so
-   cargo and bun cannot fetch anything. A cold devenv for this repo is also far heavier than the
-   demo root's, so `standard-1` and the scorer's timeouts need measuring.
+1. **Checks for this repo.** *(Started: `ficus.toml` and `[fetch]` exist; timings are being measured.)*
+   There was no `ficus.toml` at the root. Its checks are ci.yml's: `bun run typecheck`, `lint` and
+   `test` in `infra/`, plus actionlint and zizmor. They need the npm registry and the devenv/nix
+   caches; `[fetch]` opens the registry while `bun install` runs. With Rust gone (ported to Effect),
+   the devenv is far lighter than when it filled `standard-1`'s disk; the instance type and the
+   scorer's timeouts still need measuring.
 2. **A stable trunk remote.** Each accept makes the accepted attempt's repo the new head, so `main`'s
    clone URL changes on every accept. The Artifacts binding has no ref-update or push method, so
    keeping one trunk repo fast-forwarded means a sandbox pushing to it (with a token Egress adds) on
    accept.
-3. **Following an outside `main`.** A tree is initialized once. While GitHub stays the source of truth,
+3. **Following an outside `main`.** *(Done: `POST /trees/<t>/graft`, and `graft.yml`.)* A tree is initialized once. While GitHub stays the source of truth,
    its `main` moves without an acceptance. Ficus needs a graft: import an outside commit as a new
    head node, leaving open attempts behind (and so rebased) as an acceptance does.
 4. **Review.** Attempt and node diffs, the case for accepting and every attempt's standing are in the UI
@@ -78,11 +79,13 @@ Roughly in the order they block self-hosting:
 7. **Events and webhooks.** `TreeObject` changes state silently. Every integration below needs a
    stream of attempt-scored, accepted, rebased, and retried events, delivered from a Queue as HMAC-signed
    webhooks.
-8. **Deploys.** `deploy.yml` deploys `pr-<n>` and `prod` from GitHub. On Ficus that becomes a
-   per-attempt preview stage after scoring and `prod` following the release pointer (`POST
-   /trees/<t>/release`, which exists; nothing deploys from it yet): a deploy phase in `ficus.toml`,
-   run in a sandbox, with the Cloudflare token added by Egress so it never enters the container.
-   Secrets need a per-tree home (Secrets Store), replacing repository secrets.
+8. **Deploys.** *(Started: `[deploy]` and the `Deploy` Workflow.)* `deploy.yml` deploys `pr-<n>` and
+   `prod` from GitHub. On Ficus, moving the release pointer (`POST /trees/<t>/release`) starts a
+   Cloudflare Workflow that runs the released commit's `[deploy]` in a sandbox, with the Cloudflare
+   token added by Egress so it never enters the container. Ficus's own `[deploy]` builds its sandbox
+   image with nix and pushes it to Cloudflare's registry (a sandbox has no Docker), and the deploy
+   token lives in the Secrets Store. Deploys run in a deployer Worker of their own, which a scoring
+   sandbox deploys afterwards, so a deploy never replaces the Worker it runs under. Still missing: per-attempt preview stages, and per-tree secrets.
 9. **Mirror to and from GitHub during the transition.**
    - Ficus → GitHub: after each accept, push the head to GitHub `main` (from a sandbox, token added
      by Egress). Branch protection then allows only the mirror to push.
@@ -123,17 +126,22 @@ Each step is useful on its own and can be reverted without losing work.
 
 One per gap above, so each can be picked up alone:
 
-- [ ] `ficus.toml` for this repo, Egress prepare-phase allowances for crates.io, npm, and the devenv
-      caches, and measured scorer timeouts and instance type.
+- [x] `ficus.toml` for this repo, and `[fetch]`: the root names the hosts its checks need (the
+      npm registry), open only while devenv builds and dependencies download.
+- [ ] Measured scorer timeouts and instance type for this repo.
 - [ ] Trunk repo: fast-forward a stable Artifacts repo per tree on accept, from a sandbox.
-- [ ] `POST /trees/<t>/graft {source, branch}`: import an outside commit as the new head node.
+- [x] `POST /trees/<t>/graft {source, branch}`: import an outside commit as the new head node;
+      `.github/workflows/graft.yml` calls it on every push to `main` once `FICUS_GRAFT_ENABLED` is set.
 - [x] Attempt and node diffs, rendered on their pages.
 - [ ] Comments on attempts and tasks; approval-gated accept that checks Better Auth org roles in the Api.
 - [x] UI actions (task, start agents, start by hand, submit, accept, retry, abandon).
 - [ ] A `ficus` CLI.
 - [ ] Push detection for attempt repos (poll `log` until Artifacts has events) and non-freezing preview scores.
 - [ ] Tree events to a Queue; signed webhook deliveries with retries.
-- [ ] Deploy phase in `ficus.toml`; per-tree secrets; per-attempt preview stages.
+- [x] Deploy phase in `ficus.toml`, run by a Workflow on release (`src/deploys`).
+- [x] Ficus's own `[deploy]`: the sandbox image built without Docker (nix) and pushed to Cloudflare's registry.
+- [ ] Per-tree secrets; per-attempt preview stages; deploys in the UI.
 - [ ] GitHub mirror out (head → `main` on accept) and GitHub App in (pull request → attempt → check run).
 - [ ] Tasks in the UI, with comments and labels; an issue → task importer.
-- [ ] Tree export (JSON of nodes, tasks, attempts, history, reports) and backfill of the D1 tree directory.
+- [x] Tree export (`GET /trees/<t>/export`) and nightly backups to R2.
+- [ ] Backfill of the D1 tree directory; code backups (git bundles of each head).

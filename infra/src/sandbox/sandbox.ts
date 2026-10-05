@@ -8,8 +8,9 @@
  *
  *   POST /score  (a ScoreRequest, from the tree)
  *     1. prepare: the attempt's repo (token added by Egress) and the nix/devenv
- *        caches; `ficus-scorer prepare` clones, restores the root's locked
- *        files and builds the root's devenv shell
+ *        caches; `ficus-scorer prepare` clones and restores the root's locked
+ *        files, then `ficus-scorer fetch` builds the root's devenv shell and
+ *        runs its `[fetch]`, with the hosts that names opened too
  *     2. check:   nothing; `ficus-scorer check` runs the root's checks, then
  *        the task's
  *   then the container is destroyed, and the root's judges (`[[judge]]` in
@@ -24,8 +25,17 @@
  *     the behind commits onto the head and pushes. Nothing from either repo
  *     is run. The answer is the RebaseReport, or 422 on a conflict.
  *
+ *   POST /deploy  (a DeployRequest plus the Cloudflare credentials, from the
+ *                 Deploy Workflow, src/deploys)
+ *     the released node's repo (read, token added by Egress) and the nix
+ *     caches; `ficus-scorer deploy-prepare` clones the commit and reads its
+ *     own `[deploy]`; then its hosts and the Cloudflare API (token added by
+ *     Egress: the container sees a placeholder) while `ficus-scorer deploy`
+ *     runs the part asked for: `run` in the deployer (deployer.run.ts),
+ *     `deployer` here in a scoring sandbox. The answer is the DeployReport.
+ *
  *   `/score` with `Accept: application/x-ndjson` answers with a stream
- *   instead (crates/ficus-core/src/progress.rs): each step as it happens, the
+ *   instead (src/core/progress.ts): each step as it happens, the
  *   sandbox's own and `ficus-scorer`'s, then the outcome: what the plain
  *   answer would have been.
  *
@@ -47,6 +57,9 @@ import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as DecisionModel from "effect/ai/DecisionModel";
 import { Clef } from "../clef/clef.ts";
+import { DeployPrepared, DeployReport, DeployRequest } from "../core/deploy.ts";
+import { RebaseReport, RebaseRequest, ScoreRequest } from "../core/scoring.ts";
+import { TOKEN_PLACEHOLDER } from "./deploy-token.ts";
 import type { EgressProps } from "./egress.ts";
 import { type CheckOutcome, CheckRun, judged, judging } from "./judges.ts";
 import { repoOf } from "./repo.ts";
@@ -70,6 +83,8 @@ export const NIX_HOSTS = [
   "api.github.com",
   "codeload.github.com",
   "objects.githubusercontent.com",
+  // Where github.com now redirects release downloads (a devenv's fetchurl).
+  "release-assets.githubusercontent.com",
 ] as const;
 
 /**
@@ -84,11 +99,24 @@ const EXEC_ENV = {
   SSL_CERT_FILE: "/etc/ssl/certs/ca-bundle.crt",
   NIX_SSL_CERT_FILE: "/etc/ssl/certs/ca-bundle.crt",
   GIT_SSL_CAINFO: "/etc/ssl/certs/ca-bundle.crt",
+  // A root whose devenv uses secretspec (Ficus's own) asks why its shell is
+  // entered; nothing in a sandbox reads a secret.
+  SECRETSPEC_REASON: "Ficus sandbox: build and check, no secrets",
 } as const;
 
 const SCORER = "/usr/local/bin/ficus-scorer";
 
-/** `ficus-scorer`'s progress lines on stderr (crates/ficus-scorer `PROGRESS_PREFIX`). */
+/** The Cloudflare API, which a deploy reaches through Egress with the deploy token added. */
+const CLOUDFLARE_API = "api.cloudflare.com";
+
+/** A deploy: the released node, and the Cloudflare account and token it deploys with. The token goes to Egress only. */
+const DeployCall = Schema.Struct({
+  ...DeployRequest.fields,
+  account_id: Schema.String,
+  cloudflare_token: Schema.String,
+});
+
+/** `ficus-scorer`'s progress lines on stderr (src/scorer/scorer.ts `PROGRESS_PREFIX`). */
 const PROGRESS_PREFIX = "ficus-progress ";
 
 const PROGRESS = "application/x-ndjson";
@@ -101,46 +129,8 @@ const quiet: Report = () => undefined;
 const stepLine = (step: string, state: "active" | "complete" | "error", detail?: string) =>
   JSON.stringify(detail === undefined ? { kind: "step", step, state } : { kind: "step", step, state, detail });
 
-const Oid = Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}([0-9a-f]{24})?$/));
-
-/** crates/ficus-core `CheckSpec`: a task's check, run after the root's. */
-const CheckSpec = Schema.Struct({
-  name: Schema.String,
-  run: Schema.String,
-  timeout_secs: Schema.optional(Schema.Number),
-});
-
-/** crates/ficus-core `ScoreRequest`. */
-export const ScoreRequest = Schema.Struct({
-  remote: Schema.String,
-  token: Schema.String,
-  base: Oid,
-  head: Oid,
-  // Optional: a tree Worker from before judges sends none.
-  intent: Schema.optional(Schema.String),
-  checks: Schema.optional(Schema.Array(CheckSpec)),
-});
-
-export interface ScoreRequest extends Schema.Schema.Type<typeof ScoreRequest> {}
-
-/** crates/ficus-core `RebaseRequest`. */
-export const RebaseRequest = Schema.Struct({
-  from: Schema.String,
-  from_token: Schema.String,
-  from_base: Oid,
-  from_head: Oid,
-  onto: Schema.String,
-  onto_token: Schema.String,
-  onto_head: Oid,
-  onto_branch: Schema.String,
-});
-
-export interface RebaseRequest extends Schema.Schema.Type<typeof RebaseRequest> {}
-
-const Prepared = Schema.Struct({ workdir: Schema.String });
-
-/** crates/ficus-core `RebaseReport`. */
-const RebaseReport = Schema.Struct({ commit: Oid, replayed: Schema.Number });
+/** `ficus-scorer prepare`: the workdir, and the hosts the root's `[fetch]` opens next. */
+const Prepared = Schema.Struct({ workdir: Schema.String, hosts: Schema.Array(Schema.String) });
 
 /**
  * What an agent's workspace starts from: its attempt's remote and write token,
@@ -152,6 +142,15 @@ const Workspace = Schema.Struct({
   checkout: Schema.String.check(Schema.isPattern(/^\/work\/[A-Za-z0-9._-]+$/)),
   author: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._-]{1,64}$/)),
 });
+
+/**
+ * The hosts the root's `[fetch]` opens for a workspace, read from the
+ * checkout when it is first opened (at the base commit) and kept: an agent
+ * that edits ficus.toml cannot widen its own network.
+ */
+const WORKSPACE_HOSTS_KEY = "workspace-hosts";
+
+const Hosts = Schema.Array(Schema.String);
 
 /** Where the background devenv build of a workspace writes its output. */
 const DEVENV_WARM_LOG = "/tmp/devenv-warm.log";
@@ -257,6 +256,10 @@ export class Sandbox extends DurableObject<Bindings> {
         return respond(this.#rebase(request));
       }
 
+      case "/deploy": {
+        return respond(this.#deploy(request));
+      }
+
       default: {
         return new Response("not found", { status: 404 });
       }
@@ -297,7 +300,7 @@ export class Sandbox extends DurableObject<Bindings> {
   /** The agent is done: its container goes, and no later operation reopens it. */
   readonly #close = Effect.fn("Sandbox.close")(function* (this: Sandbox) {
     this.#opened = false;
-    yield* Effect.promise(() => this.ctx.storage.delete(WORKSPACE_KEY));
+    yield* Effect.promise(() => this.ctx.storage.delete([WORKSPACE_KEY, WORKSPACE_HOSTS_KEY]));
 
     if (this.#container().running) {
       yield* Effect.promise(() => this.#container().destroy());
@@ -346,6 +349,10 @@ export class Sandbox extends DurableObject<Bindings> {
       return yield* failure(502, `checking out the attempt: exit ${cloned.exitCode}: ${cloned.stderr.trim()}`);
     }
 
+    for (const host of yield* this.#fetchHosts(checkout)) {
+      yield* this.#route(host, { mode: "pass" });
+    }
+
     // Warm the root's devenv shell in the background: built cold it takes
     // minutes, and an agent's first `devenv shell` then waits for this one
     // rather than starting its own. Once per container.
@@ -356,6 +363,22 @@ export class Sandbox extends DurableObject<Bindings> {
     ]);
 
     this.#opened = true;
+  });
+
+  /** The root's fetch hosts for this workspace: kept from its first open, or read now. */
+  readonly #fetchHosts = Effect.fn("Sandbox.fetchHosts")(function* (this: Sandbox, checkout: string) {
+    const stored = yield* Effect.promise(() => this.ctx.storage.get(WORKSPACE_HOSTS_KEY));
+
+    if (stored !== undefined) {
+      return yield* Schema.decodeUnknownEffect(Hosts)(stored).pipe(Effect.mapError(() => failure(500, "the kept fetch hosts are unreadable")));
+    }
+
+    const read = yield* this.#exec([SCORER, "hosts", checkout]);
+    const hosts = yield* this.#json(read, Hosts, "hosts");
+
+    yield* Effect.promise(() => this.ctx.storage.put(WORKSPACE_HOSTS_KEY, hosts));
+
+    return hosts;
   });
 
   /** One of pi's operations in an agent's container, its answer passed through. */
@@ -491,6 +514,65 @@ export class Sandbox extends DurableObject<Bindings> {
     return report;
   });
 
+  /** Deploy a released node: clone its commit, then run its own `[deploy]` with the Cloudflare API open. */
+  readonly #deploy = Effect.fn("Sandbox.deploy")(function* (this: Sandbox, request: Request) {
+    const call = yield* this.#body(request, DeployCall, "deploy");
+
+    // A container an earlier deploy left (one that failed half-way) carries
+    // that deploy's state: start from a fresh one, and leave none behind.
+    yield* this.#discard();
+
+    return yield* this.#deployIn(call).pipe(Effect.ensuring(this.#discard()));
+  });
+
+  /** Stop and remove the container, if one is running. */
+  #discard() {
+    return Effect.promise(async () => {
+      const container = this.#container();
+
+      if (container.running) {
+        await container.destroy();
+      }
+    });
+  }
+
+  readonly #deployIn = Effect.fn("Sandbox.deployIn")(function* (this: Sandbox, call: typeof DeployCall.Type) {
+    const repo = repoOf(call.remote);
+    const ref = JSON.stringify({ remote: call.remote, commit: call.commit, part: call.part });
+
+    yield* this.#ready();
+    yield* this.#route(repo.host, { mode: "artifacts", repos: [{ repoPath: repo.repoPath, token: call.token }] });
+
+    for (const host of NIX_HOSTS) {
+      yield* this.#route(host, { mode: "pass" });
+    }
+
+    const trusted = yield* this.#exec(["/usr/local/bin/ficus-trust-egress"]);
+
+    if (trusted.exitCode !== 0) {
+      return yield* failure(503, `trusting the egress CA: ${trusted.stderr.trim()}`);
+    }
+
+    const prepared = yield* this.#json(yield* this.#exec([SCORER, "deploy-prepare", ref]), DeployPrepared, "deploy-prepare");
+
+    if (!prepared.deploys) {
+      return DeployReport.make({ deployed: false, passed: true, millis: 0, tail: `the released commit's ficus.toml has no [deploy] ${call.part}` });
+    }
+
+    for (const host of prepared.hosts) {
+      yield* this.#route(host, { mode: "pass" });
+    }
+
+    yield* this.#route(CLOUDFLARE_API, { mode: "cloudflare", token: call.cloudflare_token });
+
+    const deployed = yield* this.#exec([SCORER, "deploy", prepared.workdir], quiet, {
+      CLOUDFLARE_ACCOUNT_ID: call.account_id,
+      CLOUDFLARE_API_TOKEN: TOKEN_PLACEHOLDER,
+    });
+
+    return yield* this.#json(deployed, DeployReport, "deploy");
+  });
+
   readonly #score = Effect.fn("Sandbox.score")(function* (this: Sandbox, request: Request, say: Report) {
     const score = yield* this.#body(request, ScoreRequest, "score");
     const repo = repoOf(score.remote);
@@ -516,15 +598,25 @@ export class Sandbox extends DurableObject<Bindings> {
     say(stepLine("sandbox", "complete"));
 
     const prepared = yield* this.#exec([SCORER, "prepare", attempt], say);
+    const { workdir, hosts } = yield* this.#json(prepared, Prepared, "prepare");
+
+    // The root's own fetch hosts (packages), read from the base
+    // commit by `prepare`: open while its devenv builds and its fetch runs.
+    for (const host of hosts) {
+      yield* this.#route(host, { mode: "pass" });
+    }
+
+    const fetched = yield* this.#exec([SCORER, "fetch", workdir], say);
 
     // Close everything before any of the root's checks run.
-    yield* this.#route(repo.host, { mode: "deny" });
-
-    for (const host of NIX_HOSTS) {
+    for (const host of new Set([repo.host, ...NIX_HOSTS, ...hosts])) {
       yield* this.#route(host, { mode: "deny" });
     }
 
-    const { workdir } = yield* this.#json(prepared, Prepared, "prepare");
+    if (fetched.exitCode !== 0) {
+      return yield* failure(500, `fetch exited ${fetched.exitCode}: ${fetched.stderr.trim()}`);
+    }
+
     const checked = yield* this.#exec([SCORER, "check", workdir], say);
     const run = yield* this.#json(checked, CheckRun, "check");
 
@@ -536,7 +628,7 @@ export class Sandbox extends DurableObject<Bindings> {
 
     say(stepLine("judge", "active"));
 
-    return yield* this.#judge(run, score.intent ?? "").pipe(
+    return yield* this.#judge(run, score.intent).pipe(
       Effect.tap(() => Effect.sync(() => say(stepLine("judge", "complete")))),
       Effect.tapError((error) => Effect.sync(() => say(stepLine("judge", "error", error.message)))),
     );
@@ -562,7 +654,7 @@ export class Sandbox extends DurableObject<Bindings> {
       outcomes.push(judged(judge, answers[judge.name]?.probability ?? 0, millis));
     }
 
-    return { checks: [...run.report.checks, ...outcomes], cost: run.report.cost };
+    return { ...run.report, checks: [...run.report.checks, ...outcomes] };
   });
 
   #container(): Container {
@@ -617,12 +709,17 @@ export class Sandbox extends DurableObject<Bindings> {
    * Run `argv`. Its stderr is read as it is written: progress lines go to
    * `report` at once, the rest is kept as the command's error text.
    */
-  readonly #exec = Effect.fn("Sandbox.exec")(function* (this: Sandbox, argv: ReadonlyArray<string>, report: Report = quiet) {
+  readonly #exec = Effect.fn("Sandbox.exec")(function* (
+    this: Sandbox,
+    argv: ReadonlyArray<string>,
+    report: Report = quiet,
+    cloudflare?: { readonly CLOUDFLARE_ACCOUNT_ID: string; readonly CLOUDFLARE_API_TOKEN: string },
+  ) {
     const container = this.#container();
 
     return yield* Effect.tryPromise({
       try: async () => {
-        const running = await container.exec([...argv], { env: { ...EXEC_ENV }, stdout: "pipe", stderr: "pipe" });
+        const running = await container.exec([...argv], { env: { ...EXEC_ENV, ...cloudflare }, stdout: "pipe", stderr: "pipe" });
         const kept: Array<string> = [];
 
         const [stdout] = await Promise.all([

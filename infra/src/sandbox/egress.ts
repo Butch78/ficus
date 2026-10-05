@@ -13,9 +13,13 @@
  *                cannot reach any other repo or keep access after the
  *                sandbox revokes it. Scoring lists one repo; a rebase
  *                lists two: the behind attempt to read and the fresh one to push.
+ * - `cloudflare`: the Cloudflare API, for a deploy: forward, with the deploy
+ *                token in place of the container's placeholder; credentials
+ *                the API issued mid-deploy (asset upload JWTs) pass as sent.
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
 import * as Schema from "effect/Schema";
+import { withDeployToken } from "./deploy-token.ts";
 import { isRepoRequest } from "./repo.ts";
 
 export const RepoGrant = Schema.Struct({ repoPath: Schema.String, token: Schema.String });
@@ -26,6 +30,7 @@ export const EgressProps = Schema.Union([
   Schema.Struct({ mode: Schema.Literal("pass") }),
   Schema.Struct({ mode: Schema.Literal("deny") }),
   Schema.Struct({ mode: Schema.Literal("artifacts"), repos: Schema.Array(RepoGrant) }),
+  Schema.Struct({ mode: Schema.Literal("cloudflare"), token: Schema.String }),
 ]);
 
 export type EgressProps = Schema.Schema.Type<typeof EgressProps>;
@@ -59,6 +64,21 @@ export class Egress extends WorkerEntrypoint<object, EgressProps> {
         const authorized = new Request(request);
 
         authorized.headers.set("authorization", `Bearer ${grant.token}`);
+
+        return fetch(authorized);
+      }
+
+      case "cloudflare": {
+        // The container holds a placeholder, swapped here: the token never reaches it.
+        const authorized = new Request(request);
+        const sent = request.headers.get("authorization");
+        const authorization = withDeployToken(sent, props.token);
+
+        if (authorization !== null) {
+          authorized.headers.set("authorization", authorization);
+        }
+
+        console.log(`egress cloudflare: ${authorization === sent ? "credentials as sent" : "deploy token added"}`);
 
         return fetch(authorized);
       }

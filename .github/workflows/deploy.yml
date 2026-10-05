@@ -1,5 +1,6 @@
 # Deploys, alchemy's way: one stage per pull request (`pr-<n>`, destroyed
-# when it closes) and `prod` from main. Everything the jobs need comes from
+# when it closes). `prod` is not deployed from here: Ficus deploys itself when
+# its tree's release moves (`[deploy]` in ficus.toml). Everything the jobs need comes from
 # infra/bootstrap.run.ts, which also sets FICUS_DEPLOYS_ENABLED: until it has
 # run, every job here skips.
 name: Deploy
@@ -7,34 +8,30 @@ name: Deploy
 on:
   pull_request:
     types: [opened, reopened, synchronize, closed]
-  push:
-    branches: [main]
 
 permissions:
   contents: read
 
 env:
   SECRETSPEC_REASON: "CI: deploy with the bootstrap-minted token"
-  RUSTC_WRAPPER: ""
 
 jobs:
   deploy:
-    name: Deploy ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) || 'prod' }}
+    name: Deploy pr-${{ github.event.number }}
     # Pull requests from forks never get the deploy token.
     if: >-
       vars.FICUS_DEPLOYS_ENABLED == 'true' &&
-      (github.event_name == 'push' ||
-       (github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository))
+      github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: read
       pull-requests: write # the preview comment
     concurrency:
-      group: deploy-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) || 'prod' }}
+      group: deploy-pr-${{ github.event.number }}
       cancel-in-progress: false
     env:
-      STAGE: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) || 'prod' }}
+      STAGE: pr-${{ github.event.number }}
       PULL_REQUEST: ${{ github.event.pull_request.number }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -46,17 +43,19 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/devenv
+      - name: Install
+        working-directory: infra
+        run: devenv shell -- bun install --frozen-lockfile
       # Before the deploy, not inside it: alchemy builds the scorer image in a
       # phase that does not wait for the ScorerBinary build, so the image could
-      # copy a missing (or an old) binary.
-      - name: Build the scorer binary
+      # copy a missing (or an old) bundle. After the install: it imports effect.
+      - name: Bundle the scorer
         run: devenv shell -- scripts/build-scorer
       - name: Deploy
         id: deploy
         working-directory: infra
         run: |
           set -euo pipefail
-          devenv shell -- bun install --frozen-lockfile
           devenv shell -- bun run deploy | tee "$RUNNER_TEMP/deploy.log"
           api=$(grep -oE "api: '[^']+'" "$RUNNER_TEMP/deploy.log" | tail -1 | cut -d"'" -f2)
           echo "api=$api" >> "$GITHUB_OUTPUT"
