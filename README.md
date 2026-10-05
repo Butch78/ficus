@@ -124,8 +124,8 @@ Credentials go in `~/.config/ficus/.env` (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_A
   workflows).
 - Deploys follow [alchemy's CI guide](https://alchemy.run/guides/ci/): each pull request gets its own
   `pr-<n>` stage (Api and web UI, with a comment linking both, and end-to-end smoke tests of each),
-  destroyed when it closes;
-  `main` deploys `prod`.
+  destroyed when it closes. `prod` is not deployed from GitHub: releasing a node on Ficus's own tree
+  runs its `[deploy]`.
 - Credentials are code: `cd infra && bun run deploy:bootstrap` (once, with a Cloudflare credential that
   can create API tokens and a GitHub token with admin on the repo) mints a scoped CI token and writes
   the repository secrets. Until it has run, deploys skip.
