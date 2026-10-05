@@ -43,9 +43,12 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/devenv
+      - name: Install
+        working-directory: infra
+        run: devenv shell -- bun install --frozen-lockfile
       # Before the deploy, not inside it: alchemy builds the scorer image in a
       # phase that does not wait for the ScorerBinary build, so the image could
-      # copy a missing (or an old) binary.
+      # copy a missing (or an old) bundle. After the install: it imports effect.
       - name: Bundle the scorer
         run: devenv shell -- scripts/build-scorer
       - name: Deploy
@@ -53,7 +56,6 @@ jobs:
         working-directory: infra
         run: |
           set -euo pipefail
-          devenv shell -- bun install --frozen-lockfile
           devenv shell -- bun run deploy | tee "$RUNNER_TEMP/deploy.log"
           api=$(grep -oE "api: '[^']+'" "$RUNNER_TEMP/deploy.log" | tail -1 | cut -d"'" -f2)
           echo "api=$api" >> "$GITHUB_OUTPUT"
