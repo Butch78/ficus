@@ -6,6 +6,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { RepoName } from "../core/values.ts";
+import { ANONYMOUS_HEADER, NO_SUCH_TREE } from "../core/visibility.ts";
 import { refuse } from "./http.ts";
 
 /** The header the Api sets on every request it forwards. */
@@ -27,6 +28,9 @@ export const scopedName = Effect.fn("Tree.scopedName")(function* (request: Reque
   }
 
   return yield* Schema.decodeUnknownEffect(RepoName)(`${tenant}-${tree}`).pipe(
-    Effect.mapError(() => refuse(400, "tree names are letters, digits, '.', '-' and '_', and at most 40 characters")),
+    // An anonymous caller learns nothing of the organization from a bad name: no tree it may read, as for an unknown organization.
+    Effect.mapError(() =>
+      request.headers.has(ANONYMOUS_HEADER) ? refuse(404, NO_SUCH_TREE) : refuse(400, "tree names are letters, digits, '.', '-' and '_', and at most 40 characters"),
+    ),
   );
 });

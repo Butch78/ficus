@@ -144,6 +144,8 @@ export const Tree = Schema.Struct({
   history: Schema.Array(HistoryEntry),
   /** The node a deployment should follow; `null` until the first release. */
   released: Schema.optionalKey(Schema.NullOr(NodeId)),
+  /** Whether anyone may read the tree (visibility.ts); absent, as in trees stored before it, is private. */
+  public: Schema.optionalKey(Schema.Boolean),
 });
 
 export type Tree = typeof Tree.Type;

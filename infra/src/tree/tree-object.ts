@@ -21,6 +21,7 @@ import { CheckSpec, RebaseReport, type RebaseRequest, ScoreReport, scoreOf, type
 import type { DeployParams } from "../core/deploy.ts";
 import * as T from "../core/tree.ts";
 import { AttemptId, NodeId, Oid, RepoName, TaskId, type TreeError } from "../core/values.ts";
+import { ANONYMOUS_HEADER, anonymousMay, isPublic, NO_SUCH_TREE } from "../core/visibility.ts";
 import * as Agents from "./agents.ts";
 import * as Deploys from "./deploys.ts";
 import * as Artifacts from "./artifacts.ts";
@@ -77,6 +78,8 @@ const StartBody = Schema.Struct({ agent: Schema.String });
 const AbandonBody = Schema.Struct({ note: Schema.String });
 
 const ReleaseBody = Schema.Struct({ node: Schema.optional(Schema.NullOr(NodeId)) });
+
+const VisibilityBody = Schema.Struct({ public: Schema.Boolean });
 
 /** Everything an agent needs to start working an attempt. */
 export const Started = Schema.Struct({
@@ -165,6 +168,11 @@ export class TreeObject extends DurableObject<Bindings> {
     const name = yield* scopedName(request, treeName);
     const route: Route = { kind: kind ?? "", id: id ?? "", action: action ?? "" };
 
+    // An anonymous caller (core/visibility.ts) reads a public tree or nothing: anything else is the 404 of a tree that does not exist.
+    if (request.headers.has(ANONYMOUS_HEADER) && !(anonymousMay(request.method, url.pathname.slice(`/trees/${treeName}`.length)) && isPublic(yield* this.#load()))) {
+      return yield* refuse(404, NO_SUCH_TREE);
+    }
+
     if (request.method === "GET") {
       return yield* this.#get(route, url);
     }
@@ -217,6 +225,8 @@ export class TreeObject extends DurableObject<Bindings> {
         return yield* this.#release(yield* decodeBody(ReleaseBody, request));
       case "graft":
         return yield* this.#graft(yield* decodeBody(GraftBody, request));
+      case "visibility":
+        return yield* this.#visibility(yield* decodeBody(VisibilityBody, request));
       case "accept":
         return yield* this.#accept(undefined);
       case "tasks/:id/attempts":
@@ -256,7 +266,7 @@ export class TreeObject extends DurableObject<Bindings> {
   readonly #tree = Effect.fn("Tree.tree")(function* (this: TreeObject) {
     const tree = yield* this.#load();
 
-    return tree === undefined ? yield* refuse(404, "no such tree") : tree;
+    return tree === undefined ? yield* refuse(404, NO_SUCH_TREE) : tree;
   });
 
   #save(tree: T.Tree) {
@@ -754,6 +764,13 @@ export class TreeObject extends DurableObject<Bindings> {
           );
 
     return json({ release: released.release, commit: node?.commit, repo: node?.repo, deploy: deploy ?? null });
+  });
+
+  /** Make the tree public (anyone may read it, core/visibility.ts) or private again. */
+  readonly #visibility = Effect.fn("Tree.visibility")(function* (this: TreeObject, body: typeof VisibilityBody.Type) {
+    yield* this.#save({ ...(yield* this.#tree()), public: body.public });
+
+    return json({ public: body.public });
   });
 
   readonly #abandon = Effect.fn("Tree.abandon")(function* (this: TreeObject, attempt: AttemptId, body: typeof AbandonBody.Type) {

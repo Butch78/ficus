@@ -4,17 +4,21 @@
  *   /api/auth/*                         Better Auth: sign-up, sign-in,
  *                                       organizations, API keys
  *   GET /v1/orgs/<org>/trees            the organization's trees
- *   /v1/orgs/<org>/trees/<tree>[/...]   the tree API, for members of <org>
+ *   /v1/orgs/<org>/trees/<tree>[/...]   the tree API, for members of <org>;
+ *                                       a public tree's reads for anyone
  *
  * A request to /v1 is authenticated (session cookie or `x-api-key`; a key's
  * session is its owner's), authorized against the organization by Better
  * Auth itself (`getFullOrganization` answers only to members), and forwarded
  * over a service binding to the internal tree Worker with the organization's
- * tenant key. Nothing reaches the tree Worker any other way.
+ * tenant key. Nothing reaches the tree Worker any other way. A read anyone
+ * may make (core/visibility.ts), asked with no session and no API key, goes
+ * on marked anonymous, and the tree Worker answers it only from a public tree.
  */
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import { ANONYMOUS_HEADER, anonymousMay, NO_SUCH_TREE } from "../core/visibility.ts";
 import * as CloudflareTracer from "../observability/tracer.ts";
 import { API_KEY_HEADER, AUTH_BASE_PATH, Auth, layer as authLayer } from "./auth.ts";
 import * as Directory from "./directory.ts";
@@ -31,7 +35,7 @@ interface Bindings {
 }
 
 /** Headers that carry the caller's credentials or claims, never forwarded. */
-const STRIPPED = ["cookie", "authorization", API_KEY_HEADER, TENANT_HEADER];
+const STRIPPED = ["cookie", "authorization", API_KEY_HEADER, TENANT_HEADER, ANONYMOUS_HEADER];
 
 export class ApiFailure extends Schema.TaggedError<ApiFailure>()("Api.Failure", {
   status: Schema.Number,
@@ -39,6 +43,9 @@ export class ApiFailure extends Schema.TaggedError<ApiFailure>()("Api.Failure", 
 }) {}
 
 const fail = (status: number, message: string) => new ApiFailure({ status, message });
+
+/** An anonymous caller's unknown organization: answered as the tree Worker answers a tree they may not read. */
+class Hidden extends Schema.TaggedError<Hidden>()("Api.Hidden", {}) {}
 
 /** Better Auth's `APIError`, the fields this Worker passes on. */
 const AuthRejection = Schema.Struct({ statusCode: Schema.Number, message: Schema.String });
@@ -65,8 +72,24 @@ export const treeRoute = (pathname: string) => {
 /** `/v1/orgs/<org>/trees`: the organization's slug; undefined otherwise. */
 export const treesRoute = (pathname: string) => /^\/v1\/orgs\/([^/]+)\/trees\/?$/.exec(pathname)?.[1];
 
-/** The organization `slug` names, if the caller is signed in and a member. */
-const membership = Effect.fn("Api.membership")(function* (request: Request, slug: string) {
+/** The id of the organization `slug` names, from Better Auth's own table; `Hidden` if there is none. */
+const organizationId = Effect.fn("Api.organizationId")(function* (slug: string) {
+  const auth = yield* Auth;
+
+  const found = yield* Effect.tryPromise({
+    try: async () =>
+      (await auth.$context).adapter.findOne<{ readonly id: string }>({ model: "organization", where: [{ field: "slug", value: slug }], select: ["id"] }),
+    catch: authFailure("could not look up the organization"),
+  });
+
+  return found === null ? yield* new Hidden() : found.id;
+});
+
+/**
+ * The organization `slug` names, if the caller is signed in and a member; or,
+ * where `anonymous` allows it, for a caller with no session and no API key.
+ */
+const membership = Effect.fn("Api.membership")(function* (request: Request, slug: string, anonymous = false) {
   yield* Effect.annotateCurrentSpan("ficus.org", slug);
 
   const auth = yield* Auth;
@@ -77,6 +100,10 @@ const membership = Effect.fn("Api.membership")(function* (request: Request, slug
   });
 
   if (session === null) {
+    if (anonymous && !request.headers.has(API_KEY_HEADER)) {
+      return { id: yield* organizationId(slug), anonymous: true };
+    }
+
     return yield* fail(401, "sign in, or send an API key in x-api-key");
   }
 
@@ -91,7 +118,7 @@ const membership = Effect.fn("Api.membership")(function* (request: Request, slug
     return yield* fail(404, `no organization ${slug} that you belong to`);
   }
 
-  return organization;
+  return { id: organization.id, anonymous: false };
 });
 
 const listTrees = Effect.fn("Api.listTrees")(function* (env: Bindings, request: Request, slug: string) {
@@ -109,7 +136,7 @@ const forwardToTree = Effect.fn("Api.forwardToTree")(function* (
   request: Request,
   route: { readonly org: string; readonly tree: string; readonly rest: string },
 ) {
-  const organization = yield* membership(request, route.org);
+  const organization = yield* membership(request, route.org, anonymousMay(request.method, route.rest));
   const tenant = yield* tenantKey(organization.id);
   const headers = new Headers(request.headers);
 
@@ -118,6 +145,10 @@ const forwardToTree = Effect.fn("Api.forwardToTree")(function* (
   }
 
   headers.set(TENANT_HEADER, tenant);
+
+  if (organization.anonymous) {
+    headers.set(ANONYMOUS_HEADER, "true");
+  }
 
   const url = new URL(`/trees/${route.tree}${route.rest}`, "http://tree");
 
@@ -223,6 +254,7 @@ export default {
         Effect.catchTag("Api.Failure", (error) =>
           Effect.succeed(Response.json({ error: error.message }, { status: error.status })),
         ),
+        Effect.catchTag("Api.Hidden", () => Effect.succeed(new Response(NO_SUCH_TREE, { status: 404 }))),
         // Better Auth builds its URLs from the origin it is served on; the
         // directory has its D1 client; the tracer records this request's Effect spans in its Cloudflare trace.
         // oxlint-disable-next-line effecttsgo/strict-effect-provide -- the Worker's entry point

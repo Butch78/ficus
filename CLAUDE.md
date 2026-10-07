@@ -40,11 +40,17 @@ deadline 2026-10-14.
   `GET /trees/<t>/behind` · `POST /trees/<t>/attempts/<id>/{retry,abandon}` ·
   `POST /trees/<t>/tasks/<id>/close {note}` (closes a task with no open attempt, unaccepted; 409 otherwise) ·
   `POST /trees/<t>/release {node?}` · `GET /trees/<t>/release` · `GET /trees/<t>` ·
+  `POST /trees/<t>/visibility {public}` (members; `public` is optional in the tree, absent = private) ·
   `POST /trees/<t>/graft {source, branch?}` (imports an outside commit into `<t>-g<id>` as the new head;
   open attempts become behind and are rebased; `.github/workflows/graft.yml` follows GitHub's main) ·
   `GET /trees/<t>/{attempts,nodes}/<id>/{log,tree,file}?ref=&path=` (reads through Artifacts; the tree picks
   the repo, `src/core/browse.ts`; files leave as text/plain or octet-stream, never HTML).
   The Api lists an org's trees (`GET /v1/orgs/<org>/trees`) from D1 (`ficus_tree`), recorded on each 2xx init.
+  Public trees (`src/core/visibility.ts`): a request with no session and no API key passes the Api only for GET
+  `/v1/orgs/<org>/trees/<t>` and `.../{attempts,nodes}/<id>/{log,tree,file,diff}` (`anonymousMay`); the Api finds
+  the org id by slug in Better Auth's `organization` table and forwards with `x-ficus-anonymous` (stripped from
+  every caller's request), and the tree Worker answers it 404 `no such tree` unless the tree is public, the same as
+  an unknown tree or organization. Members' requests are unchanged; everything else needs a member.
 - Api D1: Drizzle 1.0 RC (pinned to alchemy's peer, `1.0.0-rc.5-ab785fc`). Ficus's tables are declared in
   `infra/src/api/schema.ts` and queried through `drizzle-orm/effect-d1` (`@effect/sql-d1`'s `D1Client`, provided
   per request). Migrations are drizzle-kit folders in `src/api/migrations`: alchemy's `Drizzle.Schema` writes
