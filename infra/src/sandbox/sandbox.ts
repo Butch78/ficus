@@ -7,6 +7,10 @@
  * decided here, per phase, by routing hosts through `Egress`:
  *
  *   POST /score  (a ScoreRequest, from the tree)
+ *     0. boot:    a fresh container, from the base's snapshot when the tree
+ *        sent one; with `warm`, first warm one: prepare and fetch the base
+ *        alone (no attempt's code), clear the workdir, snapshot. A snapshot
+ *        that fails gives way to the image in the same scoring
  *     1. prepare: the attempt's repo (token added by Egress) and the nix/devenv
  *        caches; `ficus-scorer prepare` clones and restores the root's locked
  *        files, then `ficus-scorer fetch` builds the root's devenv shell and
@@ -17,7 +21,8 @@
  *   its ficus.toml) are put to Clef here, through the Workers AI binding,
  *   with the task's intent and the attempt's diff. The answer is the ScoreReport,
  *   judges included as checks, or 422 when the attempt or root cannot be scored
- *   (retrying will not help).
+ *   (retrying will not help). Beside the report (ScoreAnswer): the id of a
+ *   snapshot it warmed, and `stale` when the one it was sent failed.
  *
  *   POST /rebase  (a RebaseRequest, from the tree)
  *     the behind attempt's repo (read) and the fresh attempt's repo (write), both
@@ -106,6 +111,9 @@ const EXEC_ENV = {
 
 const SCORER = "/usr/local/bin/ficus-scorer";
 
+/** Where the platform writes a container's egress CA (context/trust-egress.sh). */
+const EGRESS_CA = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
+
 /** The Cloudflare API, which a deploy reaches through Egress with the deploy token added. */
 const CLOUDFLARE_API = "api.cloudflare.com";
 
@@ -161,6 +169,9 @@ const DEVENV_WARM_LOG = "/tmp/devenv-warm.log";
  * never says so, and every idle container holds one of the class's instances.
  */
 const WORKSPACE_IDLE_MS = 20 * 60 * 1000;
+
+/** Snapshotting the container may not hold its scoring up longer than this. */
+const SNAPSHOT_TIMEOUT = "5 minutes";
 
 /** One readiness probe: an exec into a container that cannot be placed can hang. */
 const PROBE_TIMEOUT = "15 seconds";
@@ -575,13 +586,55 @@ export class Sandbox extends DurableObject<Bindings> {
 
   readonly #score = Effect.fn("Sandbox.score")(function* (this: Sandbox, request: Request, say: Report) {
     const score = yield* this.#body(request, ScoreRequest, "score");
+    const given = score.snapshot;
+    const started = Date.now();
+
+    // A snapshot that will not restore, or whose container fails before its
+    // checks for the sandbox's own reasons, gives way to the image in this
+    // same scoring, which warms a fresh one; the tree forgets the stale one.
+    const { run, taken, stale } = yield* this.#scoreIn(score, say, given, given === undefined && score.warm === true).pipe(
+      Effect.catchIf(
+        (error) => given !== undefined && error.status !== 422,
+        (error) => {
+          console.log(`sandbox: snapshot ${given} failed (${error.message}); booting the image`);
+
+          return this.#scoreIn(score, say, undefined, true).pipe(
+            Effect.map((cold) => ({ ...cold, run: { ...cold.run, report: phasesFirst([{ name: "snapshot_failed", millis: cold.started - started }], cold.run.report) }, stale: true })),
+          );
+        },
+      ),
+    );
+
+    if (run.judges.length === 0) {
+      return { ...run.report, snapshot: taken, stale };
+    }
+
+    say(stepLine("judge", "active"));
+
+    return yield* this.#judge(run, score.intent).pipe(
+      Effect.map((report) => ({ ...report, snapshot: taken, stale })),
+      Effect.tap(() => Effect.sync(() => say(stepLine("judge", "complete")))),
+      Effect.tapError((error) => Effect.sync(() => say(stepLine("judge", "error", error.message)))),
+    );
+  });
+
+  /**
+   * One run of a scoring's container, in a fresh one: booted from `snapshot`
+   * or the image, warming a snapshot of the base first when `warm`, then
+   * prepare, fetch and check the attempt, then destroyed.
+   */
+  readonly #scoreIn = Effect.fn("Sandbox.scoreIn")(function* (this: Sandbox, score: ScoreRequest, say: Report, snapshot: string | undefined, warm: boolean) {
     const repo = repoOf(score.remote);
     const attempt = JSON.stringify({ remote: score.remote, base: score.base, head: score.head, checks: score.checks ?? [] });
+
+    // A container an earlier run left holds its attempt: a snapshot must
+    // hold the base alone, and a boot from one must be this one.
+    yield* this.#discard();
 
     const started = Date.now();
 
     say(stepLine("sandbox", "active"));
-    yield* this.#ready().pipe(Effect.tapError((error) => Effect.sync(() => say(stepLine("sandbox", "error", error.message)))));
+    yield* this.#ready(snapshot).pipe(Effect.tapError((error) => Effect.sync(() => say(stepLine("sandbox", "error", error.message)))));
 
     const ready = Date.now();
 
@@ -600,11 +653,16 @@ export class Sandbox extends DurableObject<Bindings> {
       return yield* failure(503, `trusting the egress CA: ${trusted.stderr.trim()}`);
     }
 
+    const opened = Date.now();
+    const taken = warm ? yield* this.#warm(score) : undefined;
+
     say(stepLine("sandbox", "complete"));
 
     const sandbox = [
-      { name: "container", millis: ready - started },
-      { name: "egress", millis: Date.now() - ready },
+      // Whether the boot came from the base's snapshot.
+      { name: snapshot === undefined ? "container" : "snapshot", millis: ready - started },
+      { name: "egress", millis: opened - ready },
+      ...(warm ? [{ name: "warm", millis: Date.now() - opened }] : []),
     ];
 
     const prepared = yield* this.#exec([SCORER, "prepare", attempt], say);
@@ -633,17 +691,46 @@ export class Sandbox extends DurableObject<Bindings> {
 
     yield* Effect.promise(() => this.#container().destroy());
 
-    if (run.judges.length === 0) {
-      return run.report;
-    }
-
-    say(stepLine("judge", "active"));
-
-    return yield* this.#judge(run, score.intent).pipe(
-      Effect.tap(() => Effect.sync(() => say(stepLine("judge", "complete")))),
-      Effect.tapError((error) => Effect.sync(() => say(stepLine("judge", "error", error.message)))),
-    );
+    return { run, taken, started, stale: false };
   });
+
+  /**
+   * Warm a snapshot of the base: prepare it alone (clone, its devenv shell
+   * and its fetch; no attempt's code), clear the workdir, snapshot the
+   * container. Its id, or nothing: a failure here only costs the base's
+   * later scorings their warm boot, never this one.
+   */
+  readonly #warm = Effect.fn("Sandbox.warm")(
+    function* (this: Sandbox, score: ScoreRequest) {
+      const base = JSON.stringify({ remote: score.remote, base: score.base, head: score.base });
+      const { workdir, hosts } = yield* this.#json(yield* this.#exec([SCORER, "prepare", base]), Prepared, "warm prepare");
+
+      for (const host of hosts) {
+        yield* this.#route(host, { mode: "pass" });
+      }
+
+      const fetched = yield* this.#exec([SCORER, "fetch", workdir]);
+
+      // The base's checkout goes; what its devenv and fetch left outside it
+      // (the nix store, package caches) stays. So does no egress CA: the
+      // platform writes one per container.
+      const cleared = yield* this.#exec(["/bin/sh", "-c", `rm -rf '${workdir}' && { rm -f ${EGRESS_CA} || true; }`]);
+
+      if (fetched.exitCode !== 0 || cleared.exitCode !== 0) {
+        return yield* failure(500, `warming: fetch exited ${fetched.exitCode}, clearing ${cleared.exitCode}: ${fetched.stderr.trim()} ${cleared.stderr.trim()}`);
+      }
+
+      const taken = yield* Effect.tryPromise({
+        try: () => this.#container().snapshotContainer({ name: `base-${score.base.slice(0, 12)}` }),
+        catch: (cause) => failure(503, `snapshotting: ${String(cause)}`),
+      }).pipe(Effect.timeoutOrElse({ duration: SNAPSHOT_TIMEOUT, orElse: () => Effect.fail(failure(503, `snapshotting: no answer within ${SNAPSHOT_TIMEOUT}`)) }));
+
+      console.log(`sandbox: took snapshot ${taken.id} of base ${score.base} (${taken.size} bytes)`);
+
+      return taken.id;
+    },
+    (warming) => warming.pipe(Effect.catch((error) => Effect.sync(() => console.log(`sandbox: no snapshot of the base: ${error.message}`)).pipe(Effect.as(undefined)))),
+  );
 
   /** The report with the root's judges' outcomes added. A Clef failure is retryable: 503. */
   readonly #judge = Effect.fn("Sandbox.judge")(function* (run: Schema.Schema.Type<typeof CheckRun>, task: string) {
@@ -678,19 +765,31 @@ export class Sandbox extends DurableObject<Bindings> {
     return container;
   }
 
-  /** Start the container with the internet off, and wait for its entrypoint. */
-  readonly #ready = Effect.fn("Sandbox.ready")(function* (this: Sandbox) {
+  /**
+   * Start the container with the internet off, from `snapshot` when given,
+   * and wait for its entrypoint. A boot started here carries a nonce the
+   * entrypoint writes to the ready marker, so a marker restored from a
+   * snapshot never passes for it; a container already running (a workspace's,
+   * from an earlier instance) passes on any marker.
+   */
+  readonly #ready = Effect.fn("Sandbox.ready")(function* (this: Sandbox, snapshot?: string) {
     const container = this.#container();
+    let boot = "";
 
     yield* Effect.tryPromise({
       try: async () => {
         // Started here, and again if it stopped while booting: several cold
         // containers starting at once can take minutes.
         if (!container.running) {
-          container.start({ enableInternet: false });
+          boot = crypto.randomUUID();
+          const env = { FICUS_BOOT: boot };
+
+          container.start(snapshot === undefined ? { enableInternet: false, env } : { enableInternet: false, env, containerSnapshot: { id: snapshot } });
         }
 
-        const probe = await container.exec(["/bin/sh", "-c", "test -f /run/ficus-ready"], { env: { ...EXEC_ENV } });
+        const probe = await container.exec(["/bin/sh", "-c", 'test -f /run/ficus-ready && { [ -z "$0" ] || [ "$(cat /run/ficus-ready)" = "$0" ]; }', boot], {
+          env: { ...EXEC_ENV },
+        });
 
         if ((await probe.exitCode) !== 0) {
           throw new Error("entrypoint still running");
@@ -702,7 +801,8 @@ export class Sandbox extends DurableObject<Bindings> {
         duration: PROBE_TIMEOUT,
         orElse: () => Effect.fail(failure(503, `the sandbox did not become ready: no answer within ${PROBE_TIMEOUT}`)),
       }),
-      Effect.retry({ schedule: Schedule.spaced("1 second"), times: 240 }),
+      // A snapshot that will not restore gives way to the image sooner.
+      Effect.retry({ schedule: Schedule.spaced("1 second"), times: snapshot === undefined ? 240 : 60 }),
     );
   });
 

@@ -17,7 +17,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { change, parsePath, parseRef, Subject, view } from "../core/browse.ts";
 import { applyStep, closeLedger, CONTENT_TYPE as PROGRESS, emptyLedger, type InitStep, Ledger, outcomeBody, outcomeLine, parseLine, stepLine, type StepState, textOf } from "../core/progress.ts";
-import { CheckSpec, RebaseReport, type RebaseRequest, ScoreReport, scoreOf, type ScoreRequest } from "../core/scoring.ts";
+import { type BootPlan, bootPlans, CheckSpec, RebaseReport, type RebaseRequest, ScoreAnswer, ScoreReport, scoreOf, type ScoreRequest, snapshotAfter } from "../core/scoring.ts";
 import type { DeployParams } from "../core/deploy.ts";
 import * as T from "../core/tree.ts";
 import { AttemptId, NodeId, Oid, RepoName, TaskId, type TreeError } from "../core/values.ts";
@@ -66,6 +66,9 @@ const SANDBOX_TOKEN_TTL_SECS = 3600;
 const SANDBOX_ATTEMPTS = 5;
 
 const SANDBOX_RETRY_MS = 60_000;
+
+/** Where the tree keeps the container snapshot of a base node's commit, which scorings of attempts on it boot from. */
+const snapshotKey = (base: string) => `snapshot:${base}`;
 
 const InitBody = Schema.Struct({ source: Schema.optional(Schema.String), branch: Schema.optional(Schema.String) });
 
@@ -948,24 +951,46 @@ export class TreeObject extends DurableObject<Bindings> {
       : ({ kind: "failed", reason: `sandbox answered ${action} with an unreadable report: ${decoded.failure.message}` } satisfies SandboxOutcome<A>);
   });
 
-  /** Mint a short-lived read token, ask a sandbox to score, revoke the token. */
-  readonly #scoreOne = Effect.fn("Tree.scoreOne")(function* (this: TreeObject, job: T.ScoringJob) {
+  /** Mint a short-lived read token, ask a sandbox to score (booting as `plan` says), revoke the token. */
+  readonly #scoreOne = Effect.fn("Tree.scoreOne")(function* (this: TreeObject, job: T.ScoringJob, plan: BootPlan) {
     const prepared = yield* Artifacts.repo(this.#artifacts(), job.repo).pipe(
       Effect.flatMap((on) => Effect.all({ on: Effect.succeed(on), info: Artifacts.info(on), token: Artifacts.createToken(on, "read", SANDBOX_TOKEN_TTL_SECS) })),
       Effect.result,
     );
 
     if (Result.isFailure(prepared)) {
-      return { kind: "failed", reason: `Artifacts ${prepared.failure.code}: ${prepared.failure.message}` } satisfies SandboxOutcome<ScoreReport>;
+      return { kind: "failed", reason: `Artifacts ${prepared.failure.code}: ${prepared.failure.message}` } satisfies SandboxOutcome<ScoreAnswer>;
     }
 
     const { on, info, token } = prepared.success;
-    const request: ScoreRequest = { remote: info.remote, token: token.plaintext, base: job.base, head: job.head, intent: job.intent, checks: job.checks };
-    const scored = yield* this.#askSandbox(job.repo, "score", request, ScoreReport, job.attempt);
+    const request: ScoreRequest = { remote: info.remote, token: token.plaintext, base: job.base, head: job.head, intent: job.intent, checks: job.checks, ...plan };
+    const scored = yield* this.#askSandbox(job.repo, "score", request, ScoreAnswer, job.attempt);
 
     yield* Artifacts.revokeToken(on, token.id).pipe(Effect.catchTag("Artifacts.Error", (error) => Effect.logError(`revoking the scorer's token on ${job.repo}: ${error.message}`)));
 
     return scored;
+  });
+
+  /** Keep the snapshot each scoring warmed, and forget each one it found stale or failed on. */
+  readonly #keepSnapshots = Effect.fn("Tree.keepSnapshots")(function* (
+    this: TreeObject,
+    keys: ReadonlyArray<string>,
+    kept: Map<string, string>,
+    plans: ReadonlyArray<BootPlan>,
+    outcomes: ReadonlyArray<SandboxOutcome<ScoreAnswer>>,
+  ) {
+    for (const [at, outcome] of outcomes.entries()) {
+      const key = keys[at] ?? "";
+      const news = snapshotAfter(kept.get(key), plans[at]?.snapshot, outcome.kind === "failed", outcome.kind === "report" ? outcome.report : undefined);
+
+      if (news.kind === "keep") {
+        kept.set(key, news.id);
+        yield* Effect.promise(() => this.ctx.storage.put(key, news.id));
+      } else if (news.kind === "forget") {
+        kept.delete(key);
+        yield* Effect.promise(() => this.ctx.storage.delete(key));
+      }
+    }
   });
 
   /** Score every attempt waiting for its checks, in parallel, one sandbox per attempt. */
@@ -982,7 +1007,13 @@ export class TreeObject extends DurableObject<Bindings> {
       return;
     }
 
-    const outcomes = yield* Effect.forEach(jobs, (job) => this.#scoreOne(job), { concurrency: "unbounded" });
+    // The container snapshot kept for each base, warmed by its first scoring.
+    const keys = jobs.map((job) => snapshotKey(job.base));
+    const kept = new Map(yield* Effect.promise(() => this.ctx.storage.get<string>(keys)));
+    const plans = bootPlans(keys, kept);
+    const outcomes = yield* Effect.forEach(jobs, (job, at) => this.#scoreOne(job, plans[at] ?? {}), { concurrency: "unbounded" });
+
+    yield* this.#keepSnapshots(keys, kept, plans, outcomes);
 
     // Scoring awaited; other requests may have changed the tree since.
     let latest = yield* this.#load();
@@ -997,12 +1028,15 @@ export class TreeObject extends DurableObject<Bindings> {
       const attemptsKey = `attempts:${job.attempt}`;
 
       if (outcome?.kind === "report") {
-        yield* Effect.promise(() => this.ctx.storage.put(`report:${job.attempt}`, JSON.stringify(outcome.report)));
+        // The snapshot news stays out of the stored report.
+        const { snapshot: _snapshot, stale: _stale, ...report } = outcome.report;
 
-        const score = scoreOf(outcome.report);
+        yield* Effect.promise(() => this.ctx.storage.put(`report:${job.attempt}`, JSON.stringify(report)));
+
+        const score = scoreOf(report);
 
         latest = Result.isSuccess(score)
-          ? settle(latest, job.attempt, T.scored(latest, job.attempt, score.success, outcome.report.touched ?? []))
+          ? settle(latest, job.attempt, T.scored(latest, job.attempt, score.success, report.touched ?? []))
           : settle(latest, job.attempt, T.abandon(latest, job.attempt, `unscorable report: ${score.failure.message}`));
       } else if (outcome?.kind === "unscorable") {
         latest = settle(latest, job.attempt, T.abandon(latest, job.attempt, `unscorable: ${outcome.reason}`));

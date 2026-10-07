@@ -16,8 +16,12 @@ import {
   MAX_FETCH_HOSTS,
   passAt,
   phasesFirst,
+  ScoreAnswer,
   scoreOf,
   ScoreReport,
+  ScoreRequest,
+  bootPlans,
+  snapshotAfter,
 } from "./scoring.ts";
 
 /** The root's config from `ficus.toml` text, as the scorer reads it. */
@@ -186,5 +190,33 @@ describe("a report", () => {
     expect(marker).toBe(`[diff truncated: ${Array.from(diff).length} characters in all]`);
     expect(Array.from(body).length).toBeLessThanOrEqual(JUDGE_DIFF_CHARS);
     expect(body.split("\n").every((each) => each === line.trimEnd())).toBe(true);
+  });
+});
+
+describe("warm snapshots of a base", () => {
+  test("a base's kept snapshot boots its scorings; with none, its first scoring warms one and the rest boot the image", () => {
+    const kept = new Map([["b1", "snap-1"]]);
+
+    expect(bootPlans(["b1", "b2", "b2", "b1", "b3"], kept)).toEqual([{ snapshot: "snap-1" }, { warm: true }, {}, { snapshot: "snap-1" }, { warm: true }]);
+  });
+
+  test("the tree keeps a snapshot taken, and forgets one that went stale or failed unless replaced since", () => {
+    expect(snapshotAfter(undefined, undefined, false, { snapshot: "new" })).toEqual({ kind: "keep", id: "new" });
+    expect(snapshotAfter("old", "old", false, { snapshot: "new", stale: true })).toEqual({ kind: "keep", id: "new" });
+    expect(snapshotAfter("old", "old", false, { stale: true })).toEqual({ kind: "forget" });
+    expect(snapshotAfter("old", "old", true, undefined)).toEqual({ kind: "forget" });
+    expect(snapshotAfter("newer", "old", true, undefined)).toEqual({ kind: "leave" });
+    expect(snapshotAfter("old", "old", false, { stale: false })).toEqual({ kind: "leave" });
+    expect(snapshotAfter(undefined, undefined, true, undefined)).toEqual({ kind: "leave" });
+  });
+
+  test("the snapshot fields are optional: a request or answer without them still decodes, and the report drops them", () => {
+    const request = { remote: "https://x/r.git", token: "t", base: "a".repeat(40), head: "b".repeat(40), intent: "i" };
+    const answer = { checks: [outcome("a", true)], cost: 1, phases: [{ name: "snapshot", millis: 5 }], snapshot: "snap", stale: false };
+
+    expect(ok(Schema.decodeUnknownResult(ScoreRequest)(request)).snapshot).toBeUndefined();
+    expect(ok(Schema.decodeUnknownResult(ScoreRequest)({ ...request, snapshot: "snap" })).snapshot).toBe("snap");
+    expect(ok(Schema.decodeUnknownResult(ScoreAnswer)(answer))).toEqual(answer);
+    expect(ok(Schema.decodeUnknownResult(ScoreReport)(answer))).toEqual({ checks: answer.checks, cost: 1, phases: answer.phases });
   });
 });

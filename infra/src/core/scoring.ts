@@ -294,9 +294,41 @@ export const ScoreRequest = Schema.Struct({
   /** The task's intent: the `task` the root's judges see. */
   intent: Schema.String,
   checks: Schema.optionalKey(Schema.Array(CheckSpec)),
+  /** A container snapshot of the base, warmed by an earlier scoring: boot from it. */
+  snapshot: Schema.optionalKey(Schema.String),
+  /** With no snapshot: warm one of the base first, for the base's later scorings. */
+  warm: Schema.optionalKey(Schema.Boolean),
 });
 
 export type ScoreRequest = typeof ScoreRequest.Type;
+
+/** How one scoring boots: from the base's snapshot, or warming one, or neither. */
+export type BootPlan = Pick<ScoreRequest, "snapshot" | "warm">;
+
+/**
+ * How each scoring of `bases` boots: from the snapshot `kept` for its base;
+ * with none, the first scoring of a base warms one and the others boot the
+ * image, so a base gets one snapshot.
+ */
+export const bootPlans = (bases: ReadonlyArray<string>, kept: ReadonlyMap<string, string>): ReadonlyArray<BootPlan> => {
+  const warming = new Set<string>();
+
+  return bases.map((base) => {
+    const snapshot = kept.get(base);
+
+    if (snapshot !== undefined) {
+      return { snapshot };
+    }
+
+    if (warming.has(base)) {
+      return {};
+    }
+
+    warming.add(base);
+
+    return { warm: true };
+  });
+};
 
 /** What the container is told: no credentials, which the sandbox's egress adds. */
 export const AttemptRef = Schema.Struct({
@@ -371,6 +403,36 @@ export const ScoreReport = Schema.Struct({
 });
 
 export type ScoreReport = typeof ScoreReport.Type;
+
+/** The sandbox's answer to a ScoreRequest: the report, and beside it what the tree keeps out of the report, news of the base's snapshot. */
+export const ScoreAnswer = Schema.Struct({
+  ...ScoreReport.fields,
+  /** The snapshot this scoring warmed: boot the base's later scorings from it. */
+  snapshot: Schema.optionalKey(Schema.String),
+  /** The snapshot sent did not restore, or its container failed: the scoring booted the image instead. */
+  stale: Schema.optionalKey(Schema.Boolean),
+});
+
+export type ScoreAnswer = typeof ScoreAnswer.Type;
+
+/**
+ * What the tree does with the snapshot it keeps for a base (`kept`) after a
+ * scoring that booted from `given` and answered `news` (none when it
+ * `failed`): keep the one the scoring warmed; forget `given` when it went
+ * stale or the scoring failed, unless another scoring has replaced it since.
+ */
+export const snapshotAfter = (
+  kept: string | undefined,
+  given: string | undefined,
+  failed: boolean,
+  news: Pick<ScoreAnswer, "snapshot" | "stale"> | undefined,
+): { readonly kind: "keep"; readonly id: string } | { readonly kind: "forget" } | { readonly kind: "leave" } => {
+  if (news?.snapshot !== undefined) {
+    return { kind: "keep", id: news.snapshot };
+  }
+
+  return given !== undefined && kept === given && (failed || news?.stale === true) ? { kind: "forget" } : { kind: "leave" };
+};
 
 /** The report with `phases` (the sandbox's, measured before the scorer ran) ahead of its own. */
 export const phasesFirst = (phases: ReadonlyArray<ScorePhase>, report: ScoreReport): ScoreReport => ({ ...report, phases: [...phases, ...(report.phases ?? [])] });
