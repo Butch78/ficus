@@ -157,8 +157,13 @@ deadline 2026-10-14.
   containers via local Docker. Deploy only to verify what local can't (Artifacts, egress interception).
 - Debug from telemetry, not re-runs: `scripts/telemetry [minutes] [worker] [limit]` (Workers
   Observability; every Worker has logs + traces on). Egress logs one line per decision.
+- Ficus hosts itself: the source of truth is the prod tree `ficus` in organization `ficus`. A change is an attempt
+  made with `scripts/attempt` (`task`, `start`, `submit`, `accept`, `mirror`), not a GitHub pull request. GitHub
+  `main` is a fast-forward-only mirror (a ruleset blocks force pushes and deletion), kept for the public source
+  link and a second run of `ci.yml`. Write a task's intent as the change itself: the Clef judge sees only the task
+  and the diff.
 - CI/CD (alchemy's guide): `.github/workflows/ci.yml` (infra typecheck/lint/test,
-  actionlint + zizmor) and `deploy.yml` (`pr-<n>` stage per same-repo PR with a GitHub.Comment and the
+  actionlint + zizmor; on each mirror push) and `deploy.yml` (`pr-<n>` stage per same-repo PR, if any, with a GitHub.Comment and the
   e2e smoke, destroyed on close; `prod` is Ficus's own release, never from GitHub). GitHub-HOSTED runners on purpose: public repo,
   so no self-hosted runners. Credentials as code: `infra/bootstrap.run.ts` (stage `bootstrap`, run
   once from a shell with an API-Tokens-Write credential + GITHUB_TOKEN) mints `ficus-ci` and writes

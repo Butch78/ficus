@@ -120,9 +120,9 @@ Credentials go in `~/.config/ficus/.env` (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_A
 
 ## CI/CD
 
-- Every pull request and push: `ci.yml` (infra typecheck, lint, tests; actionlint and zizmor on the
-  workflows).
-- Deploys follow [alchemy's CI guide](https://alchemy.run/guides/ci/): each pull request gets its own
+- Every push to the `main` mirror (and any pull request): `ci.yml` (infra typecheck, lint, tests;
+  actionlint and zizmor on the workflows).
+- Deploys follow [alchemy's CI guide](https://alchemy.run/guides/ci/): a pull request, if any, gets its own
   `pr-<n>` stage (Api and web UI, with a comment linking both, and end-to-end smoke tests of each),
   destroyed when it closes. `prod` is not deployed from GitHub: releasing a node on Ficus's own tree
   runs its `[deploy]`.
@@ -131,6 +131,12 @@ Credentials go in `~/.config/ficus/.env` (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_A
   the repository secrets. Until it has run, deploys skip.
 
 ## Self-hosting
+
+Ficus hosts itself: the source of truth is the prod tree `ficus` in organization `ficus`. A change is an
+attempt made with `scripts/attempt` (`task`, `start`, `submit`, `accept`, `mirror`), not a GitHub pull
+request. GitHub `main` is a fast-forward-only mirror (a ruleset blocks force pushes and deletion), kept for
+the public source link and a second run of `ci.yml`. Write a task's intent as the change itself: the Clef
+judge sees only the task and the diff.
 
 [docs/self-hosting.md](docs/self-hosting.md): what it takes for Ficus to host Ficus instead of GitHub,
 and the order to get there.
