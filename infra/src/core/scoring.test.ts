@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import ficusToml from "../../../ficus.toml" with { type: "text" };
 import {
   type CheckOutcome,
@@ -14,7 +15,9 @@ import {
   JUDGE_DIFF_CHARS,
   MAX_FETCH_HOSTS,
   passAt,
+  phasesFirst,
   scoreOf,
+  ScoreReport,
 } from "./scoring.ts";
 
 /** The root's config from `ficus.toml` text, as the scorer reads it. */
@@ -160,6 +163,15 @@ describe("a report", () => {
     const score = ok(scoreOf({ checks: [outcome("test", true), outcome("a", true, 900), outcome("b", true, 700)], cost: 4, touched: [] }));
 
     expect([score.checks_total, score.confidence]).toEqual([3, 800]);
+  });
+
+  test("says where the time went before the checks, the sandbox's phases first; one stored without still decodes", () => {
+    const stored = ok(Schema.decodeUnknownResult(ScoreReport)({ checks: [outcome("a", true)], cost: 1 }));
+    const scored = { ...stored, phases: [{ name: "clone", millis: 30 }] };
+
+    expect(stored.phases).toBeUndefined();
+    expect(phasesFirst([{ name: "sandbox", millis: 900 }], scored).phases).toEqual([{ name: "sandbox", millis: 900 }, { name: "clone", millis: 30 }]);
+    expect(ok(Schema.decodeUnknownResult(ScoreReport)(scored))).toEqual(scored);
   });
 
   test("a long diff is cut at a line end for the judges", () => {

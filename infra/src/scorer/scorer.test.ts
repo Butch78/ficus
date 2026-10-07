@@ -119,6 +119,8 @@ describe("scoring", () => {
     const { report } = await ok(check(prepared.workdir));
 
     expect(passes(report)).toBe(true);
+    expect(report.phases?.map((phase) => phase.name)).toEqual(["clone", "restore", "fetch"]);
+    expect(report.phases?.every((phase) => phase.millis >= 0)).toBe(true);
   });
 
   test("a failed fetch fails every check with its output", async () => {

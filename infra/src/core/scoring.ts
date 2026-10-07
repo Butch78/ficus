@@ -355,15 +355,25 @@ export const CheckOutcome = Schema.Struct({
 
 export type CheckOutcome = typeof CheckOutcome.Type;
 
+/** A step the scoring ran before its first check, and how long it took where it ran. */
+export const ScorePhase = Schema.Struct({ name: Schema.String, millis: Schema.Number });
+
+export type ScorePhase = typeof ScorePhase.Type;
+
 export const ScoreReport = Schema.Struct({
   checks: Schema.Array(CheckOutcome),
   /** Lines added plus deleted between base and head, outside `LOCKED_PATHS`; a binary file counts as one. */
   cost: Schema.Int,
   /** Paths changed between base and head, outside `LOCKED_PATHS`. */
   touched: Schema.optionalKey(Schema.Array(Schema.String)),
+  /** The steps before the first check, in order: the sandbox's, then `ficus-scorer`'s. Absent from reports stored before. */
+  phases: Schema.optionalKey(Schema.Array(ScorePhase)),
 });
 
 export type ScoreReport = typeof ScoreReport.Type;
+
+/** The report with `phases` (the sandbox's, measured before the scorer ran) ahead of its own. */
+export const phasesFirst = (phases: ReadonlyArray<ScorePhase>, report: ScoreReport): ScoreReport => ({ ...report, phases: [...phases, ...(report.phases ?? [])] });
 
 /** The report as a score: every check counts, judges' confidence averaged. */
 export const scoreOf = (report: ScoreReport): Result.Result<Score, TreeError> => {

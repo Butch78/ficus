@@ -58,7 +58,7 @@ import * as Schema from "effect/Schema";
 import * as DecisionModel from "effect/ai/DecisionModel";
 import { Clef } from "../clef/clef.ts";
 import { DeployPrepared, DeployReport, DeployRequest } from "../core/deploy.ts";
-import { RebaseReport, RebaseRequest, ScoreRequest } from "../core/scoring.ts";
+import { phasesFirst, RebaseReport, RebaseRequest, ScoreRequest } from "../core/scoring.ts";
 import { TOKEN_PLACEHOLDER } from "./deploy-token.ts";
 import type { EgressProps } from "./egress.ts";
 import { type CheckOutcome, CheckRun, judged, judging } from "./judges.ts";
@@ -578,8 +578,13 @@ export class Sandbox extends DurableObject<Bindings> {
     const repo = repoOf(score.remote);
     const attempt = JSON.stringify({ remote: score.remote, base: score.base, head: score.head, checks: score.checks ?? [] });
 
+    const started = Date.now();
+
     say(stepLine("sandbox", "active"));
     yield* this.#ready().pipe(Effect.tapError((error) => Effect.sync(() => say(stepLine("sandbox", "error", error.message)))));
+
+    const ready = Date.now();
+
     yield* this.#route(repo.host, { mode: "artifacts", repos: [{ repoPath: repo.repoPath, token: score.token }] });
 
     for (const host of NIX_HOSTS) {
@@ -596,6 +601,11 @@ export class Sandbox extends DurableObject<Bindings> {
     }
 
     say(stepLine("sandbox", "complete"));
+
+    const sandbox = [
+      { name: "container", millis: ready - started },
+      { name: "egress", millis: Date.now() - ready },
+    ];
 
     const prepared = yield* this.#exec([SCORER, "prepare", attempt], say);
     const { workdir, hosts } = yield* this.#json(prepared, Prepared, "prepare");
@@ -618,7 +628,8 @@ export class Sandbox extends DurableObject<Bindings> {
     }
 
     const checked = yield* this.#exec([SCORER, "check", workdir], say);
-    const run = yield* this.#json(checked, CheckRun, "check");
+    const checkRun = yield* this.#json(checked, CheckRun, "check");
+    const run = { ...checkRun, report: phasesFirst(sandbox, checkRun.report) };
 
     yield* Effect.promise(() => this.#container().destroy());
 

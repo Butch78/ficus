@@ -14,6 +14,7 @@
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -36,6 +37,7 @@ import {
   type RebaseRef,
   type RebaseReport,
   type RootChecks,
+  ScorePhase,
 } from "../core/scoring.ts";
 import { Oid } from "../core/values.ts";
 import { git, removeAll, run, ScoreError, succeeds } from "./shell.ts";
@@ -60,6 +62,8 @@ const Prepared = Schema.Struct({
   fetch: FetchSpec,
   /** Set by `fetch`: the reason every check fails when the root's devenv did not build or its fetch failed; `""` when all went well. */
   fetched: Schema.optional(Schema.String),
+  /** The steps `prepare` and `fetch` ran, timed, for the report. */
+  phases: Schema.Array(ScorePhase),
 });
 
 type Prepared = typeof Prepared.Type;
@@ -78,10 +82,15 @@ const progress = (step: ScoreStep, state: StepState, item?: string, detail?: str
     process.stderr.write(PROGRESS_PREFIX + stepLine(step, state, item, detail));
   });
 
-/** Run `work` as `step`: active before, complete or error after. */
-const stepped = <A, R>(step: ScoreStep, work: Effect.Effect<A, ScoreError, R>) =>
+/** Run `work` as `step`: active before, complete or error after; timed into `phases` when given. */
+const stepped = <A, R>(step: ScoreStep, work: Effect.Effect<A, ScoreError, R>, phases?: Array<ScorePhase>) =>
   progress(step, "active").pipe(
-    Effect.andThen(work),
+    Effect.andThen(Effect.timed(work)),
+    Effect.map(([took, value]) => {
+      phases?.push({ name: step, millis: Duration.toMillis(took) });
+
+      return value;
+    }),
     Effect.tap(() => progress(step, "complete")),
     Effect.tapError((error) => progress(step, "error", undefined, error.message)),
   );
@@ -125,6 +134,7 @@ export const prepare = Effect.fn("Scorer.prepare")(function* (root: string, atte
   const workdir = join(root, attempt.head);
   const repo = join(workdir, "attempt");
   const [base, head] = [attempt.base, attempt.head];
+  const phases: Array<ScorePhase> = [];
 
   yield* removeAll(workdir);
   yield* Effect.tryPromise({ try: () => mkdir(workdir, { recursive: true }), catch: io("making the workdir") });
@@ -139,6 +149,7 @@ export const prepare = Effect.fn("Scorer.prepare")(function* (root: string, atte
         return yield* new ScoreError({ kind: "NotDescendant", message: "head does not descend from base" });
       }
     }),
+    phases,
   );
 
   // Fail now, while it is cheap, if the root defines nothing to run.
@@ -160,9 +171,10 @@ export const prepare = Effect.fn("Scorer.prepare")(function* (root: string, atte
 
       return hasDevenv;
     }),
+    phases,
   );
 
-  yield* writePrepared(workdir, { attempt, in_devenv: inDevenv, fetch });
+  yield* writePrepared(workdir, { attempt, in_devenv: inDevenv, fetch, phases });
 
   return { workdir, hosts: fetch.hosts ?? [] } satisfies PreparedAttempt;
 });
@@ -189,9 +201,12 @@ const whyNotBuilt = Effect.fn("Scorer.whyNotBuilt")(function* (repo: string, der
 export const fetch = Effect.fn("Scorer.fetch")(function* (workdir: string) {
   const prepared = yield* readPrepared(workdir);
   const repo = join(workdir, "attempt");
+  const phases = [...prepared.phases];
   let fetched = "";
 
   if (prepared.in_devenv) {
+    const started = Date.now();
+
     yield* progress("devenv", "active");
 
     const built = yield* run(repo, ["devenv", "--quiet", "shell", "--", "true"], DEVENV_PREPARE_SECS);
@@ -204,6 +219,8 @@ export const fetch = Effect.fn("Scorer.fetch")(function* (workdir: string) {
 
       fetched = `the root's devenv shell did not build:\n${built.tail}${why}`;
     }
+
+    phases.push({ name: "devenv", millis: Date.now() - started });
   }
 
   const command = prepared.fetch.run;
@@ -214,13 +231,14 @@ export const fetch = Effect.fn("Scorer.fetch")(function* (workdir: string) {
     const ran = yield* run(repo, inShell(prepared.in_devenv, command), prepared.fetch.timeout_secs ?? FETCH_DEFAULT_SECS);
 
     yield* progress("fetch", ran.passed ? "complete" : "error");
+    phases.push({ name: "fetch", millis: ran.millis });
 
     if (!ran.passed) {
       fetched = `the root's fetch failed:\n${ran.tail}`;
     }
   }
 
-  yield* writePrepared(workdir, { ...prepared, fetched });
+  yield* writePrepared(workdir, { ...prepared, fetched, phases });
 });
 
 const runChecks = Effect.fn("Scorer.runChecks")(function* (repo: string, specs: ReadonlyArray<readonly [CheckOrigin, CheckSpec]>, inDevenv: boolean) {
@@ -297,7 +315,7 @@ export const check = Effect.fn("Scorer.check")(function* (workdir: string) {
 
   yield* removeAll(workdir);
 
-  return { report: { checks, cost, touched }, judges, diff } satisfies CheckRun;
+  return { report: { checks, cost, touched, phases: prepared.phases }, judges, diff } satisfies CheckRun;
 });
 
 /** All three phases back to back, for callers with no network policy to switch. */
