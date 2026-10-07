@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Work on Ficus in Ficus: a task, an attempt at it, scoring, accept, and the
+# GitHub mirror, from a terminal.
+#
+#   scripts/attempt task "<intent>"             new task; prints its id
+#   scripts/attempt start <task> [dir]          fork the head; clone the attempt into dir
+#                                               (default ./ficus-a<attempt>); plain `git push` works there
+#   scripts/attempt submit [dir]                freeze the attempt and wait for its score
+#   scripts/attempt status <attempt>            state and score report
+#   scripts/attempt accept <task>               accept the task's best attempt
+#   scripts/attempt mirror [dir]                fast-forward GitHub main to the head (dir must hold it)
+#
+# FICUS_API (default prod), FICUS_ORG and FICUS_TREE (default ficus), and an
+# API key for the organization in FICUS_KEY or the file FICUS_KEY_FILE.
+# FICUS_AGENT names who made the attempt (default: your git name, or claude in
+# a Claude Code session).
+set -euo pipefail
+API=${FICUS_API:-https://ficus-api-prod.fruitcards.workers.dev}
+ORG=${FICUS_ORG:-ficus}
+TREE=${FICUS_TREE:-ficus}
+GITHUB=${FICUS_GITHUB:-https://github.com/Butch78/ficus}
+KEY=${FICUS_KEY:-$(cat "${FICUS_KEY_FILE:?set FICUS_KEY or FICUS_KEY_FILE}")}
+# Who made the attempt: a Claude Code session says so, rather than borrowing its user's git name.
+if [ -n "${CLAUDECODE:-}" ]; then AGENT=${FICUS_AGENT:-claude}; else AGENT=${FICUS_AGENT:-$(git config user.name || whoami)}; fi
+
+curl() { command curl --connect-timeout 20 --max-time 300 "$@"; }
+call() { # method path [body]
+  local args=(-s -X "$1" -H "x-api-key: $KEY" -H "content-type: application/json" -H "Origin: $API")
+  [ -n "${3:-}" ] && args+=(-d "$3")
+  curl "${args[@]}" "$API/v1/orgs/$ORG/trees/$TREE$2"
+}
+attempt_of() { git -C "${1:-.}" config ficus.attempt || { echo "${1:-.} is not an attempt clone" >&2; exit 1; }; }
+report() { call GET "/attempts/$1" | jq -c '{state: .attempt.state, cost: .report.cost, checks: [.report.checks[]? | {name, passed}]}'; }
+
+cmd=${1:-}; shift || true
+case "$cmd" in
+  task)
+    call POST /tasks "$(jq -n --arg intent "${1:?intent}" '{intent: $intent}')" | jq -r '.task // error(tostring)'
+    ;;
+  start)
+    out=$(call POST "/tasks/${1:?task}/attempts" "$(jq -n --arg agent "$AGENT" '{agent: $agent}')")
+    id=$(jq -r '.attempt // error(tostring)' <<<"$out")
+    dir=${2:-ficus-a$id}
+    token=$(jq -r .token <<<"$out")
+    remote=$(jq -r .remote <<<"$out")
+    # A fresh fork can take a few seconds to answer.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      git -c http.extraHeader="Authorization: Bearer $token" clone -q "$remote" "$dir" 2>/dev/null && break
+      rm -rf "$dir"; sleep 3
+    done
+    [ -d "$dir" ] || { echo "clone of attempt $id failed" >&2; exit 1; }
+    # Scoped to the attempt's URL, so a push to GitHub (mirror) never carries it.
+    # The token is the attempt's alone and is revoked on submit.
+    git -C "$dir" config "http.$remote.extraHeader" "Authorization: Bearer $token"
+    git -C "$dir" config ficus.attempt "$id"
+    echo "attempt $id in $dir"
+    ;;
+  submit)
+    dir=${1:-.}; id=$(attempt_of "$dir")
+    git -C "$dir" push -q origin HEAD
+    call POST "/attempts/$id/submit" | jq -c .
+    for _ in $(seq 1 180); do
+      state=$(call GET "/attempts/$id" | jq -c .attempt.state)
+      case "$state" in *Checking*|*Rebasing*) sleep 10 ;; *) report "$id"; exit 0 ;; esac
+    done
+    echo "attempt $id still checking after 30 minutes" >&2; exit 1
+    ;;
+  status)
+    report "${1:?attempt}"
+    ;;
+  accept)
+    call POST "/tasks/${1:?task}/accept" | jq -c .
+    ;;
+  mirror)
+    dir=${1:-.}
+    head=$(call GET "" | jq -r '.nodes[.head | tostring].commit')
+    [ "$(git -C "$dir" rev-parse HEAD)" = "$head" ] || { echo "$dir is not at the head ($head)" >&2; exit 1; }
+    git -C "$dir" push "$GITHUB" HEAD:main
+    ;;
+  *)
+    sed -n '2,16p' "$0" >&2; exit 1
+    ;;
+esac
