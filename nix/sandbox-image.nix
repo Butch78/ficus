@@ -61,6 +61,28 @@ let
     bun
   ];
 
+  # What Ficus's own devenv shell needs (devenv.nix `packages`, with bun from
+  # nix/packages.nix), kept in the image's store and database so scoring an
+  # attempt at Ficus downloads next to nothing before its checks run. mkShell's
+  # inputDerivation references every input with the outputs (dev, man) and the
+  # stdenv a shell builds against; pkgs.path is the patched nixpkgs devenv
+  # evaluates. Keep the list in step with devenv.nix.
+  ficus = import ./packages.nix { inherit pkgs; };
+  devenvInputs =
+    (pkgs.mkShell {
+      packages = with pkgs; [
+        just
+        ficus.bun
+        nodejs
+        actionlint
+        zizmor
+        git
+        jq
+        curl
+        skopeo
+      ];
+    }).inputDerivation;
+
   profile = pkgs.buildEnv {
     name = "ficus-sandbox-profile";
     paths = packages;
@@ -93,6 +115,10 @@ let
     for tool in ficus-scorer ficus-trust-egress ficus-entrypoint; do
       ln -s ${tools}/bin/$tool $out/usr/local/bin/$tool
     done
+
+    # Never read: they keep the shell's inputs and its nixpkgs in the image's closure.
+    ln -s ${devenvInputs} $out/usr/local/ficus-devenv-inputs
+    ln -s ${builtins.storePath (toString pkgs.path)} $out/usr/local/ficus-devenv-nixpkgs
 
     ln -s ${pkgs.bashInteractive}/bin/bash $out/bin/sh
     ln -s ${pkgs.coreutils-full}/bin/env $out/usr/bin/env
