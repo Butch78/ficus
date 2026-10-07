@@ -8,7 +8,7 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import { scoreOf, type AttemptRef, type CheckSpec } from "../core/scoring.ts";
 import { Oid } from "../core/values.ts";
-import { check, deploy, deployPrepare, failedDerivation, fetch, numstatCost, prepare, rebase, score } from "./scorer.ts";
+import { check, deploy, deployPrepare, failedDerivation, fetch, numstatCost, prepare, pushBranch, rebase, score } from "./scorer.ts";
 import { isInputProblem, type ScoreError, tail, TAIL_CHARS } from "./shell.ts";
 
 const scratch: Array<string> = [];
@@ -307,6 +307,10 @@ describe("rebasing", () => {
     const files = gitIn(grown.fresh, ["ls-tree", "--name-only", "main"]);
 
     expect(files.includes("auth.rs") && files.includes("search.rs")).toBe(true);
+  });
+
+  test("pushes to the branch the onto repo's HEAD names, else to onto_branch", () => {
+    expect([pushBranch("refs/remotes/origin/deploys\n", "main"), pushBranch("", "main")]).toEqual(["deploys", "main"]);
   });
 
   test("a conflicting rebase names the paths, and pushes nothing", async () => {

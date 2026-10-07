@@ -53,6 +53,11 @@ case "$cmd" in
     # The token is the attempt's alone and is revoked on submit.
     git -C "$dir" config "http.$remote.extraHeader" "Authorization: Bearer $token"
     git -C "$dir" config ficus.attempt "$id"
+    head=$(call GET "" | jq -r '.nodes[.head | tostring].commit')
+    if [ "$(git -C "$dir" rev-parse HEAD)" != "$head" ]; then
+      echo "warning: the clone checked out $(git -C "$dir" rev-parse HEAD), not the head $head; resetting to it" >&2
+      git -C "$dir" reset -q --hard "$head"
+    fi
     echo "attempt $id in $dir"
     ;;
   submit)

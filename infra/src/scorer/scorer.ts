@@ -326,6 +326,9 @@ export const fetchHosts = Effect.fn("Scorer.fetchHosts")(function* (checkout: st
   return Result.isSuccess(root) ? (root.success.fetch?.hosts ?? []) : [];
 });
 
+/** The branch a clone's `refs/remotes/origin/HEAD` names, or `fallback` when it names none. */
+export const pushBranch = (originHead: string, fallback: string) => originHead.trim().replace(/^refs\/remotes\/origin\//, "") || fallback;
+
 /**
  * Replay the commits of `from` after `from_base` onto `onto_head`, and push
  * the result to `onto`'s branch. Both remotes are reached through the
@@ -378,7 +381,9 @@ export const rebase = Effect.fn("Scorer.rebase")(function* (root: string, job: R
 
   const commit = yield* Schema.decodeUnknownEffect(Oid)((yield* git(repo, "rev-parse", ["rev-parse", "HEAD"])).trim()).pipe(Effect.mapError(io("reading the rebased head")));
 
-  yield* git(repo, "push", ["push", "--quiet", "origin", `HEAD:refs/heads/${job.onto_branch}`]);
+  const originHead = yield* git(repo, "read the onto HEAD", ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]).pipe(Effect.orElseSucceed(() => ""));
+
+  yield* git(repo, "push", ["push", "--quiet", "origin", `HEAD:refs/heads/${pushBranch(originHead, job.onto_branch)}`]);
   yield* removeAll(workdir);
 
   return { commit, replayed } satisfies RebaseReport;
