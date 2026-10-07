@@ -39,7 +39,7 @@ export default async function TreePage({ params, searchParams }: Props) {
   const tasks = Object.values(tree.tasks).toSorted((a, b) => b.id - a.id);
   const open = tasks.filter((task) => task.state === "Open");
   const races = await Promise.all(open.map((task) => load(Api.showTask(org, name, task.id))));
-  const accepted = tasks.flatMap((task) => (task.state === "Open" ? [] : [{ task, ...task.state.Done }]));
+  const accepted = tasks.flatMap((task) => (task.state === "Open" || "Closed" in task.state ? [] : [{ task, ...task.state.Done }]));
   const head = tree.nodes[String(tree.head)];
   const headAttempt = head?.accepted_from === null || head === undefined ? undefined : tree.attempts[String(head.accepted_from)];
   const inFlight = races.some((race) => race.attempts.some(({ standing }) => standing === "Working" || standing === "Checking"));

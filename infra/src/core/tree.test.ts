@@ -304,6 +304,43 @@ describe("the tree", () => {
     expect([entry?.reason, entry?.score]).toEqual([{ Abandoned: { note: "lost interest" } }, passing(1)]);
   });
 
+  test("a task closes with a note once none of its attempts is working, checking or scored", () => {
+    const g = grow();
+    const task = g.task("intent");
+    const attempt = g.attempt(task, "a");
+
+    expect(refusal(T.closeTask(g.get(), TaskId.make(99), "no such task"))).toBe("UnknownTask");
+    expect(refusal(T.closeTask(g.get(), task, "working"))).toBe("TaskBusy");
+    g.set(ok(T.submit(g.get(), attempt, oid("a"))));
+    expect(refusal(T.closeTask(g.get(), task, "checking"))).toBe("TaskBusy");
+    g.set(ok(T.scored(g.get(), attempt, passing(1), [])));
+    expect(refusal(T.closeTask(g.get(), task, "scored"))).toBe("TaskBusy");
+    g.set(ok(T.abandon(g.get(), attempt, "gave up")));
+    g.set(ok(T.closeTask(g.get(), task, "not needed")));
+
+    expect(T.task(g.get(), task)?.state).toEqual({ Closed: { note: "not needed" } });
+    expect(T.openTasks(g.get())).toEqual([]);
+    expect(refusal(T.closeTask(g.get(), task, "again"))).toBe("TaskClosed");
+    expect(refusal(T.start(g.get(), task, "late"))).toBe("TaskClosed");
+    expect(ok(T.decodeTree(JSON.parse(JSON.stringify(g.get()))))).toEqual(g.get());
+  });
+
+  test("a task being rebased, or done, does not close", () => {
+    const g = grow();
+    const [one, other] = [g.task("one"), g.task("other")];
+    const [first, behind] = [g.attempt(one, "a"), g.attempt(other, "b")];
+
+    g.scored(first, oid("a"), passing(1));
+    g.scored(behind, oid("b"), passing(1));
+    g.accept(one);
+    expect(refusal(T.closeTask(g.get(), one, "done"))).toBe("TaskDone");
+
+    const started = ok(T.rebaseStart(g.get(), behind));
+
+    g.set(ok(T.abandon(started.tree, behind, "replaced by its rebase")));
+    expect(refusal(T.closeTask(g.get(), other, "rebasing"))).toBe("TaskBusy");
+  });
+
   test("a submitted attempt waits for its checks and cannot be accepted yet", () => {
     const g = grow();
     const task = g.task("intent");

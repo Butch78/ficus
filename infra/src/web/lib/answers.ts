@@ -59,6 +59,7 @@ export type Attempt = typeof Attempt.Type;
 export const TaskState = Schema.Union([
   Schema.Literal("Open"),
   Schema.Struct({ Done: Schema.Struct({ attempt: Id, node: Id }) }),
+  Schema.Struct({ Closed: Schema.Struct({ note: Schema.String }) }),
 ]);
 
 /** A task's own check (src/core/scoring.ts `CheckSpec`): run after the root's. */

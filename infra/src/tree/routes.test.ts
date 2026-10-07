@@ -8,6 +8,7 @@ describe("the tree's routes", () => {
       [{ kind: "behind", id: "", action: "" }, "behind"],
       [{ kind: "tasks", id: "4", action: "" }, "tasks/:id"],
       [{ kind: "tasks", id: "4", action: "agents" }, "tasks/:id/agents"],
+      [{ kind: "tasks", id: "4", action: "close" }, "tasks/:id/close"],
       [{ kind: "attempts", id: "7", action: "agent" }, "attempts/:id/agent"],
       [{ kind: "attempts", id: "7", action: "diff" }, "attempts/:id/:read"],
       [{ kind: "nodes", id: "0", action: "file" }, "nodes/:id/:read"],

@@ -57,6 +57,8 @@ export const TreeErrorKind = Schema.Literals([
   "UnknownAttempt",
   "UnknownNode",
   "TaskDone",
+  "TaskClosed",
+  "TaskBusy",
   "NotWorking",
   "NotChecking",
   "NotOpen",

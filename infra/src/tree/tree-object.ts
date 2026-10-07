@@ -225,6 +225,8 @@ export class TreeObject extends DurableObject<Bindings> {
         return yield* this.#accept(yield* idOf(TaskId, id, "task"));
       case "tasks/:id/agents":
         return yield* Agents.start(this.#agentsHost(), name, yield* idOf(TaskId, id, "task"), request);
+      case "tasks/:id/close":
+        return yield* this.#closeTask(yield* idOf(TaskId, id, "task"), yield* decodeBody(AbandonBody, request));
       case "attempts/:id/submit":
         return yield* this.#submit(yield* idOf(AttemptId, id, "attempt"));
       case "attempts/:id/abandon":
@@ -760,6 +762,12 @@ export class TreeObject extends DurableObject<Bindings> {
     yield* this.#save(abandoned);
 
     return json({ attempt, revoke_failures: yield* this.#revokeAll(abandoned, [attempt]) });
+  });
+
+  readonly #closeTask = Effect.fn("Tree.closeTask")(function* (this: TreeObject, task: TaskId, body: typeof AbandonBody.Type) {
+    yield* this.#save(yield* fromTree(T.closeTask(yield* this.#tree(), task, body.note)));
+
+    return json({ task });
   });
 
   /** Start a behind attempt again from the head, in a fresh repo; an agent's attempt retries with an agent. */

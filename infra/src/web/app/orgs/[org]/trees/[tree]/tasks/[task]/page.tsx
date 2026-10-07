@@ -139,7 +139,7 @@ export default async function TaskPage({ params, searchParams }: Props) {
       </Text>
       <OperationOutcome org={org} op={op} trace={trace} error={error} />
 
-      {race.task.state === "Open" ? null : (
+      {race.task.state === "Open" || "Closed" in race.task.state ? null : (
         <Banner
           title="Accepted"
           description={`Attempt ${race.task.state.Done.attempt} became node ${race.task.state.Done.node}, the head of the trunk.`}

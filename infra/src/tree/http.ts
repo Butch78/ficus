@@ -30,6 +30,8 @@ const TREE_STATUS: Readonly<Record<TreeErrorKind, number>> = {
   UnknownNode: 404,
   NotReserved: 409,
   TaskDone: 409,
+  TaskClosed: 409,
+  TaskBusy: 409,
   NotWorking: 409,
   NotChecking: 409,
   NotOpen: 409,

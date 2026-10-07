@@ -57,7 +57,12 @@ export const Node = Schema.Struct({
 
 export type Node = typeof Node.Type;
 
-export const TaskState = Schema.Union([Schema.Literal("Open"), Schema.Struct({ Done: Schema.Struct({ attempt: AttemptId, node: NodeId }) })]);
+export const TaskState = Schema.Union([
+  Schema.Literal("Open"),
+  Schema.Struct({ Done: Schema.Struct({ attempt: AttemptId, node: NodeId }) }),
+  /** Closed by its owner without an accept. */
+  Schema.Struct({ Closed: Schema.Struct({ note: Schema.String }) }),
+]);
 
 export type TaskState = typeof TaskState.Type;
 
@@ -364,7 +369,11 @@ const openTask = (tree: Tree, id: TaskId) => {
     return refuse("UnknownTask", `no task ${id}`);
   }
 
-  return found.state === "Open" ? Result.succeed(found) : refuse("TaskDone", `task ${id} is already done`);
+  if (found.state === "Open") {
+    return Result.succeed(found);
+  }
+
+  return "Done" in found.state ? refuse("TaskDone", `task ${id} is already done`) : refuse("TaskClosed", `task ${id} is closed: ${found.state.Closed.note}`);
 };
 
 const checksRefused = (error: ChecksError) => new TreeError({ kind: "TaskChecks", message: `task checks: ${error.message}` });
@@ -382,6 +391,19 @@ export const taskNew = (tree: Tree, intent: string, checks: ReadonlyArray<CheckS
     const id = TaskId.make(raw);
 
     return { tree: withTask(taken, { id, intent, state: "Open", checks: [...checks], retries: 0 }), task: id };
+  });
+
+/** Close `task` without accepting it, recording `note`: only once none of its attempts is working, checking, rebasing or scored. */
+export const closeTask = (tree: Tree, taskId: TaskId, note: string) =>
+  Result.gen(function* () {
+    const owner = yield* openTask(tree, taskId);
+    const live = attemptsOf(tree, taskId).filter(isOpen);
+
+    if (live.length > 0) {
+      return yield* refuse("TaskBusy", `task ${taskId} still has open attempts: ${live.map((entry) => entry.id).join(", ")}`);
+    }
+
+    return withTask(tree, { ...owner, state: { Closed: { note } } });
   });
 
 /** Start an attempt at `task` from the current head. */

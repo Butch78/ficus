@@ -9,6 +9,7 @@ describe("treeRoute", () => {
       tree: "site",
       rest: "/tasks/1/attempts",
     });
+    expect(treeRoute("/v1/orgs/acme/trees/site/tasks/1/close")?.rest).toBe("/tasks/1/close");
   });
 
   test("refuses anything that is not a tree path", () => {

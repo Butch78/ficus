@@ -38,6 +38,7 @@ deadline 2026-10-14.
   `GET /trees/<t>/attempts/<id>` (state + report) · `POST /trees/<t>/tasks/<id>/accept` ·
   `POST /trees/<t>/accept` (oldest ready task; both set the alarm that rebases the behind attempts) ·
   `GET /trees/<t>/behind` · `POST /trees/<t>/attempts/<id>/{retry,abandon}` ·
+  `POST /trees/<t>/tasks/<id>/close {note}` (closes a task with no open attempt, unaccepted; 409 otherwise) ·
   `POST /trees/<t>/release {node?}` · `GET /trees/<t>/release` · `GET /trees/<t>` ·
   `POST /trees/<t>/graft {source, branch?}` (imports an outside commit into `<t>-g<id>` as the new head;
   open attempts become behind and are rebased; `.github/workflows/graft.yml` follows GitHub's main) ·

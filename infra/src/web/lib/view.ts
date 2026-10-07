@@ -87,7 +87,7 @@ export const tasks = (tree: Tree): ReadonlyArray<TaskView> => {
     .map((task) => ({
       task,
       attempts: attempts.filter((attempt) => attempt.task === task.id).toSorted((a, b) => a.id - b.id),
-      accepted: task.state === "Open" ? undefined : task.state.Done.node,
+      accepted: task.state === "Open" || "Closed" in task.state ? undefined : task.state.Done.node,
     }));
 };
 
