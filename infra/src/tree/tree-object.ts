@@ -17,7 +17,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { change, parsePath, parseRef, Subject, view } from "../core/browse.ts";
 import { applyStep, closeLedger, CONTENT_TYPE as PROGRESS, emptyLedger, type InitStep, Ledger, outcomeBody, outcomeLine, parseLine, stepLine, type StepState, textOf } from "../core/progress.ts";
-import { type BootPlan, bootPlans, CheckSpec, RebaseReport, type RebaseRequest, ScoreAnswer, ScoreReport, scoreOf, type ScoreRequest, snapshotAfter } from "../core/scoring.ts";
+import { type BootPlan, bootPlans, CheckSpec, RebaseReport, type RebaseRequest, ScoreAnswer, ScoreReport, scoreOf, type ScoreRequest, SNAPSHOT_REFUSED_MS, snapshotAfter, warmable } from "../core/scoring.ts";
 import type { DeployParams } from "../core/deploy.ts";
 import * as T from "../core/tree.ts";
 import { AttemptId, NodeId, Oid, RepoName, TaskId, type TreeError } from "../core/values.ts";
@@ -69,6 +69,9 @@ const SANDBOX_RETRY_MS = 60_000;
 
 /** Where the tree keeps the container snapshot of a base node's commit, which scorings of attempts on it boot from. */
 const snapshotKey = (base: string) => `snapshot:${base}`;
+
+/** Until when (epoch ms) the tree asks for no warm boot: the platform refused to snapshot. */
+const SNAPSHOT_REFUSED_KEY = "snapshots:refused-until";
 
 const InitBody = Schema.Struct({ source: Schema.optional(Schema.String), branch: Schema.optional(Schema.String) });
 
@@ -1010,10 +1013,15 @@ export class TreeObject extends DurableObject<Bindings> {
     // The container snapshot kept for each base, warmed by its first scoring.
     const keys = jobs.map((job) => snapshotKey(job.base));
     const kept = new Map(yield* Effect.promise(() => this.ctx.storage.get<string>(keys)));
-    const plans = bootPlans(keys, kept);
+    const refusedUntil = yield* Effect.promise(() => this.ctx.storage.get<number>(SNAPSHOT_REFUSED_KEY));
+    const plans = bootPlans(keys, kept, warmable(refusedUntil, Date.now()));
     const outcomes = yield* Effect.forEach(jobs, (job, at) => this.#scoreOne(job, plans[at] ?? {}), { concurrency: "unbounded" });
 
     yield* this.#keepSnapshots(keys, kept, plans, outcomes);
+
+    if (outcomes.some((outcome) => outcome.kind === "report" && outcome.report.refused === true)) {
+      yield* Effect.promise(() => this.ctx.storage.put(SNAPSHOT_REFUSED_KEY, Date.now() + SNAPSHOT_REFUSED_MS));
+    }
 
     // Scoring awaited; other requests may have changed the tree since.
     let latest = yield* this.#load();
@@ -1029,7 +1037,7 @@ export class TreeObject extends DurableObject<Bindings> {
 
       if (outcome?.kind === "report") {
         // The snapshot news stays out of the stored report.
-        const { snapshot: _snapshot, stale: _stale, ...report } = outcome.report;
+        const { snapshot: _snapshot, stale: _stale, refused: _refused, ...report } = outcome.report;
 
         yield* Effect.promise(() => this.ctx.storage.put(`report:${job.attempt}`, JSON.stringify(report)));
 

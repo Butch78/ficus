@@ -63,7 +63,7 @@ import * as Schema from "effect/Schema";
 import * as DecisionModel from "effect/ai/DecisionModel";
 import { Clef } from "../clef/clef.ts";
 import { DeployPrepared, DeployReport, DeployRequest } from "../core/deploy.ts";
-import { phasesFirst, RebaseReport, RebaseRequest, ScoreRequest } from "../core/scoring.ts";
+import { phasesFirst, RebaseReport, RebaseRequest, ScoreRequest, snapshotRefused } from "../core/scoring.ts";
 import { TOKEN_PLACEHOLDER } from "./deploy-token.ts";
 import type { EgressProps } from "./egress.ts";
 import { type CheckOutcome, CheckRun, judged, judging } from "./judges.ts";
@@ -606,13 +606,13 @@ export class Sandbox extends DurableObject<Bindings> {
     );
 
     if (run.judges.length === 0) {
-      return { ...run.report, snapshot: taken, stale };
+      return { ...run.report, ...taken, stale };
     }
 
     say(stepLine("judge", "active"));
 
     return yield* this.#judge(run, score.intent).pipe(
-      Effect.map((report) => ({ ...report, snapshot: taken, stale })),
+      Effect.map((report) => ({ ...report, ...taken, stale })),
       Effect.tap(() => Effect.sync(() => say(stepLine("judge", "complete")))),
       Effect.tapError((error) => Effect.sync(() => say(stepLine("judge", "error", error.message)))),
     );
@@ -654,7 +654,7 @@ export class Sandbox extends DurableObject<Bindings> {
     }
 
     const opened = Date.now();
-    const taken = warm ? yield* this.#warm(score) : undefined;
+    const taken = warm ? yield* this.#warm(score) : {};
 
     say(stepLine("sandbox", "complete"));
 
@@ -697,8 +697,9 @@ export class Sandbox extends DurableObject<Bindings> {
   /**
    * Warm a snapshot of the base: prepare it alone (clone, its devenv shell
    * and its fetch; no attempt's code), clear the workdir, snapshot the
-   * container. Its id, or nothing: a failure here only costs the base's
-   * later scorings their warm boot, never this one.
+   * container. Its id, or nothing (`refused` when the platform offers no
+   * snapshots here): a failure here only costs the base's later scorings
+   * their warm boot, never this one.
    */
   readonly #warm = Effect.fn("Sandbox.warm")(
     function* (this: Sandbox, score: ScoreRequest) {
@@ -727,9 +728,9 @@ export class Sandbox extends DurableObject<Bindings> {
 
       console.log(`sandbox: took snapshot ${taken.id} of base ${score.base} (${taken.size} bytes)`);
 
-      return taken.id;
+      return { snapshot: taken.id };
     },
-    (warming) => warming.pipe(Effect.catch((error) => Effect.sync(() => console.log(`sandbox: no snapshot of the base: ${error.message}`)).pipe(Effect.as(undefined)))),
+    (warming) => warming.pipe(Effect.catch((error) => Effect.sync(() => console.log(`sandbox: no snapshot of the base: ${error.message}`)).pipe(Effect.as(snapshotRefused(error.message) ? { refused: true } : {})))),
   );
 
   /** The report with the root's judges' outcomes added. A Clef failure is retryable: 503. */

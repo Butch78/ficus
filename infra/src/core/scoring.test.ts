@@ -21,7 +21,10 @@ import {
   ScoreReport,
   ScoreRequest,
   bootPlans,
+  SNAPSHOT_REFUSED_MS,
   snapshotAfter,
+  snapshotRefused,
+  warmable,
 } from "./scoring.ts";
 
 /** The root's config from `ficus.toml` text, as the scorer reads it. */
@@ -200,6 +203,18 @@ describe("warm snapshots of a base", () => {
     expect(bootPlans(["b1", "b2", "b2", "b1", "b3"], kept)).toEqual([{ snapshot: "snap-1" }, { warm: true }, {}, { snapshot: "snap-1" }, { warm: true }]);
   });
 
+  test("a platform that offers no snapshots is told apart from other snapshot failures, and asks for no warm boot for 24 hours", () => {
+    expect(snapshotRefused("snapshotting: Error: Snapshots are not available because this container does not support the requested snapshot operation.")).toBe(true);
+    expect(snapshotRefused("snapshotting: Error: internal error")).toBe(false);
+    expect(snapshotRefused("snapshotting: no answer within 5 minutes")).toBe(false);
+
+    expect(SNAPSHOT_REFUSED_MS).toBe(24 * 60 * 60 * 1000);
+    expect(warmable(undefined, 1_000)).toBe(true);
+    expect(warmable(1_000 + SNAPSHOT_REFUSED_MS, 1_000 + SNAPSHOT_REFUSED_MS - 1)).toBe(false);
+    expect(warmable(1_000 + SNAPSHOT_REFUSED_MS, 1_000 + SNAPSHOT_REFUSED_MS)).toBe(true);
+    expect(bootPlans(["b1", "b2", "b2"], new Map([["b1", "snap-1"]]), false)).toEqual([{ snapshot: "snap-1" }, {}, {}]);
+  });
+
   test("the tree keeps a snapshot taken, and forgets one that went stale or failed unless replaced since", () => {
     expect(snapshotAfter(undefined, undefined, false, { snapshot: "new" })).toEqual({ kind: "keep", id: "new" });
     expect(snapshotAfter("old", "old", false, { snapshot: "new", stale: true })).toEqual({ kind: "keep", id: "new" });
@@ -212,7 +227,7 @@ describe("warm snapshots of a base", () => {
 
   test("the snapshot fields are optional: a request or answer without them still decodes, and the report drops them", () => {
     const request = { remote: "https://x/r.git", token: "t", base: "a".repeat(40), head: "b".repeat(40), intent: "i" };
-    const answer = { checks: [outcome("a", true)], cost: 1, phases: [{ name: "snapshot", millis: 5 }], snapshot: "snap", stale: false };
+    const answer = { checks: [outcome("a", true)], cost: 1, phases: [{ name: "snapshot", millis: 5 }], snapshot: "snap", stale: false, refused: true };
 
     expect(ok(Schema.decodeUnknownResult(ScoreRequest)(request)).snapshot).toBeUndefined();
     expect(ok(Schema.decodeUnknownResult(ScoreRequest)({ ...request, snapshot: "snap" })).snapshot).toBe("snap");

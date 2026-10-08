@@ -307,10 +307,10 @@ export type BootPlan = Pick<ScoreRequest, "snapshot" | "warm">;
 
 /**
  * How each scoring of `bases` boots: from the snapshot `kept` for its base;
- * with none, the first scoring of a base warms one and the others boot the
- * image, so a base gets one snapshot.
+ * with none, the first scoring of a base warms one (unless not `warmable`)
+ * and the others boot the image, so a base gets one snapshot.
  */
-export const bootPlans = (bases: ReadonlyArray<string>, kept: ReadonlyMap<string, string>): ReadonlyArray<BootPlan> => {
+export const bootPlans = (bases: ReadonlyArray<string>, kept: ReadonlyMap<string, string>, warmable = true): ReadonlyArray<BootPlan> => {
   const warming = new Set<string>();
 
   return bases.map((base) => {
@@ -320,7 +320,7 @@ export const bootPlans = (bases: ReadonlyArray<string>, kept: ReadonlyMap<string
       return { snapshot };
     }
 
-    if (warming.has(base)) {
+    if (!warmable || warming.has(base)) {
       return {};
     }
 
@@ -411,9 +411,20 @@ export const ScoreAnswer = Schema.Struct({
   snapshot: Schema.optionalKey(Schema.String),
   /** The snapshot sent did not restore, or its container failed: the scoring booted the image instead. */
   stale: Schema.optionalKey(Schema.Boolean),
+  /** The platform refused to snapshot: snapshots are not available for this container. */
+  refused: Schema.optionalKey(Schema.Boolean),
 });
 
 export type ScoreAnswer = typeof ScoreAnswer.Type;
+
+/** How long the tree asks for no warm boot once the platform refused a snapshot. */
+export const SNAPSHOT_REFUSED_MS = 24 * 60 * 60 * 1000;
+
+/** Whether snapshotContainer failed with `cause` because the platform does not offer snapshots for this container (under the default scheduling policy). */
+export const snapshotRefused = (cause: string): boolean => cause.includes("Snapshots are not available");
+
+/** Whether scorings may warm a snapshot at `now`, a refusal having asked for none until `refusedUntil`. */
+export const warmable = (refusedUntil: number | undefined, now: number): boolean => refusedUntil === undefined || refusedUntil <= now;
 
 /**
  * What the tree does with the snapshot it keeps for a base (`kept`) after a
