@@ -18,9 +18,11 @@ https://ficus-api-prod.fruitcards.workers.dev.
 4. Submitted attempts are scored in a sandbox; the task page shows the standings and accepts the best.
    Release the head (or roll back to an older node) through the Api: `POST .../release`.
 
-Ficus's own tree (`ficus` in organization `ficus`) is the live example. It is public, so its reads need
-no key: the tree (tasks, attempts, nodes, history; `.head` is the head node), and any node's or attempt's
-`log`, `tree?path=`, `file?path=` and `diff`.
+Ficus's own tree (`ficus` in organization `ficus`) is the live example, and it is public: open
+https://ficus-web-prod.fruitcards.workers.dev/orgs/ficus/trees/ficus without an account to see its head,
+open tasks and accepted history, and browse any node's files and diff. Its Api reads need no key either:
+the tree (tasks, attempts, nodes, history; `.head` is the head node), and any node's or attempt's `log`,
+`tree?path=`, `file?path=` and `diff`.
 
 ```sh
 API=https://ficus-api-prod.fruitcards.workers.dev
