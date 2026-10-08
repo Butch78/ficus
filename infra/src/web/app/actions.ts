@@ -65,6 +65,14 @@ export async function createTask(form: FormData) {
   redirect(landed(page, "task", operation, outcome, Result.isSuccess(outcome) ? `${page}/tasks/${outcome.success.task}` : page));
 }
 
+export async function setVisibility(form: FormData) {
+  const [org, tree] = [field(form, "org"), field(form, "tree")];
+  const operation = crypto.randomUUID();
+  const outcome = await run(Api.setVisibility(org, tree, field(form, "public") === "true", operation));
+
+  redirect(landed(treePage(org, tree), "visibility", operation, outcome));
+}
+
 export async function acceptTask(form: FormData) {
   const [org, tree, task] = [field(form, "org"), field(form, "tree"), id(form, "task")];
   const operation = crypto.randomUUID();

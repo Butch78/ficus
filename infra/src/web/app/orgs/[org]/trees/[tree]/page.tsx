@@ -1,17 +1,16 @@
-import { Badge, Banner, Empty, Input, LayerCard, Link, Text } from "@cloudflare/kumo";
-import { ActivityPanel } from "../../../../../components/activity-panel.tsx";
+import { Badge, Empty, LayerCard, Link, Text } from "@cloudflare/kumo";
 import { AutoRefresh } from "../../../../../components/auto-refresh.tsx";
 import { Glossary } from "../../../../../components/glossary.tsx";
 import { LayerCardPrimary, LayerCardSecondary } from "../../../../../components/kumo.ts";
-import { OperationOutcome } from "../../../../../components/operation-outcome.tsx";
+import { Landed } from "../../../../../components/landed.tsx";
+import { NewTask } from "../../../../../components/new-task.tsx";
 import { PageHeader } from "../../../../../components/page-header.tsx";
 import { TONE_BADGE } from "../../../../../components/standing-badge.tsx";
-import { SubmitButton } from "../../../../../components/submit-button.tsx";
+import { VisibilitySwitch } from "../../../../../components/visibility-switch.tsx";
 import * as Api from "../../../../../lib/api.ts";
-import { load } from "../../../../../lib/run.ts";
+import { load, signedIn } from "../../../../../lib/run.ts";
 import { glance } from "../../../../../lib/standing.ts";
 import { short } from "../../../../../lib/view.ts";
-import { createTask } from "../../../../actions.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -34,11 +33,13 @@ const GLANCE_WORDS = {
 
 export default async function TreePage({ params, searchParams }: Props) {
   const [{ org, tree: name }, { initialized, trace, op, error }] = await Promise.all([params, searchParams]);
+  // Anyone may read a public tree; the rest of this page is for its members.
+  const member = await signedIn();
   const tree = await load(Api.showTree(org, name));
   const base = `/orgs/${org}/trees/${name}`;
   const tasks = Object.values(tree.tasks).toSorted((a, b) => b.id - a.id);
   const open = tasks.filter((task) => task.state === "Open");
-  const races = await Promise.all(open.map((task) => load(Api.showTask(org, name, task.id))));
+  const races = member ? await Promise.all(open.map((task) => load(Api.showTask(org, name, task.id)))) : [];
   const accepted = tasks.flatMap((task) => (task.state === "Open" || "Closed" in task.state ? [] : [{ task, ...task.state.Done }]));
   const head = tree.nodes[String(tree.head)];
   const headAttempt = head?.accepted_from === null || head === undefined ? undefined : tree.attempts[String(head.accepted_from)];
@@ -46,16 +47,15 @@ export default async function TreePage({ params, searchParams }: Props) {
 
   return (
     <>
-      <PageHeader trail={[["Organizations", "/"], [org, `/orgs/${org}`]]} title={name}>
+      <PageHeader trail={member ? [["Organizations", "/"], [org, `/orgs/${org}`]] : []} title={name}>
+        {member ? (
+          <VisibilitySwitch org={org} tree={name} isPublic={tree.public === true} />
+        ) : (
+          <Link href="/sign-in">Sign in to work on it</Link>
+        )}
         <AutoRefresh active={inFlight} what="attempts are working or being checked" />
       </PageHeader>
-      {initialized === undefined ? null : (
-        <>
-          <Banner title={`Initialized ${name}`} description={`Its root is the default branch of ${initialized}, at node 0.`} />
-          {trace === undefined ? null : <ActivityPanel org={org} operation={trace} title={`Init ${name}`} refused={false} />}
-        </>
-      )}
-      {initialized === undefined ? <OperationOutcome org={org} op={op} trace={trace} error={error} /> : null}
+      {member ? <Landed org={org} name={name} initialized={initialized} trace={trace} op={op} error={error} /> : null}
       <Glossary />
 
       <LayerCard>
@@ -87,9 +87,10 @@ export default async function TreePage({ params, searchParams }: Props) {
         <LayerCardPrimary className="flex flex-col gap-3">
           {open.length === 0 ? (
             <Text variant="secondary" size="sm">
-              Nothing open. Say what you want changed, and agents work attempts at it.
+              Nothing open.
             </Text>
           ) : null}
+          {member ? null : open.map((task) => <Text key={task.id} size="sm">{task.intent}</Text>)}
           {races.map((race) => (
             <div key={race.task.id} className="flex flex-wrap items-center justify-between gap-2 border-b border-kumo-hairline pb-2">
               <Link href={`${base}/tasks/${race.task.id}`}>{race.task.intent}</Link>
@@ -103,12 +104,7 @@ export default async function TreePage({ params, searchParams }: Props) {
               </span>
             </div>
           ))}
-          <form action={createTask} className="flex flex-wrap items-end gap-2">
-            <input type="hidden" name="org" value={org} />
-            <input type="hidden" name="tree" value={name} />
-            <Input name="intent" label="New task" placeholder="What should change? e.g. slugify should drop punctuation" className="min-w-96" required />
-            <SubmitButton pending="Creating…">Create task</SubmitButton>
-          </form>
+          {member ? <NewTask org={org} tree={name} /> : null}
         </LayerCardPrimary>
       </LayerCard>
 
@@ -118,7 +114,7 @@ export default async function TreePage({ params, searchParams }: Props) {
           {accepted.length === 0 ? <Empty size="sm" title="Nothing accepted yet" /> : null}
           {accepted.map(({ task, attempt, node }) => (
             <div key={task.id} className="flex flex-wrap items-center justify-between gap-2">
-              <Link href={`${base}/tasks/${task.id}`}>{task.intent}</Link>
+              {member ? <Link href={`${base}/tasks/${task.id}`}>{task.intent}</Link> : <Text size="sm">{task.intent}</Text>}
               <Text variant="secondary" as="span" size="sm">
                 attempt {attempt} ({tree.attempts[String(attempt)]?.agent ?? "?"}) → <Link href={`${base}/nodes/${node}`}>node {node}</Link>
               </Text>

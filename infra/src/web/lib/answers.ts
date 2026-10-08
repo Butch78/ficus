@@ -106,9 +106,14 @@ export const Tree = Schema.Struct({
   history: Schema.Array(HistoryEntry),
   /** The node a deployment follows; null until the first release. */
   released: Schema.optional(Schema.NullOr(Id)),
+  /** Whether anyone may read the tree (src/core/visibility.ts); absent is private. */
+  public: Schema.optional(Schema.Boolean),
 });
 
 export type Tree = typeof Tree.Type;
+
+/** `POST .../visibility`. */
+export const Visibility = Schema.Struct({ public: Schema.Boolean });
 
 export const CheckOutcome = Schema.Struct({
   name: Schema.String,

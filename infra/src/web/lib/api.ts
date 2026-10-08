@@ -182,6 +182,9 @@ export const diff = (org: string, name: string, subject: Subject) =>
 export const createTask = (org: string, name: string, intent: string, operation: string) =>
   marked("task", org, operation, post(Answers.TaskCreated, `${tree(org, name)}/tasks`, JSON.stringify({ intent })));
 
+export const setVisibility = (org: string, name: string, isPublic: boolean, operation: string) =>
+  marked("visibility", org, operation, post(Answers.Visibility, `${tree(org, name)}/visibility`, JSON.stringify({ public: isPublic })));
+
 export const accept = (org: string, name: string, task: number, operation: string) =>
   marked("accept", org, operation, post(Answers.Acceptance, `${tree(org, name)}/tasks/${task}/accept`, "{}"));
 

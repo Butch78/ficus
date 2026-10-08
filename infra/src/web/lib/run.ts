@@ -9,7 +9,9 @@ import * as Result from "effect/Result";
 import { headers } from "next/headers";
 import { notFound, redirect } from "next/navigation";
 import * as CloudflareTracer from "../../observability/tracer.ts";
+import * as Api from "./api.ts";
 import { type ApiError, Upstream } from "./api.ts";
+import { landing } from "./visitor.ts";
 
 const LOCAL_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
 
@@ -47,13 +49,18 @@ export const load = async <A>(program: Effect.Effect<A, ApiError, Upstream>) => 
 
   const { status, message } = outcome.failure;
 
-  if (status === 401) {
+  const to = landing(status, (await upstream()).cookie !== undefined);
+
+  if (to === "sign-in") {
     redirect("/sign-in");
   }
 
-  if (status === 404) {
+  if (to === "not-found") {
     notFound();
   }
 
   throw new Error(`the Api answered ${status}: ${message}`);
 };
+
+/** Whether the visitor has a session: a public tree's page shows an anonymous one only what it may read. */
+export const signedIn = async () => (await load(Api.session)) !== null;

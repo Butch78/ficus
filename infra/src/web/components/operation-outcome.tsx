@@ -6,6 +6,8 @@ const titleOf = (op: string | undefined) => {
   switch (op) {
     case "task":
       return "New task";
+    case "visibility":
+      return "Visibility";
     case "accept":
       return "Accept";
     case "retry":

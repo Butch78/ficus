@@ -5,7 +5,7 @@ import { DiffView } from "../../../../../../../components/diff-view.tsx";
 import { PageHeader } from "../../../../../../../components/page-header.tsx";
 import { RepoBrowser } from "../../../../../../../components/repo-browser.tsx";
 import * as Api from "../../../../../../../lib/api.ts";
-import { run } from "../../../../../../../lib/run.ts";
+import { run, signedIn } from "../../../../../../../lib/run.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -23,17 +23,14 @@ export default async function NodePage({ params, searchParams }: Props) {
   }
 
   const base = `/orgs/${org}/trees/${tree}`;
+  const member = await signedIn();
   // The root started from nothing; every other node is an acceptance, with a change.
   const change = node === 0 ? undefined : await run(Api.diff(org, tree, { kind: "nodes", id: node }));
 
   return (
     <>
       <PageHeader
-        trail={[
-          ["Organizations", "/"],
-          [org, `/orgs/${org}`],
-          [tree, base],
-        ]}
+        trail={member ? [["Organizations", "/"], [org, `/orgs/${org}`], [tree, base]] : [[tree, base]]}
         title={`node ${node}`}
       />
       {change === undefined ? null : (
