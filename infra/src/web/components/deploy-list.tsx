@@ -5,7 +5,7 @@ import { short } from "../lib/view.ts";
 import { CollapsiblePanel, CollapsibleRoot, CollapsibleTrigger } from "./kumo.ts";
 
 /** Kumo's status badges, by how a deploy went. */
-const BADGE = {
+export const DEPLOY_BADGE = {
   running: "warning",
   deployed: "success",
   failed: "error",
@@ -13,7 +13,7 @@ const BADGE = {
   unknown: "neutral",
 } as const satisfies Record<DeployTone, string>;
 
-const WORD = { running: "deploying", deployed: "deployed", failed: "failed", skipped: "skipped", unknown: "unknown" } as const;
+export const DEPLOY_WORD = { running: "deploying", deployed: "deployed", failed: "failed", skipped: "skipped", unknown: "unknown" } as const;
 
 interface Props {
   /** The tree page, for links to nodes. */
@@ -31,8 +31,8 @@ export function DeployList({ base, deploys }: Props) {
         return (
           <div key={deploy.id} className="flex flex-col gap-1 border-b border-kumo-hairline pb-2">
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant={BADGE[tone]} appearance="dot">
-                {WORD[tone]}
+              <Badge variant={DEPLOY_BADGE[tone]} appearance="dot">
+                {DEPLOY_WORD[tone]}
               </Badge>
               <Link href={`${base}/nodes/${deploy.node}`}>node {deploy.node}</Link>
               <Text variant="mono-secondary">{short(deploy.commit)}</Text>

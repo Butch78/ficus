@@ -11,11 +11,11 @@ import { ReleaseButton } from "./release-button.tsx";
 /** How many of the newest deploys the tree page shows. */
 const SHOWN = 5;
 
-/** The newest deploys; undefined where the stage does not deploy or they cannot be read, which leaves the page without them. */
-export const recentDeploys = async (org: string, name: string) => {
+/** Every deploy, newest first; undefined where the stage does not deploy or they cannot be read, which leaves the page without them. */
+export const treeDeploys = async (org: string, name: string) => {
   const deploys = await run(Api.deploys(org, name));
 
-  return Result.isSuccess(deploys) && deploys.success.enabled ? deploys.success.deploys.slice(0, SHOWN) : undefined;
+  return Result.isSuccess(deploys) && deploys.success.enabled ? deploys.success.deploys : undefined;
 };
 
 interface Props {
@@ -26,6 +26,7 @@ interface Props {
   readonly tree: Tree;
   /** Whether the visitor may release: a member of the organization. */
   readonly member: boolean;
+  /** Every deploy, newest first: the card shows the newest few. */
   readonly deploys: ReadonlyArray<Deploy> | undefined;
 }
 
@@ -63,7 +64,7 @@ export function ReleaseCard({ org, name, base, tree, member, deploys }: Props) {
             No deploys yet.
           </Text>
         ) : (
-          <DeployList base={base} deploys={deploys} />
+          <DeployList base={base} deploys={deploys.slice(0, SHOWN)} />
         )}
       </LayerCardPrimary>
     </LayerCard>

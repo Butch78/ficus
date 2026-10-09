@@ -58,12 +58,14 @@ export const status = (state: AttemptState): Status => {
   return { tone: "closed", label: `closed: ${closeReason(state.Closed.reason)}`, commit: undefined };
 };
 
-/** The accepted history: root first, head last, following parents back from the head. */
+/** The accepted history: root first, head last, following parents back from the head; a parent missing (or seen twice) ends the walk. */
 export const trunk = (tree: Tree): ReadonlyArray<TreeNode> => {
   const nodes: Array<TreeNode> = [];
+  const seen = new Set<number>();
   let current = tree.nodes[String(tree.head)];
 
-  while (current !== undefined) {
+  while (current !== undefined && !seen.has(current.id)) {
+    seen.add(current.id);
     nodes.push(current);
     current = current.parent === null ? undefined : tree.nodes[String(current.parent)];
   }

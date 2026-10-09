@@ -35,3 +35,6 @@ export const CollapsibleRoot = Collapsible.Root;
 export const CollapsibleTrigger = Collapsible.DefaultTrigger;
 
 export const CollapsiblePanel = Collapsible.DefaultPanel;
+
+/** A panel without DefaultPanel's indent and rule, for content that must line up with what is around it. */
+export const CollapsibleBarePanel = Collapsible.Panel;

@@ -34,7 +34,7 @@ const seconds = (millis: number) => `${Math.round(millis / 1000)} s`;
 
 export const deployStatus = (deploy: Deploy): DeployStatus => {
   if (UNFINISHED.has(deploy.status)) {
-    return { tone: "running", label: deploy.status === "running" ? "its [deploy] is running" : deploy.status, tail: undefined };
+    return { tone: "running", label: deploy.status === "running" ? "running now" : deploy.status, tail: undefined };
   }
 
   if (deploy.status === "errored" || deploy.status === "terminated") {

@@ -1,17 +1,19 @@
-import { Badge, Empty, LayerCard, Link, Text } from "@cloudflare/kumo";
+import { Badge, LayerCard, Link, Text } from "@cloudflare/kumo";
 import { AutoRefresh } from "../../../../../components/auto-refresh.tsx";
 import { Glossary } from "../../../../../components/glossary.tsx";
 import { LayerCardPrimary, LayerCardSecondary } from "../../../../../components/kumo.ts";
 import { Landed } from "../../../../../components/landed.tsx";
 import { NewTask } from "../../../../../components/new-task.tsx";
 import { PageHeader } from "../../../../../components/page-header.tsx";
-import { recentDeploys, ReleaseCard } from "../../../../../components/release-card.tsx";
+import { ReleaseCard, treeDeploys } from "../../../../../components/release-card.tsx";
 import { TONE_BADGE } from "../../../../../components/standing-badge.tsx";
+import { TrunkView } from "../../../../../components/trunk-view.tsx";
 import { VisibilitySwitch } from "../../../../../components/visibility-switch.tsx";
 import * as Api from "../../../../../lib/api.ts";
 import { deploying } from "../../../../../lib/release.ts";
 import { load, signedIn } from "../../../../../lib/run.ts";
 import { glance } from "../../../../../lib/standing.ts";
+import { trunkStory } from "../../../../../lib/trunk.ts";
 import { short } from "../../../../../lib/view.ts";
 
 export const dynamic = "force-dynamic";
@@ -42,11 +44,11 @@ export default async function TreePage({ params, searchParams }: Props) {
   const tasks = Object.values(tree.tasks).toSorted((a, b) => b.id - a.id);
   const open = tasks.filter((task) => task.state === "Open");
   const races = member ? await Promise.all(open.map((task) => load(Api.showTask(org, name, task.id)))) : [];
-  const accepted = tasks.flatMap((task) => (task.state === "Open" || "Closed" in task.state ? [] : [{ task, ...task.state.Done }]));
   const head = tree.nodes[String(tree.head)];
   const headAttempt = head?.accepted_from === null || head === undefined ? undefined : tree.attempts[String(head.accepted_from)];
   const inFlight = races.some((race) => race.attempts.some(({ standing }) => standing === "Working" || standing === "Checking"));
-  const recent = member ? await recentDeploys(org, name) : undefined;
+  // Members see the deploys, in the release card and on the trunk; visitors see neither.
+  const deploys = member ? await treeDeploys(org, name) : undefined;
 
   return (
     <>
@@ -57,7 +59,7 @@ export default async function TreePage({ params, searchParams }: Props) {
           <Link href="/sign-in">Sign in to work on it</Link>
         )}
         <AutoRefresh
-          active={inFlight || deploying(recent)}
+          active={inFlight || deploying(deploys)}
           what={inFlight ? "attempts are working or being checked" : "a release is deploying"}
         />
       </PageHeader>
@@ -88,7 +90,7 @@ export default async function TreePage({ params, searchParams }: Props) {
         </LayerCardPrimary>
       </LayerCard>
 
-      <ReleaseCard org={org} name={name} base={base} tree={tree} member={member} deploys={recent} />
+      <ReleaseCard org={org} name={name} base={base} tree={tree} member={member} deploys={deploys} />
 
       <LayerCard>
         <LayerCardSecondary>Open tasks: work in progress</LayerCardSecondary>
@@ -117,20 +119,9 @@ export default async function TreePage({ params, searchParams }: Props) {
       </LayerCard>
 
       <LayerCard>
-        <LayerCardSecondary>Accepted: the trunk's history</LayerCardSecondary>
-        <LayerCardPrimary className="flex flex-col gap-2">
-          {accepted.length === 0 ? <Empty size="sm" title="Nothing accepted yet" /> : null}
-          {accepted.map(({ task, attempt, node }) => (
-            <div key={task.id} className="flex flex-wrap items-center justify-between gap-2">
-              {member ? <Link href={`${base}/tasks/${task.id}`}>{task.intent}</Link> : <Text size="sm">{task.intent}</Text>}
-              <Text variant="secondary" as="span" size="sm">
-                attempt {attempt} ({tree.attempts[String(attempt)]?.agent ?? "?"}) → <Link href={`${base}/nodes/${node}`}>node {node}</Link>
-              </Text>
-            </div>
-          ))}
-          <Text variant="secondary" size="xs">
-            The root is <Link href={`${base}/nodes/0`}>node 0</Link>. {tree.history.length} earlier attempts are in the history, on their tasks' pages.
-          </Text>
+        <LayerCardSecondary>History: how the trunk grew</LayerCardSecondary>
+        <LayerCardPrimary>
+          <TrunkView org={org} tree={name} member={member} stories={trunkStory(tree, deploys ?? [])} />
         </LayerCardPrimary>
       </LayerCard>
     </>

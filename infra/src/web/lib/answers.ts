@@ -82,6 +82,8 @@ export const TreeNode = Schema.Struct({
   repo: Schema.String,
   accepted_from: Schema.NullOr(Id),
   touched: Schema.optional(Schema.Array(Schema.String)),
+  /** Where a graft came from (`<remote>` or `<remote>#<branch>`); absent for the root and accepted nodes. */
+  grafted_from: Schema.optional(Schema.String),
 });
 
 export type TreeNode = typeof TreeNode.Type;
