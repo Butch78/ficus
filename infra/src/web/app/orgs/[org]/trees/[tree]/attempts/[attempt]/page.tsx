@@ -1,8 +1,6 @@
 import { Banner, Input, LayerCard, Text } from "@cloudflare/kumo";
 import * as Result from "effect/Result";
 import { notFound } from "next/navigation";
-import { AgentWork } from "../../../../../../../components/agent-work.tsx";
-import { AutoRefresh } from "../../../../../../../components/auto-refresh.tsx";
 import { DiffView } from "../../../../../../../components/diff-view.tsx";
 import { ChainOfThought, ChainOfThoughtStep } from "../../../../../../../components/elements/chain-of-thought.tsx";
 import {
@@ -15,7 +13,7 @@ import {
 import { OperationOutcome } from "../../../../../../../components/operation-outcome.tsx";
 import { PageHeader } from "../../../../../../../components/page-header.tsx";
 import { RepoBrowser } from "../../../../../../../components/repo-browser.tsx";
-import { ScoringSteps } from "../../../../../../../components/scoring-steps.tsx";
+import { LiveAgent, LiveScoring } from "../../../../../../../components/live-agent.tsx";
 import { TaskPrompt } from "../../../../../../../components/task-prompt.tsx";
 import { StandingBadge } from "../../../../../../../components/standing-badge.tsx";
 import { SubmitButton } from "../../../../../../../components/submit-button.tsx";
@@ -77,7 +75,6 @@ export default async function AttemptPage({ params, searchParams }: Props) {
         title={`attempt ${attempt}: ${detail.attempt.agent}`}
       >
         <StandingBadge standing={standing} />
-        <AutoRefresh active={standing === "Working" || standing === "Checking"} what="this attempt is still moving" />
       </PageHeader>
       <Text size="sm">{say(standing).sentence}</Text>
       <TaskPrompt intent={race.task.intent} title={race.task.title} />
@@ -106,21 +103,15 @@ export default async function AttemptPage({ params, searchParams }: Props) {
           <form action={abandonAttempt} className="flex flex-wrap items-end gap-2">
             <Hidden org={org} tree={tree} attempt={attempt} />
             <Input name="note" label="Withdraw it" placeholder="why (kept in the history)" size="sm" />
-            <SubmitButton pending="Withering…" variant="secondary-destructive">
+            <SubmitButton pending="Abandoning…" variant="secondary-destructive">
               Abandon
             </SubmitButton>
           </form>
         </span>
       ) : null}
 
-      {Result.isSuccess(agent) ? (
-        <LayerCard>
-          <LayerCardSecondary>The agent at work</LayerCardSecondary>
-          <LayerCardPrimary>
-            <AgentWork status={agent.success} />
-          </LayerCardPrimary>
-        </LayerCard>
-      ) : null}
+      {/* Live in the browser while the agent works or the checks run (components/live-agent.tsx). */}
+      {Result.isSuccess(agent) ? <LiveAgent org={org} tree={tree} attempt={attempt} initial={agent.success} /> : null}
 
       <section id="change" className="flex flex-col gap-3">
         <Text variant="heading" as="h3">
@@ -133,14 +124,7 @@ export default async function AttemptPage({ params, searchParams }: Props) {
         )}
       </section>
 
-      {detail.scoring === undefined || detail.scoring === null || detail.scoring.entries.length === 0 ? null : (
-        <LayerCard>
-          <LayerCardSecondary>Scoring, in its sandbox</LayerCardSecondary>
-          <LayerCardPrimary>
-            <ScoringSteps ledger={detail.scoring} />
-          </LayerCardPrimary>
-        </LayerCard>
-      )}
+      <LiveScoring org={org} tree={tree} attempt={attempt} initial={detail} />
       <LayerCard>
         <LayerCardSecondary>Checks</LayerCardSecondary>
         <LayerCardPrimary className="flex flex-col gap-2">

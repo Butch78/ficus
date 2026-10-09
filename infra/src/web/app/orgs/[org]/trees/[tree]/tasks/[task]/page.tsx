@@ -1,100 +1,26 @@
-import { Badge, Banner, Code, Empty, Input, LayerCard, Link, Text } from "@cloudflare/kumo";
+import { Banner, Code, Empty, Input, LayerCard, Link, Text } from "@cloudflare/kumo";
 import { notFound } from "next/navigation";
-import { AgentWork } from "../../../../../../../components/agent-work.tsx";
-import { AutoRefresh } from "../../../../../../../components/auto-refresh.tsx";
 import { WorkYourself } from "../../../../../../../components/work-yourself.tsx";
-import {
-  CollapsiblePanel,
-  CollapsibleRoot,
-  CollapsibleTrigger,
-  LayerCardPrimary,
-  LayerCardSecondary,
-} from "../../../../../../../components/kumo.ts";
+import { LayerCardPrimary, LayerCardSecondary } from "../../../../../../../components/kumo.ts";
+import { LiveAttempts } from "../../../../../../../components/live-attempts.tsx";
 import { OperationOutcome } from "../../../../../../../components/operation-outcome.tsx";
 import { PageHeader } from "../../../../../../../components/page-header.tsx";
-import { ScoringSteps } from "../../../../../../../components/scoring-steps.tsx";
-import { StandingBadge } from "../../../../../../../components/standing-badge.tsx";
 import { SubmitButton } from "../../../../../../../components/submit-button.tsx";
 import { TaskPrompt } from "../../../../../../../components/task-prompt.tsx";
-import type { AgentStatus, TaskRace } from "../../../../../../../lib/answers.ts";
 import { agentStatuses } from "../../../../../../../lib/agents.ts";
 import * as Api from "../../../../../../../lib/api.ts";
 import { agentAttempts } from "../../../../../../../lib/growing.ts";
+import { toLive } from "../../../../../../../lib/live.ts";
 import { load } from "../../../../../../../lib/run.ts";
-import { acceptCase, say } from "../../../../../../../lib/standing.ts";
+import { acceptCase } from "../../../../../../../lib/standing.ts";
 import { closeReason } from "../../../../../../../lib/view.ts";
-import { startAgents, acceptTask, retryAttempt } from "../../../../../../actions.ts";
+import { startAgents, acceptTask } from "../../../../../../actions.ts";
 
 export const dynamic = "force-dynamic";
 
 interface Props {
   readonly params: Promise<{ org: string; tree: string; task: string }>;
   readonly searchParams: Promise<{ op?: string; trace?: string; error?: string }>;
-}
-
-type Entry = TaskRace["attempts"][number];
-
-interface CardProps {
-  readonly entry: Entry;
-  readonly org: string;
-  readonly tree: string;
-  /** For an attempt an agent works, while it works: what the agent is doing. */
-  readonly agent: AgentStatus | undefined;
-}
-
-function AttemptCard({ entry, org, tree, agent }: CardProps) {
-  const { attempt, standing, report, scoring } = entry;
-  const href = `/orgs/${org}/trees/${tree}/attempts/${attempt.id}`;
-  const failing = report?.checks.filter((check) => !check.passed) ?? [];
-
-  return (
-    <LayerCard>
-      <LayerCardSecondary className="flex flex-wrap items-center justify-between gap-2">
-        <span className="flex items-center gap-2">
-          <Link href={href}>attempt {attempt.id}</Link>
-          <Text variant="secondary" as="span" size="sm">
-            {attempt.agent}
-          </Text>
-          {entry.agent === undefined || entry.agent === null ? null : <Badge variant="purple">agent</Badge>}
-        </span>
-        <StandingBadge standing={standing} />
-      </LayerCardSecondary>
-      <LayerCardPrimary className="flex flex-col gap-2">
-        <Text size="sm">{say(standing).sentence}</Text>
-        {agent === undefined ? null : <AgentWork status={agent} compact />}
-        {standing === "Checking" && scoring !== undefined && scoring !== null ? <ScoringSteps ledger={scoring} compact /> : null}
-        {report === null ? null : (
-          <Text variant="secondary" size="xs">
-            {report.checks.filter((check) => check.passed).length} of {report.checks.length} checks pass · a {report.cost}-line
-            change
-          </Text>
-        )}
-        {failing.map((check) => (
-          <CollapsibleRoot key={check.name}>
-            <CollapsibleTrigger>
-              <span className="text-kumo-danger">Failed: {check.name}</span>
-            </CollapsibleTrigger>
-            <CollapsiblePanel>
-              <pre className="overflow-x-auto rounded-md border border-kumo-hairline bg-kumo-recessed p-3 font-mono text-xs text-kumo-default">
-                {check.tail || "(no output)"}
-              </pre>
-            </CollapsiblePanel>
-          </CollapsibleRoot>
-        ))}
-        <span className="flex flex-wrap items-center gap-3">
-          <Link href={`${href}#change`}>Review the change</Link>
-          {standing === "Behind" ? (
-            <form action={retryAttempt}>
-              <input type="hidden" name="org" value={org} />
-              <input type="hidden" name="tree" value={tree} />
-              <input type="hidden" name="attempt" value={attempt.id} />
-              <SubmitButton pending="Retrying…">Retry on the head</SubmitButton>
-            </form>
-          ) : null}
-        </span>
-      </LayerCardPrimary>
-    </LayerCard>
-  );
 }
 
 export default async function TaskPage({ params, searchParams }: Props) {
@@ -109,7 +35,6 @@ export default async function TaskPage({ params, searchParams }: Props) {
   const base = `/orgs/${org}/trees/${tree}`;
   const accept = acceptCase(race);
   const open = race.task.state === "Open";
-  const inFlight = race.attempts.some(({ standing }) => standing === "Working" || standing === "Checking");
 
   // What each agent still working its attempt is doing now.
   const agents = await agentStatuses(org, tree, agentAttempts([race]));
@@ -124,7 +49,6 @@ export default async function TaskPage({ params, searchParams }: Props) {
         ]}
         title={`task ${task}`}
       >
-        <AutoRefresh active={inFlight} what="attempts are working or being checked" />
       </PageHeader>
       <TaskPrompt intent={race.task.intent} title={race.task.title} heading />
       <OperationOutcome org={org} op={op} trace={trace} error={error} />
@@ -145,7 +69,7 @@ export default async function TaskPage({ params, searchParams }: Props) {
               <input type="hidden" name="org" value={org} />
               <input type="hidden" name="tree" value={tree} />
               <input type="hidden" name="task" value={task} />
-              <SubmitButton pending="Harvesting…">Accept attempt {accept.attempt.id}</SubmitButton>
+              <SubmitButton pending="Accepting…">Accept attempt {accept.attempt.id}</SubmitButton>
             </form>
           </LayerCardPrimary>
         </LayerCard>
@@ -166,11 +90,7 @@ export default async function TaskPage({ params, searchParams }: Props) {
           commandLine={`curl -X POST $FICUS_API/v1/orgs/${org}/trees/${tree}/tasks/${task}/attempts -H "x-api-key: $KEY" -d '{"agent":"my-agent"}'`}
         />
       ) : null}
-      <div className="grid gap-3 md:grid-cols-2">
-        {race.attempts.map((entry) => (
-          <AttemptCard key={entry.attempt.id} entry={entry} org={org} tree={tree} agent={agents.get(entry.attempt.id)} />
-        ))}
-      </div>
+      <LiveAttempts org={org} tree={tree} initial={toLive(race, agents)} />
       {open ? (
         <LayerCard>
           <LayerCardSecondary>Start agents</LayerCardSecondary>

@@ -1,5 +1,6 @@
 import { Link, Text } from "@cloudflare/kumo";
 import type { ReactNode } from "react";
+import { QueryProvider } from "../components/query-provider.tsx";
 import "./globals.css";
 
 export const metadata = { title: "Ficus", description: "A git platform for agents, on Cloudflare" };
@@ -22,7 +23,9 @@ export default function RootLayout({ children }: { readonly children: ReactNode 
               </Text>
             </Link>
           </header>
-          <main className="flex flex-col gap-6">{children}</main>
+          <main className="flex flex-col gap-6">
+            <QueryProvider>{children}</QueryProvider>
+          </main>
         </div>
       </body>
     </html>

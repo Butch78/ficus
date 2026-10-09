@@ -69,6 +69,11 @@ deadline 2026-10-14.
   The browser only talks to the UI's origin: `app/api/auth/*` proxies Better Auth, server components call
   the Api over the binding with the UI's origin, and the Api builds one Better Auth per origin.
   Pages run Effects through `lib/run.ts` (`load`: 401 → /sign-in, 404 → notFound). `just e2e-web` smokes it.
+  Live parts use TanStack Query (`components/query-provider.tsx` in the layout, `lib/use-live.ts`): the server renders the
+  first answer, the browser asks `app/api/live` (`?kind=race|agent|attempt&org&tree&id`, `lib/live.ts`) every 3 s only while
+  it moves, one cache entry per race shared across the page, and refreshes the page once when it settles. The tree page's
+  growing cards and race panel, the task page's attempt cards and the attempt page's agent and scoring are live this way;
+  AutoRefresh (whole-page refresh) is left for a running deploy.
   Styled with Kumo (`@cloudflare/kumo`, Tailwind v4; guide: `node_modules/@cloudflare/kumo/ai/USAGE.md`, or
   `bunx kumo doc <Component>`): Kumo components and semantic tokens only (`bg-kumo-*`, `text-kumo-*`,
   `border-kumo-*`), no palette colors, no `dark:` (`src/web/kumo-styling.test.ts` enforces it). Server

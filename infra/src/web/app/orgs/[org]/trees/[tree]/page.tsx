@@ -11,7 +11,7 @@ import { TrunkView } from "../../../../../components/trunk-view.tsx";
 import { VisibilitySwitch } from "../../../../../components/visibility-switch.tsx";
 import { liveRaces } from "../../../../../lib/agents.ts";
 import * as Api from "../../../../../lib/api.ts";
-import { growing } from "../../../../../lib/growing.ts";
+import { toLive } from "../../../../../lib/live.ts";
 import { deploying } from "../../../../../lib/release.ts";
 import { load, signedIn } from "../../../../../lib/run.ts";
 import { glance } from "../../../../../lib/standing.ts";
@@ -56,7 +56,6 @@ export default async function TreePage({ params, searchParams }: Props) {
 
   const head = tree.nodes[String(tree.head)];
   const headAttempt = head?.accepted_from === null || head === undefined ? undefined : tree.attempts[String(head.accepted_from)];
-  const inFlight = races.some((race) => race.attempts.some(({ standing }) => standing === "Working" || standing === "Checking"));
 
   return (
     <>
@@ -66,9 +65,10 @@ export default async function TreePage({ params, searchParams }: Props) {
         ) : (
           <Link href="/sign-in">Sign in to work on it</Link>
         )}
+        {/* Attempts and agents stay live by themselves (components/live-growing.tsx); a deploy refreshes the page. */}
         <AutoRefresh
-          active={inFlight || deploying(deploys)}
-          what={inFlight ? "attempts are working or being checked" : "a release is deploying"}
+          active={deploying(deploys)}
+          what="a release is deploying"
         />
       </PageHeader>
       {member ? <Landed org={org} name={name} initialized={initialized} trace={trace} op={op} error={error} /> : null}
@@ -129,7 +129,7 @@ export default async function TreePage({ params, searchParams }: Props) {
       <LayerCard>
         <LayerCardSecondary>History: how the trunk grew</LayerCardSecondary>
         <LayerCardPrimary>
-          <TrunkView org={org} tree={name} member={member} stories={trunkStory(tree, deploys ?? [])} shown={node} older={older} growing={growing(races, agents)} task={watching} landed={landed} now={Date.now()} />
+          <TrunkView org={org} tree={name} member={member} stories={trunkStory(tree, deploys ?? [])} shown={node} older={older} live={races.map((race) => toLive(race, agents))} task={watching} landed={landed} now={Date.now()} />
         </LayerCardPrimary>
       </LayerCard>
     </>

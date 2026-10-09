@@ -43,6 +43,7 @@
     "@effect/sql-d1": "4.0.0",
     "@phosphor-icons/react": "2.1.10",
     "@tailwindcss/vite": "4.3.3",
+    "@tanstack/react-query": "5.104.1",
     "@vitejs/plugin-react": "6.1.1",
     "@vitejs/plugin-rsc": "0.5.35",
     "agents": "0.26.0",

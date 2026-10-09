@@ -1,8 +1,9 @@
-import { Badge, Empty, Flow, Link, Loader, Text } from "@cloudflare/kumo";
+import { Badge, Empty, Flow, Link, Text } from "@cloudflare/kumo";
 import type { ReactNode } from "react";
 import type { Deploy } from "../lib/answers.ts";
 import { deployStatus } from "../lib/release.ts";
-import type { GrowingStory } from "../lib/growing.ts";
+import { growing } from "../lib/growing.ts";
+import { agentsOf, type LiveRace } from "../lib/live.ts";
 import type { NodeStory } from "../lib/trunk.ts";
 import {
   changedPaths,
@@ -10,7 +11,6 @@ import {
   graftRunIntent,
   nodeIntent,
   nodeSummary,
-  taskName,
   timeAgo,
   plural,
   trunkRows,
@@ -18,19 +18,17 @@ import {
 } from "../lib/trunk-words.ts";
 import { short } from "../lib/view.ts";
 import { DEPLOY_BADGE, DEPLOY_WORD, DeployList } from "./deploy-list.tsx";
-import { NodeFlow, TaskFlow } from "./node-flow.tsx";
+import { LiveGrowing, LiveTaskPanel } from "./live-growing.tsx";
+import { NodeFlow } from "./node-flow.tsx";
+import { Card, FLIP } from "./trunk-card.tsx";
 import { FullPrompt } from "./task-prompt.tsx";
-import { TONE_BADGE } from "./standing-badge.tsx";
-import { CollapsiblePanel, CollapsibleRoot, CollapsibleTrigger, FlowNode, FlowParallel } from "./kumo.ts";
+import { CollapsiblePanel, CollapsibleRoot, CollapsibleTrigger } from "./kumo.ts";
 
 /** How many nodes show before the older history folds away; the root always shows below the fold. */
 const SHOWN = 10;
 
 /** A details trigger that reads as a quiet action under the card's words, left-aligned when it wraps. */
 const TRIGGER_CLASS = "text-left text-sm font-normal text-kumo-subtle";
-
-/** Turns a box upside down; the flow below wears it, and each card wears it again to read the right way up. */
-const FLIP = "-scale-y-100";
 
 interface Props {
   readonly org: string;
@@ -43,8 +41,8 @@ interface Props {
   readonly shown: string | undefined;
   /** Whether the older history is unfolded, from the page's `?older=1`. */
   readonly older: string | undefined;
-  /** The open tasks growing from the head, as their races stand now (lib/growing.ts); empty for visitors. */
-  readonly growing: ReadonlyArray<GrowingStory>;
+  /** The open tasks' races and their agents as the page was drawn (lib/live.ts); the browser keeps them fresh. Empty for visitors. */
+  readonly live: ReadonlyArray<LiveRace>;
   /** The growing task whose race the panel shows, from the page's `?task=`; it wins over `shown`. */
   readonly task: string | undefined;
   /** When each trunk commit landed, in seconds (from the head's log); a commit missing from it goes unsaid. */
@@ -62,7 +60,7 @@ interface Props {
  * (its own flow) sits in a panel beside it: Kumo's Flow does not nest, since
  * its nodes fade in through motion that a parent node's motion holds back.
  */
-export function TrunkView({ org, tree, member, stories, shown, older, growing, task, landed, now }: Props) {
+export function TrunkView({ org, tree, member, stories, shown, older, live, task, landed, now }: Props) {
   const [head] = stories;
 
   if (head === undefined) {
@@ -73,7 +71,7 @@ export function TrunkView({ org, tree, member, stories, shown, older, growing, t
   const unfolded = older === "1";
   const selected = stories.find((story) => String(story.node) === shown) ?? head;
 
-  const watched = growing.find((story) => String(story.task.id) === task);
+  const watched = live.find((race) => String(race.race.task.id) === task && growing([race.race], agentsOf(race)).length > 0);
   const ago = new Map(stories.flatMap((story) => (landed.has(story.commit) ? [[story.node, timeAgo(landed.get(story.commit) ?? 0, now)] as const] : [])));
 
   const here = (pick: Pick, open: boolean) => {
@@ -86,7 +84,8 @@ export function TrunkView({ org, tree, member, stories, shown, older, growing, t
     return `${base}?${query.toString()}#history`;
   };
 
-  const kept: Pick = watched === undefined ? { kind: "node", id: selected.node } : { kind: "task", id: watched.task.id };
+  const kept: Pick = watched === undefined ? { kind: "node", id: selected.node } : { kind: "task", id: watched.race.task.id };
+  const hrefs = Object.fromEntries(live.map((race) => [String(race.race.task.id), here({ kind: "task", id: race.race.task.id }, unfolded)]));
 
   const rows = trunkRows(stories);
   const folds = rows.length > SHOWN + 2;
@@ -106,9 +105,13 @@ export function TrunkView({ org, tree, member, stories, shown, older, growing, t
         {olderRows.toReversed().map(card)}
         {folds ? <FoldCard rows={rows.slice(SHOWN, -1)} unfolded={unfolded} toggle={here(kept, !unfolded)} /> : null}
         {newest.toReversed().map(card)}
-        <GrowingCards base={base} member={member} growing={growing} watched={watched?.task.id} open={(id) => here({ kind: "task", id }, unfolded)} />
+        <LiveGrowing org={org} tree={tree} member={member} initial={live} watched={watched?.race.task.id} hrefs={hrefs} />
       </UpwardFlow>
-      {watched === undefined ? <NodePanel base={base} member={member} story={selected} ago={ago.get(selected.node)} /> : <TaskPanel base={base} member={member} story={watched} />}
+      {watched === undefined ? (
+        <NodePanel base={base} member={member} story={selected} ago={ago.get(selected.node)} />
+      ) : (
+        <LiveTaskPanel org={org} tree={tree} member={member} initial={watched} />
+      )}
     </div>
   );
 }
@@ -119,80 +122,6 @@ interface Pick {
   readonly id: number;
 }
 
-/** How many growing tasks branch from the head side by side; more would leave each too narrow to read. */
-const BRANCHES = 3;
-
-interface GrowingProps {
-  readonly base: string;
-  readonly member: boolean;
-  readonly growing: ReadonlyArray<GrowingStory>;
-  /** The task the panel shows, if it is one of these. */
-  readonly watched: number | undefined;
-  readonly open: (task: number) => string;
-}
-
-/** The open tasks growing from the head, side by side above it: a card each, newest first, live while their work goes on. */
-function GrowingCards({ base, member, growing, watched, open }: GrowingProps) {
-  const shown = growing.slice(0, BRANCHES);
-
-  const card = (story: GrowingStory) => (
-    <GrowingCard key={story.task.id} base={base} member={member} story={story} share={shown.length} watched={watched === story.task.id} open={open(story.task.id)} />
-  );
-
-  if (shown.length <= 1) {
-    return shown.map(card);
-  }
-
-  return <FlowParallel>{shown.map(card)}</FlowParallel>;
-}
-
-interface GrowingCardProps {
-  readonly base: string;
-  readonly member: boolean;
-  readonly story: GrowingStory;
-  /** How many cards share the row. */
-  readonly share: number;
-  readonly watched: boolean;
-  readonly open: string;
-}
-
-function GrowingCard({ base, member, story, share, watched, open }: GrowingCardProps) {
-  return (
-    <Card share={share}>
-      <span className="flex flex-wrap items-center gap-2">
-        <Badge variant="outline">growing</Badge>
-        {story.live ? <Loader size={12} /> : null}
-        {member ? <Link href={`${base}/tasks/${story.task.id}`}>task {story.task.id}</Link> : <Text size="sm">task {story.task.id}</Text>}
-      </span>
-      <Text size="sm">{taskName(story.task)}</Text>
-      <ul className="flex flex-col gap-1">
-        {story.attempts.map((attempt) => (
-          <li key={attempt.attempt} className="flex min-w-0 flex-col items-start gap-0.5">
-            <Badge variant={TONE_BADGE[attempt.tone]} appearance="dot">
-              {attempt.agent}
-            </Badge>
-            <span className="line-clamp-2 min-w-0">
-              <Text variant="secondary" size="xs" as="span">
-                {attempt.words}
-              </Text>
-            </span>
-          </li>
-        ))}
-      </ul>
-      {watched ? (
-        <span className="flex items-center gap-2">
-          <Badge variant="outline">shown</Badge>
-          <Text variant="secondary" size="xs" as="span">
-            its race is in the panel
-          </Text>
-        </span>
-      ) : (
-        <Link href={open}>Watch the race</Link>
-      )}
-    </Card>
-  );
-}
-
 /** A vertical Flow turned upside down: its children come oldest first and show newest on top. */
 function UpwardFlow({ children }: { readonly children: ReactNode }) {
   return (
@@ -201,19 +130,6 @@ function UpwardFlow({ children }: { readonly children: ReactNode }) {
         {children}
       </Flow>
     </div>
-  );
-}
-
-/** One step of the trunk, turned the right way up: as wide as its column, or a share of it when cards stand side by side. */
-function Card({ children, share = 1 }: { readonly children: ReactNode; readonly share?: number }) {
-  const width = share === 1 ? undefined : { width: `calc(${100 / share}cqw - 2.5rem)` };
-
-  return (
-    <FlowNode>
-      <div className={`${FLIP} flex w-[calc(100cqw-2.5rem)] min-w-0 flex-col gap-1 text-left [overflow-wrap:anywhere]`} style={width}>
-        {children}
-      </div>
-    </FlowNode>
   );
 }
 
@@ -366,25 +282,6 @@ function NodePanel({ base, member, story, ago }: NodeProps & { readonly ago: str
         <Link href={`${base}/nodes/${story.node}`}>Browse node {story.node}</Link>
         {changeWords(story)}
       </Text>
-    </section>
-  );
-}
-
-/** A growing task's race as it runs: its flow, live, and the task in full. */
-function TaskPanel({ base, member, story }: { readonly base: string; readonly member: boolean; readonly story: GrowingStory }) {
-  return (
-    <section className="order-first flex min-w-0 flex-col gap-3 rounded-lg border border-kumo-hairline p-4 lg:sticky lg:top-4 lg:order-none">
-      <span className="flex items-center gap-2">
-        <Text variant="heading3" as="h3">
-          {taskName(story.task)}
-        </Text>
-        {story.live ? <Loader size={14} /> : null}
-      </span>
-      <Text variant="secondary" size="xs">
-        Growing: task {story.task.id}
-      </Text>
-      <TaskFlow base={base} member={member} story={story} />
-      <FullPrompt intent={story.task.intent} />
     </section>
   );
 }
