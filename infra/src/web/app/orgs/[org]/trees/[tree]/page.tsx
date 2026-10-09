@@ -16,7 +16,8 @@ import { deploying } from "../../../../../lib/release.ts";
 import { load, signedIn } from "../../../../../lib/run.ts";
 import { glance } from "../../../../../lib/standing.ts";
 import { trunkStory } from "../../../../../lib/trunk.ts";
-import { headline } from "../../../../../lib/trunk-words.ts";
+import { taskName } from "../../../../../lib/trunk-words.ts";
+import { commitTimes } from "../../../../../lib/history.ts";
 import { short } from "../../../../../lib/view.ts";
 
 export const dynamic = "force-dynamic";
@@ -47,9 +48,10 @@ export default async function TreePage({ params, searchParams }: Props) {
   const open = tasks.filter((task) => task.state === "Open");
 
   // Members see the open tasks' races, what their agents are doing (the trunk's growing cards) and the deploys, asked together.
-  const [{ races, agents }, deploys] = await Promise.all([
+  const [{ races, agents }, deploys, landed] = await Promise.all([
     member ? liveRaces(org, name, open) : { races: [], agents: new Map() },
     member ? treeDeploys(org, name) : undefined,
+    commitTimes(org, name, tree.head),
   ]);
 
   const head = tree.nodes[String(tree.head)];
@@ -84,7 +86,7 @@ export default async function TreePage({ params, searchParams }: Props) {
                 <Text variant="secondary" size="xs">
                   {headAttempt === undefined
                     ? "The root, as initialized."
-                    : `Accepted from attempt ${headAttempt.id} (${headAttempt.agent}): "${headline(tree.tasks[String(headAttempt.task)]?.intent ?? "")}"`}
+                    : `Accepted from attempt ${headAttempt.id} (${headAttempt.agent}): "${taskName(tree.tasks[String(headAttempt.task)] ?? { intent: "" })}"`}
                 </Text>
               </span>
               <span className="flex gap-3">
@@ -106,10 +108,10 @@ export default async function TreePage({ params, searchParams }: Props) {
               Nothing open.
             </Text>
           ) : null}
-          {member ? null : open.map((task) => <Text key={task.id} size="sm">{headline(task.intent)}</Text>)}
+          {member ? null : open.map((task) => <Text key={task.id} size="sm">{taskName(task)}</Text>)}
           {races.map((race) => (
             <div key={race.task.id} className="flex flex-wrap items-center justify-between gap-2 border-b border-kumo-hairline pb-2">
-              <Link href={`${base}/tasks/${race.task.id}`}>{headline(race.task.intent)}</Link>
+              <Link href={`${base}/tasks/${race.task.id}`}>{taskName(race.task)}</Link>
               <span className="flex flex-wrap gap-1">
                 {race.attempts.length === 0 ? <Badge variant="outline">no attempts yet</Badge> : null}
                 {glance(race).map(({ tone, count }) => (
@@ -127,7 +129,7 @@ export default async function TreePage({ params, searchParams }: Props) {
       <LayerCard>
         <LayerCardSecondary>History: how the trunk grew</LayerCardSecondary>
         <LayerCardPrimary>
-          <TrunkView org={org} tree={name} member={member} stories={trunkStory(tree, deploys ?? [])} shown={node} older={older} growing={growing(races, agents)} task={watching} />
+          <TrunkView org={org} tree={name} member={member} stories={trunkStory(tree, deploys ?? [])} shown={node} older={older} growing={growing(races, agents)} task={watching} landed={landed} now={Date.now()} />
         </LayerCardPrimary>
       </LayerCard>
     </>

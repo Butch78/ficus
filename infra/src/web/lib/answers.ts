@@ -68,6 +68,8 @@ export const TaskCheck = Schema.Struct({ name: Schema.String, run: Schema.String
 export const Task = Schema.Struct({
   id: Id,
   intent: Schema.String,
+  /** A few words naming it, written by a model (src/tree/titles.ts); absent until then. */
+  title: Schema.optional(Schema.String),
   state: TaskState,
   checks: Schema.optional(Schema.Array(TaskCheck)),
   retries: Schema.optional(Schema.Number),

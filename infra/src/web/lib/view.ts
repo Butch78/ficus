@@ -3,6 +3,7 @@
  * they test without a Worker.
  */
 import type { Task, Attempt, AttemptState, CloseReason, Tree, TreeNode } from "./answers.ts";
+import { taskName } from "./trunk-words.ts";
 
 /** Where an attempt stands; `failing` is scored with at least one failed check. */
 export type Tone = "working" | "checking" | "scored" | "failing" | "accepted" | "closed";
@@ -101,3 +102,11 @@ export const crumbs = (path: string): ReadonlyArray<readonly [string, string]> =
 };
 
 export const join = (directory: string, name: string) => (directory === "" ? name : `${directory}/${name}`);
+
+/** The name of the task an accepted node settled (lib/trunk-words.ts `taskName`); undefined for the root, a graft, or an unknown node. */
+export const nodeTitle = (tree: Tree, node: number) => {
+  const from = tree.nodes[String(node)]?.accepted_from;
+  const task = from === null || from === undefined ? undefined : tree.tasks[String(tree.attempts[String(from)]?.task)];
+
+  return task === undefined ? undefined : taskName(task);
+};

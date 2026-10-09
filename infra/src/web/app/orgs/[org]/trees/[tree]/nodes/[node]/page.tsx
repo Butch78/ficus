@@ -7,6 +7,7 @@ import { ReleaseButton } from "../../../../../../../components/release-button.ts
 import { RepoBrowser } from "../../../../../../../components/repo-browser.tsx";
 import * as Api from "../../../../../../../lib/api.ts";
 import { move } from "../../../../../../../lib/release.ts";
+import { nodeTitle } from "../../../../../../../lib/view.ts";
 import { load, run, signedIn } from "../../../../../../../lib/run.ts";
 
 export const dynamic = "force-dynamic";
@@ -40,7 +41,7 @@ export default async function NodePage({ params, searchParams }: Props) {
     <>
       <PageHeader
         trail={member ? [["Organizations", "/"], [org, `/orgs/${org}`], [tree, base]] : [[tree, base]]}
-        title={`node ${node}`}
+        title={nodeTitle(stored, node) ?? `node ${node}`}
       >
         {node === stored.head ? <Badge variant="primary">head</Badge> : null}
         {nodeMove === "released" ? <Badge variant="success">released</Badge> : null}

@@ -110,6 +110,8 @@ export default Alchemy.Stack(
         // literal name like SANDBOX, with the same deploy-order edge.
         AGENTS: Cloudflare.DurableObject("AGENTS", { className: "AgentActor", scriptName: `ficus-agents-${stage}` }),
         FICUS_AGENTS_SCRIPT: agents.workerName,
+        // Workers AI, which names tasks (src/tree/titles.ts).
+        AI: Cloudflare.Workers.AI(),
         ...deploys,
       },
     });

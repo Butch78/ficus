@@ -126,7 +126,7 @@ export default async function TaskPage({ params, searchParams }: Props) {
       >
         <AutoRefresh active={inFlight} what="attempts are working or being checked" />
       </PageHeader>
-      <TaskPrompt intent={race.task.intent} heading />
+      <TaskPrompt intent={race.task.intent} title={race.task.title} heading />
       <OperationOutcome org={org} op={op} trace={trace} error={error} />
 
       {race.task.state === "Open" || "Closed" in race.task.state ? null : (

@@ -7,6 +7,7 @@
 import type { AgentStatus, TaskRace } from "./answers.ts";
 import { current, scoringLabel } from "./scoring.ts";
 import { say, type Tone } from "./standing.ts";
+import type { TaskName } from "./trunk.ts";
 
 type Entry = TaskRace["attempts"][number];
 
@@ -21,7 +22,7 @@ export interface LiveAttempt {
 }
 
 export interface GrowingStory {
-  readonly task: { readonly id: number; readonly intent: string };
+  readonly task: TaskName;
   /** Its attempts still in the race, oldest first. */
   readonly attempts: ReadonlyArray<LiveAttempt>;
   readonly live: boolean;
@@ -73,7 +74,7 @@ export const growing = (races: ReadonlyArray<TaskRace>, agents: ReadonlyMap<numb
 
     return race.task.state !== "Open" || attempts.length === 0
       ? []
-      : [{ task: { id: race.task.id, intent: race.task.intent }, attempts, live: attempts.some((attempt) => attempt.live) }];
+      : [{ task: { id: race.task.id, intent: race.task.intent, title: race.task.title }, attempts, live: attempts.some((attempt) => attempt.live) }];
   });
 
 /** The working attempts an agent is at, whose status the page asks for. */

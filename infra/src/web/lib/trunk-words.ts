@@ -142,6 +142,40 @@ export const nodeSummary = (story: NodeStory) => {
   return story.attempts.length === 0 ? "Accepted." : race(story.attempts);
 };
 
+/** A task as a page names it: the model's title once there is one, else its intent's first sentence. */
+export const taskName = (task: { readonly intent: string; readonly title?: string | undefined }) => task.title ?? headline(task.intent);
+
+const MINUTE = 60;
+
+const HOUR = 60 * MINUTE;
+
+const DAY = 24 * HOUR;
+
+/** How long ago `at` (seconds since the epoch) was, from `now` (milliseconds): "just now", "5 minutes ago", ..., or the date past a month. */
+export const timeAgo = (at: number, now: number) => {
+  const seconds = Math.max(0, Math.floor(now / 1000) - at);
+
+  if (seconds < MINUTE) {
+    return "just now";
+  }
+
+  const steps = [
+    [HOUR, MINUTE, "minute"],
+    [DAY, HOUR, "hour"],
+    [30 * DAY, DAY, "day"],
+  ] as const;
+
+  const step = steps.find(([below]) => seconds < below);
+
+  if (step === undefined) {
+    return new Date(at * 1000).toISOString().slice(0, 10);
+  }
+
+  const count = Math.floor(seconds / step[1]);
+
+  return count === 1 && step[2] === "day" ? "yesterday" : `${plural(count, step[2])} ago`;
+};
+
 /** How long a headline runs before it is cut at a word. */
 const HEADLINE = 110;
 
@@ -176,7 +210,7 @@ export const graftSource = (from: string | undefined) => {
 /** What the node settled, as its heading says it: the task's intent's first sentence, or where the code came from. */
 export const nodeIntent = (story: NodeStory) => {
   if (story.task !== undefined) {
-    return headline(story.task.intent);
+    return taskName(story.task);
   }
 
   return story.kind === "graft" ? `Grafted from ${graftSource(story.graftedFrom)}` : "Root, as initialized";

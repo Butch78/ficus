@@ -7,6 +7,13 @@
 import type { Attempt, CloseReason, Deploy, Score, Tree, TreeNode } from "./answers.ts";
 import { trunk } from "./view.ts";
 
+/** A task as a page names it: its title once a model wrote one, else its intent's first sentence (lib/trunk-words.ts `taskName`). */
+export interface TaskName {
+  readonly id: number;
+  readonly intent: string;
+  readonly title: string | undefined;
+}
+
 /** What became of one attempt at a node's task. */
 export type Outcome = "accepted" | "lost" | "abandoned" | "rebased" | "retried" | "open";
 
@@ -29,7 +36,7 @@ export interface NodeStory {
   /** The root (initialized), an accepted attempt, or a graft of an outside commit. */
   readonly kind: "root" | "accepted" | "graft";
   /** The task the node settled; undefined for the root and a graft. */
-  readonly task: { readonly id: number; readonly intent: string } | undefined;
+  readonly task: TaskName | undefined;
   /** Where a graft came from. */
   readonly graftedFrom: string | undefined;
   /** Every attempt at the node's task, the accepted one first, then by id. */
@@ -159,7 +166,7 @@ const taskAt = (tree: Tree, node: TreeNode) => {
       ? Object.values(tree.tasks).find(({ state }) => state !== "Open" && "Done" in state && state.Done.node === node.id)
       : tree.tasks[String(winner.task)];
 
-  return task === undefined ? undefined : { id: task.id, intent: task.intent };
+  return task === undefined ? undefined : { id: task.id, intent: task.intent, title: task.title };
 };
 
 const kindOf = (node: TreeNode): NodeStory["kind"] => {

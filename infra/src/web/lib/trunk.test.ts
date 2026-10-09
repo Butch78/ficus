@@ -121,7 +121,7 @@ describe("trunkStory", () => {
   test("an accepted node tells its task and every attempt at it, the winner first", () => {
     const node = at(1);
 
-    expect(node.task).toEqual({ id: 1, intent: "fix slugify" });
+    expect(node.task).toEqual({ id: 1, intent: "fix slugify", title: undefined });
 
     expect(node.touched).toEqual(["src/slug.ts", "README.md"]);
 

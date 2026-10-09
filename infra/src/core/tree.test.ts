@@ -321,6 +321,30 @@ describe("the tree", () => {
     expect(refusal(T.submittable(g.get(), attempt, [stranger, change, base]))).toBe("NotWorking");
   });
 
+  test("a model's answer becomes a short title: first line, no label, quotes or full stop, cut at a word", () => {
+    expect(T.cleanTitle('Title: "Release and roll back from the UI."\nBecause...')).toBe("Release and roll back from the UI");
+    expect(T.cleanTitle("<think>hmm</think>**Keep scores on accepted nodes**")).toBe("Keep scores on accepted nodes");
+    expect(T.cleanTitle("   ")).toBeUndefined();
+    expect(T.cleanTitle("add snapshot support for scoring")).toBe("Add snapshot support for scoring");
+
+    const long = T.cleanTitle("Show each node of the trunk as a card in an upward growing flow with live agents beside it");
+
+    expect(long?.length).toBeLessThanOrEqual(T.TITLE_MAX);
+    expect(long?.endsWith(" ")).toBe(false);
+  });
+
+  test("any task may be titled, and the untitled ones are listed oldest first", () => {
+    const g = grow();
+    const first = g.task("one");
+    const second = g.task("two");
+
+    expect(T.untitled(g.get()).map((task) => task.id)).toEqual([first, second]);
+    g.set(ok(T.titleTask(g.get(), second, "Two")));
+    expect(T.task(g.get(), second)?.title).toBe("Two");
+    expect(T.untitled(g.get()).map((task) => task.id)).toEqual([first]);
+    expect(refusal(T.titleTask(g.get(), TaskId.make(99), "x"))).toBe("UnknownTask");
+  });
+
   test("a task closes with a note once none of its attempts is working, checking or scored", () => {
     const g = grow();
     const task = g.task("intent");

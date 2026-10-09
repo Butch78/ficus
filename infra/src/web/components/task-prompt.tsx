@@ -1,10 +1,10 @@
 import { Text } from "@cloudflare/kumo";
-import { headline } from "../lib/trunk-words.ts";
+import { headline, taskName } from "../lib/trunk-words.ts";
 import { CollapsiblePanel, CollapsibleRoot, CollapsibleTrigger } from "./kumo.ts";
 
-/** The whole of a task's prompt, folded away under its first sentence; nothing when that sentence is all of it. */
-export function FullPrompt({ intent }: { readonly intent: string }) {
-  if (headline(intent) === intent.trim()) {
+/** The whole of a task's prompt, folded away under its name; nothing when the name already says all of it. */
+export function FullPrompt({ intent, shown }: { readonly intent: string; readonly shown?: string }) {
+  if ((shown ?? headline(intent)) === intent.trim()) {
     return null;
   }
 
@@ -22,20 +22,22 @@ export function FullPrompt({ intent }: { readonly intent: string }) {
   );
 }
 
-/** A task's prompt as a page shows it: the first sentence, the rest a click away. Prompts are often whole paragraphs. */
-export function TaskPrompt({ intent, heading = false }: { readonly intent: string; readonly heading?: boolean }) {
+/** A task's prompt as a page shows it: its name (a model's title, or the first sentence), the whole prompt a click away. */
+export function TaskPrompt({ intent, title, heading = false }: { readonly intent: string; readonly title: string | undefined; readonly heading?: boolean }) {
+  const name = taskName({ intent, title });
+
   return (
     <div className="flex flex-col gap-1">
       {heading ? (
         <Text variant="heading" as="h3">
-          {headline(intent)}
+          {name}
         </Text>
       ) : (
         <Text variant="secondary" size="sm">
-          For: {headline(intent)}
+          For: {name}
         </Text>
       )}
-      <FullPrompt intent={intent} />
+      <FullPrompt intent={intent} shown={name} />
     </div>
   );
 }

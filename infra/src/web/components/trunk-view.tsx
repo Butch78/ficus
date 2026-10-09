@@ -8,9 +8,10 @@ import {
   changedPaths,
   detailsLabel,
   graftRunIntent,
-  headline,
   nodeIntent,
   nodeSummary,
+  taskName,
+  timeAgo,
   plural,
   trunkRows,
   type TrunkRow,
@@ -46,6 +47,10 @@ interface Props {
   readonly growing: ReadonlyArray<GrowingStory>;
   /** The growing task whose race the panel shows, from the page's `?task=`; it wins over `shown`. */
   readonly task: string | undefined;
+  /** When each trunk commit landed, in seconds (from the head's log); a commit missing from it goes unsaid. */
+  readonly landed: ReadonlyMap<string, number>;
+  /** The time the page is drawn at, in milliseconds. */
+  readonly now: number;
 }
 
 /**
@@ -57,7 +62,7 @@ interface Props {
  * (its own flow) sits in a panel beside it: Kumo's Flow does not nest, since
  * its nodes fade in through motion that a parent node's motion holds back.
  */
-export function TrunkView({ org, tree, member, stories, shown, older, growing, task }: Props) {
+export function TrunkView({ org, tree, member, stories, shown, older, growing, task, landed, now }: Props) {
   const [head] = stories;
 
   if (head === undefined) {
@@ -69,6 +74,7 @@ export function TrunkView({ org, tree, member, stories, shown, older, growing, t
   const selected = stories.find((story) => String(story.node) === shown) ?? head;
 
   const watched = growing.find((story) => String(story.task.id) === task);
+  const ago = new Map(stories.flatMap((story) => (landed.has(story.commit) ? [[story.node, timeAgo(landed.get(story.commit) ?? 0, now)] as const] : [])));
 
   const here = (pick: Pick, open: boolean) => {
     const query = new URLSearchParams({ [pick.kind]: String(pick.id) });
@@ -86,7 +92,7 @@ export function TrunkView({ org, tree, member, stories, shown, older, growing, t
   const folds = rows.length > SHOWN + 2;
 
   const card = (row: TrunkRow) => (
-    <TrunkCard key={row[0].node} base={base} member={member} row={row} selected={watched === undefined ? selected.node : -1} open={here({ kind: "node", id: row[0].node }, unfolded)} />
+    <TrunkCard key={row[0].node} base={base} member={member} row={row} ago={ago} selected={watched === undefined ? selected.node : -1} open={here({ kind: "node", id: row[0].node }, unfolded)} />
   );
 
   const olderRows = folds && unfolded ? rows.slice(SHOWN, -1) : [];
@@ -102,7 +108,7 @@ export function TrunkView({ org, tree, member, stories, shown, older, growing, t
         {newest.toReversed().map(card)}
         <GrowingCards base={base} member={member} growing={growing} watched={watched?.task.id} open={(id) => here({ kind: "task", id }, unfolded)} />
       </UpwardFlow>
-      {watched === undefined ? <NodePanel base={base} member={member} story={selected} /> : <TaskPanel base={base} member={member} story={watched} />}
+      {watched === undefined ? <NodePanel base={base} member={member} story={selected} ago={ago.get(selected.node)} /> : <TaskPanel base={base} member={member} story={watched} />}
     </div>
   );
 }
@@ -158,7 +164,7 @@ function GrowingCard({ base, member, story, share, watched, open }: GrowingCardP
         {story.live ? <Loader size={12} /> : null}
         {member ? <Link href={`${base}/tasks/${story.task.id}`}>task {story.task.id}</Link> : <Text size="sm">task {story.task.id}</Text>}
       </span>
-      <Text size="sm">{headline(story.task.intent)}</Text>
+      <Text size="sm">{taskName(story.task)}</Text>
       <ul className="flex flex-col gap-1">
         {story.attempts.map((attempt) => (
           <li key={attempt.attempt} className="flex min-w-0 flex-col items-start gap-0.5">
@@ -219,18 +225,20 @@ interface RowProps {
   readonly row: TrunkRow;
   /** The node the panel shows. */
   readonly selected: number;
+  /** How long ago each node landed, by node. */
+  readonly ago: ReadonlyMap<number, string>;
   /** Where its "what happened" link goes. */
   readonly open: string;
 }
 
 /** A node's card, or one card for a run of grafts from one place with every deploy of the run. */
-function TrunkCard({ base, member, row, selected, open }: RowProps) {
+function TrunkCard({ base, member, row, selected, open, ago }: RowProps) {
   const [story] = row;
 
   return (
     <Card>
       {row.length === 1 ? (
-        <NodeWords base={base} member={member} story={story} selected={selected === story.node} open={open} />
+        <NodeWords base={base} member={member} story={story} selected={selected === story.node} open={open} ago={ago.get(story.node)} />
       ) : (
         <GraftRunWords base={base} row={row} deploys={newestFirst(row.flatMap((each) => each.deploys))} />
       )}
@@ -269,20 +277,20 @@ interface NodeProps {
 interface WordsProps extends NodeProps {
   /** Whether the panel shows this node. */
   readonly selected: boolean;
+  /** How long ago it landed. */
+  readonly ago: string | undefined;
   /** Where its "what happened" link goes. */
   readonly open: string;
 }
 
 /** One node's words: its heading, what it settled, how, and the way to what happened there. */
-function NodeWords({ base, member, story, selected, open }: WordsProps) {
+function NodeWords({ base, story, selected, open, ago }: WordsProps) {
   return (
     <>
-      <NodeHeading base={base} story={story} />
-      {member && story.task !== undefined ? (
-        <Link href={`${base}/tasks/${story.task.id}`}>{nodeIntent(story)}</Link>
-      ) : (
-        <Text size="sm">{nodeIntent(story)}</Text>
-      )}
+      <Link href={`${base}/nodes/${story.node}`}>
+        <span className="font-medium">{nodeIntent(story)}</span>
+      </Link>
+      <NodeMeta story={story} ago={ago} />
       {selected ? (
         <span className="flex items-center gap-2">
           <Badge variant="outline">shown</Badge>
@@ -323,12 +331,16 @@ function NewestDeploy({ deploys }: { readonly deploys: ReadonlyArray<Deploy> }) 
   );
 }
 
-/** The node's name and commit, and where it stands: the head, released, its newest deploy. */
-function NodeHeading({ base, story }: Omit<NodeProps, "member">) {
+/** A node's quiet line: its commit, how long ago it landed, and where it stands (the head, released, its newest deploy). */
+function NodeMeta({ story, ago }: { readonly story: NodeStory; readonly ago: string | undefined }) {
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-      <Link href={`${base}/nodes/${story.node}`}>node {story.node}</Link>
       <Text variant="mono-secondary">{short(story.commit)}</Text>
+      {ago === undefined ? null : (
+        <Text variant="secondary" size="xs" as="span">
+          {ago}
+        </Text>
+      )}
       {story.head ? <Badge variant="green">head</Badge> : null}
       {story.released ? <Badge variant="purple">released</Badge> : null}
       <NewestDeploy deploys={story.deploys} />
@@ -337,13 +349,13 @@ function NodeHeading({ base, story }: Omit<NodeProps, "member">) {
 }
 
 /** What happened at one node: its flow (task, attempts, node, deploy), the task in full, its deploys, and its change. */
-function NodePanel({ base, member, story }: NodeProps) {
+function NodePanel({ base, member, story, ago }: NodeProps & { readonly ago: string | undefined }) {
   return (
     <section className="order-first flex min-w-0 flex-col gap-3 rounded-lg border border-kumo-hairline p-4 lg:sticky lg:top-4 lg:order-none">
       <Text variant="heading3" as="h3">
-        What happened at node {story.node}
+        {nodeIntent(story)}
       </Text>
-      <Text size="sm">{nodeIntent(story)}</Text>
+      <NodeMeta story={story} ago={ago} />
       <Text variant="secondary" size="xs">
         {nodeSummary(story)}
       </Text>
@@ -364,11 +376,13 @@ function TaskPanel({ base, member, story }: { readonly base: string; readonly me
     <section className="order-first flex min-w-0 flex-col gap-3 rounded-lg border border-kumo-hairline p-4 lg:sticky lg:top-4 lg:order-none">
       <span className="flex items-center gap-2">
         <Text variant="heading3" as="h3">
-          Growing: task {story.task.id}
+          {taskName(story.task)}
         </Text>
         {story.live ? <Loader size={14} /> : null}
       </span>
-      <Text size="sm">{headline(story.task.intent)}</Text>
+      <Text variant="secondary" size="xs">
+        Growing: task {story.task.id}
+      </Text>
       <TaskFlow base={base} member={member} story={story} />
       <FullPrompt intent={story.task.intent} />
     </section>

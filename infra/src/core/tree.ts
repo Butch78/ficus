@@ -74,6 +74,8 @@ export const Task = Schema.Struct({
   checks: Schema.optionalKey(Schema.Array(CheckSpec)),
   /** Attempts an agent started over from a newer head. */
   retries: Schema.optionalKey(Id),
+  /** A few words naming the task for people, written by a model from its intent (src/tree/titles.ts); absent until then. */
+  title: Schema.optionalKey(Schema.String),
 });
 
 export type Task = typeof Task.Type;
@@ -407,6 +409,56 @@ export const closeTask = (tree: Tree, taskId: TaskId, note: string) =>
 
     return withTask(tree, { ...owner, state: { Closed: { note } } });
   });
+
+/** How long a task's title may run, in characters. */
+export const TITLE_MAX = 60;
+
+/**
+ * A model's answer as a task's title: its first line, without a "Title:"
+ * label, quotes, markdown or a trailing full stop, starting with a capital and
+ * cut at a word past `TITLE_MAX`; undefined when nothing is left.
+ */
+export const cleanTitle = (answer: string) => {
+  const line = answer.replace(/<think>[\s\S]*?<\/think>/gu, "").trim().split("\n")[0] ?? "";
+
+  const bare = line
+    .replace(/^(?:title\s*:\s*)/iu, "")
+    .replace(/[*_`#]/gu, "")
+    .replace(/^["'“‘]+|["'”’]+$/gu, "")
+    .replace(/[.。]+$/u, "")
+    .trim();
+
+  if (bare === "") {
+    return undefined;
+  }
+
+  // Sentence case: some models answer all in lower case.
+  const title = `${bare.charAt(0).toUpperCase()}${bare.slice(1)}`;
+
+  if (title.length <= TITLE_MAX) {
+    return title;
+  }
+
+  const cut = title.slice(0, TITLE_MAX);
+  const word = cut.lastIndexOf(" ");
+
+  return cut.slice(0, word > TITLE_MAX / 2 ? word : TITLE_MAX).trim();
+};
+
+/** Name `task` for people; any task, open or not, since titles only describe. */
+export const titleTask = (tree: Tree, taskId: TaskId, title: string) =>
+  Result.gen(function* () {
+    const owner = tree.tasks[taskId];
+
+    if (owner === undefined) {
+      return yield* refuse("UnknownTask", `no task ${taskId}`);
+    }
+
+    return withTask(tree, { ...owner, title });
+  });
+
+/** The tasks a model has not named yet, oldest first. */
+export const untitled = (tree: Tree) => Object.values(tree.tasks).filter((task) => task.title === undefined).toSorted((one, other) => one.id - other.id);
 
 /** Start an attempt at `task` from the current head. */
 export const start = (tree: Tree, taskId: TaskId, agent: string) =>

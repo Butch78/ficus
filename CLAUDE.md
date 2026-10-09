@@ -40,6 +40,8 @@ deadline 2026-10-14.
   `GET /trees/<t>/behind` · `POST /trees/<t>/attempts/<id>/{retry,abandon}` ·
   `POST /trees/<t>/tasks/<id>/close {note}` (closes a task with no open attempt, unaccepted; 409 otherwise) ·
   `POST /trees/<t>/release {node?}` · `GET /trees/<t>/release` · `GET /trees/<t>` ·
+  `POST /trees/<t>/titles` (202: names every untitled task in the background; each new task is named right after it is
+  made, `src/tree/titles.ts`, Llama 3.3 70B fast on the tree's Workers AI binding, cleaned by core's `cleanTitle`) ·
   `POST /trees/<t>/visibility {public}` (members; `public` is optional in the tree, absent = private) ·
   `POST /trees/<t>/graft {source, branch?}` (imports an outside commit into `<t>-g<id>` as the new head;
   open attempts become behind and are rebased; `.github/workflows/graft.yml` follows GitHub's main) ·
@@ -87,7 +89,8 @@ deadline 2026-10-14.
 - UI pages: tree (head, release + its deploys with Release behind a Kumo Dialog, open tasks and how each stands, New task,
   history as a Kumo Flow growing upward (`components/trunk-view.tsx`: laid out oldest first and flipped with
   `-scale-y-100`, each card flipped back; `?older=1` unfolds the older nodes into it), one card per node (`lib/trunk.ts` a
-  story per node, `lib/trunk-words.ts` its sentences), and beside it the `?node=` card's own Flow (`components/node-flow.tsx`:
+  story per node, `lib/trunk-words.ts` its sentences; a card leads with the task's title, then commit and time ago from the
+  head's log, `lib/history.ts`), and beside it the `?node=` card's own Flow (`components/node-flow.tsx`:
   task, its attempts side by side with rebases as lists and losers greyed, the node, the release and its Deploy Workflow
   steps). Open tasks with attempts in their race grow from the head as live cards (`lib/growing.ts`: each attempt's agent tool
   call, scoring step or standing; `lib/agents.ts` asks the working agents), their race in the panel on `?task=`; the page's

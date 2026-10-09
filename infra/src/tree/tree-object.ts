@@ -24,6 +24,7 @@ import { AttemptId, NodeId, Oid, RepoName, TaskId, type TreeError } from "../cor
 import { ANONYMOUS_HEADER, anonymousMay, isPublic, NO_SUCH_TREE } from "../core/visibility.ts";
 import * as Agents from "./agents.ts";
 import * as Deploys from "./deploys.ts";
+import { titleFor, type TitleModel } from "./titles.ts";
 import * as Artifacts from "./artifacts.ts";
 import { answerRefused, artifactsRefused, browseRefused, json, refuse, Refused, text, treeRefused } from "./http.ts";
 import { committed, diffTrees, listDirectory, readFile } from "./reads.ts";
@@ -36,6 +37,8 @@ export interface Bindings {
   readonly AGENTS: DurableObjectNamespace;
   /** The `Deploy` Workflow (src/deploys); absent on a stage that does not deploy. */
   readonly DEPLOYS?: Workflow<DeployParams>;
+  /** Workers AI, which names tasks (titles.ts); without it tasks go untitled. */
+  readonly AI?: TitleModel;
 }
 
 const TREE_KEY = "tree";
@@ -50,6 +53,9 @@ const ASSIGNMENT_PREFIX = "assignment:";
 const IMPORT_POLLS = 30;
 
 const IMPORT_POLL = "2 seconds";
+
+/** How many titles a backfill asks for at once. */
+const TITLING = 4;
 
 /** Deep enough to find an attempt's base under any sensible amount of work. */
 const HISTORY_DEPTH = 1000;
@@ -231,6 +237,8 @@ export class TreeObject extends DurableObject<Bindings> {
         return yield* this.#release(yield* decodeBody(ReleaseBody, request));
       case "graft":
         return yield* this.#graft(yield* decodeBody(GraftBody, request));
+      case "titles":
+        return yield* this.#titleUntitled();
       case "visibility":
         return yield* this.#visibility(yield* decodeBody(VisibilityBody, request));
       case "accept":
@@ -590,8 +598,41 @@ export class TreeObject extends DurableObject<Bindings> {
     const made = yield* fromTree(T.taskNew(yield* this.#tree(), body.intent, body.checks ?? []));
 
     yield* this.#save(made.tree);
+    this.#titleLater([made.task]);
 
     return json({ task: made.task });
+  });
+
+  /** Name `tasks` in the background: a title takes a model's answer, which the caller need not wait for. */
+  #titleLater(tasks: ReadonlyArray<TaskId>) {
+    const ai = this.env.AI;
+
+    if (ai !== undefined && tasks.length > 0) {
+      this.ctx.waitUntil(Effect.runPromise(Effect.forEach(tasks, (task) => this.#title(ai, task), { concurrency: TITLING, discard: true })));
+    }
+  }
+
+  /** Ask for `task`'s title, then keep it; the tree is read again after the model answers, so nothing that changed meanwhile is lost. */
+  readonly #title = Effect.fn("Tree.title")(function* (this: TreeObject, ai: TitleModel, task: TaskId) {
+    const intent = T.task(yield* this.#tree(), task)?.intent;
+    const title = intent === undefined ? Option.none() : yield* titleFor(ai, intent);
+
+    if (Option.isSome(title)) {
+      yield* this.#save(yield* fromTree(T.titleTask(yield* this.#tree(), task, title.value)));
+    }
+  }, Effect.catchTag("Tree.Refused", (refused) => Effect.logError(`titling a task: ${refused.message}`)));
+
+  /** `POST /trees/<t>/titles`: name every task without a title, in the background; answers which. */
+  readonly #titleUntitled = Effect.fn("Tree.titleUntitled")(function* (this: TreeObject) {
+    const tasks = T.untitled(yield* this.#tree()).map((task) => task.id);
+
+    if (this.env.AI === undefined) {
+      return yield* refuse(503, "this stage has no model to title tasks with");
+    }
+
+    this.#titleLater(tasks);
+
+    return json({ titling: tasks }, 202);
   });
 
   /** Record a new attempt, then fork its base node's repo for it. */

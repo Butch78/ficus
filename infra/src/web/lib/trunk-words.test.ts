@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AttemptStory, NodeStory } from "./trunk.ts";
-import { attemptChains, attemptDetail, detailsLabel, graftRunIntent, graftSource, headline, listed, nodeIntent, nodeSummary, trunkRows } from "./trunk-words.ts";
+import { attemptChains, attemptDetail, detailsLabel, graftRunIntent, graftSource, headline, listed, nodeIntent, nodeSummary, taskName, timeAgo, trunkRows } from "./trunk-words.ts";
 
 const attempt = (id: number, agent: string, outcome: AttemptStory["outcome"], score?: string, other?: number): AttemptStory => ({
   attempt: id,
@@ -16,13 +16,34 @@ const node = (kind: NodeStory["kind"], attempts: ReadonlyArray<AttemptStory>, id
   parent: kind === "root" ? null : 2,
   commit: "abc",
   kind,
-  task: kind === "accepted" ? { id: 4, intent: "Fix the thing. Then say so." } : undefined,
+  task: kind === "accepted" ? { id: 4, intent: "Fix the thing. Then say so.", title: undefined } : undefined,
   graftedFrom: kind === "graft" ? "https://example.com/repo.git" : undefined,
   attempts,
   touched: kind === "accepted" ? ["a.ts"] : [],
   head: false,
   released: false,
   deploys: [],
+});
+
+describe("taskName", () => {
+  test("a model's title names a task; until there is one, its intent's first sentence does", () => {
+    expect(taskName({ intent: "Fix the thing. Then say so.", title: "Fix the thing" })).toBe("Fix the thing");
+    expect(taskName({ intent: "Fix the thing. Then say so." })).toBe("Fix the thing.");
+  });
+});
+
+describe("timeAgo", () => {
+  const now = 1_800_000_000_000;
+  const at = (secondsAgo: number) => now / 1000 - secondsAgo;
+
+  test("says how long ago in the largest whole unit, and the date past a month", () => {
+    expect(timeAgo(at(20), now)).toBe("just now");
+    expect(timeAgo(at(60), now)).toBe("1 minute ago");
+    expect(timeAgo(at(2 * 3600 + 5), now)).toBe("2 hours ago");
+    expect(timeAgo(at(30 * 3600), now)).toBe("yesterday");
+    expect(timeAgo(at(5 * 86_400), now)).toBe("5 days ago");
+    expect(timeAgo(at(40 * 86_400), now)).toBe("2026-12-06");
+  });
 });
 
 describe("nodeSummary", () => {

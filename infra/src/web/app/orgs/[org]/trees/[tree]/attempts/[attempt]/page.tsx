@@ -80,7 +80,7 @@ export default async function AttemptPage({ params, searchParams }: Props) {
         <AutoRefresh active={standing === "Working" || standing === "Checking"} what="this attempt is still moving" />
       </PageHeader>
       <Text size="sm">{say(standing).sentence}</Text>
-      <TaskPrompt intent={race.task.intent} />
+      <TaskPrompt intent={race.task.intent} title={race.task.title} />
       <OperationOutcome org={org} op={op} trace={trace} error={error} />
 
       <ChainOfThought>
