@@ -304,6 +304,23 @@ describe("the tree", () => {
     expect([entry?.reason, entry?.score]).toEqual([{ Abandoned: { note: "lost interest" } }, passing(1)]);
   });
 
+  test("a submit freezes the newest commit beyond the base, and refuses anything else before it starts", () => {
+    const g = grow();
+    const task = g.task("intent");
+    const attempt = g.attempt(task, "a");
+    const [base, change, stranger] = [oid("0"), oid("a"), oid("b")];
+
+    expect(refusal(T.submittable(g.get(), attempt, []))).toBe("NothingToSubmit");
+    expect(refusal(T.submittable(g.get(), attempt, [base]))).toBe("NothingToSubmit");
+    expect(refusal(T.submittable(g.get(), attempt, [stranger]))).toBe("NothingToSubmit");
+    expect(refusal(T.submittable(g.get(), attempt, ["not-a-hash", base]))).toBe("MalformedOid");
+    expect(refusal(T.submittable(g.get(), AttemptId.make(99), [change, base]))).toBe("UnknownAttempt");
+    expect(ok(T.submittable(g.get(), attempt, [change, base]))).toBe(change);
+
+    g.set(ok(T.submit(g.get(), attempt, change)));
+    expect(refusal(T.submittable(g.get(), attempt, [stranger, change, base]))).toBe("NotWorking");
+  });
+
   test("a task closes with a note once none of its attempts is working, checking or scored", () => {
     const g = grow();
     const task = g.task("intent");

@@ -39,6 +39,7 @@ const TREE_STATUS: Readonly<Record<TreeErrorKind, number>> = {
   NothingToRebase: 409,
   Rebasing: 409,
   NotRebase: 409,
+  NothingToSubmit: 409,
   NothingToAccept: 409,
   NothingScored: 409,
   TaskExhausted: 409,

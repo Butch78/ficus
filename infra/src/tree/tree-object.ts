@@ -656,27 +656,19 @@ export class TreeObject extends DurableObject<Bindings> {
       return yield* refuse(404, `no attempt ${attempt}`);
     }
 
-    const baseCommit = T.node(tree, entry.base)?.commit;
     const on = yield* Artifacts.repo(this.#artifacts(), entry.repo).pipe(Effect.mapError(artifactsRefused));
 
+    const hashes = Artifacts.log(on, undefined, HISTORY_DEPTH).pipe(
+      Effect.map((commits) => commits.map((commit) => commit.hash)),
+      Effect.mapError(artifactsRefused),
+    );
+
+    // Refused before the revoke, so the agent keeps its token to push and submit again.
+    yield* fromTree(T.submittable(tree, attempt, yield* hashes));
     yield* Artifacts.revokeActiveTokens(on).pipe(Effect.mapError(artifactsRefused));
 
-    const history = yield* Artifacts.log(on, undefined, HISTORY_DEPTH).pipe(Effect.mapError(artifactsRefused));
-    const [latest] = history;
-
-    if (latest === undefined) {
-      return yield* refuse(409, "attempt repo has no commits");
-    }
-
-    if (latest.hash === baseCommit) {
-      return yield* refuse(409, "attempt has no commits beyond its base");
-    }
-
-    if (!history.some((commit) => commit.hash === baseCommit)) {
-      return yield* refuse(409, "attempt head does not descend from its base commit");
-    }
-
-    const head = yield* Schema.decodeUnknownEffect(Oid)(latest.hash).pipe(Effect.mapError(() => refuse(400, `not a git object id: ${latest.hash}`)));
+    // Read again: a push that landed before the revoke is part of what was submitted.
+    const head = yield* fromTree(T.submittable(tree, attempt, yield* hashes));
     const submitted = yield* fromTree(T.submit(yield* this.#tree(), attempt, head));
 
     yield* this.#save(submitted);

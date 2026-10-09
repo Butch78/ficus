@@ -34,7 +34,7 @@ deadline 2026-10-14.
   Tree DO name and root repo are `<tenant>-<tree>`. Tree Worker routes, one `TreeObject` DO per tree:
   `POST /trees/<t>/init {source}` · `POST /trees/<t>/tasks {intent, checks?}` ·
   `POST /trees/<t>/tasks/<id>/attempts {agent}` → fork + write token (+ the task's checks) ·
-  `POST /trees/<t>/attempts/<id>/submit` (revokes tokens, reads head from Artifacts, queues scoring; 202) ·
+  `POST /trees/<t>/attempts/<id>/submit` (checks there is a commit beyond the base before it revokes tokens, so a refused submit keeps them; reads head from Artifacts, queues scoring; 202) ·
   `GET /trees/<t>/attempts/<id>` (state + report) · `POST /trees/<t>/tasks/<id>/accept` ·
   `POST /trees/<t>/accept` (oldest ready task; both set the alarm that rebases the behind attempts) ·
   `GET /trees/<t>/behind` · `POST /trees/<t>/attempts/<id>/{retry,abandon}` ·

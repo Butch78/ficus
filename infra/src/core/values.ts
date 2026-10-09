@@ -66,6 +66,7 @@ export const TreeErrorKind = Schema.Literals([
   "NothingToRebase",
   "Rebasing",
   "NotRebase",
+  "NothingToSubmit",
   "NothingToAccept",
   "NothingScored",
   "TaskExhausted",

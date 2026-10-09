@@ -422,6 +422,40 @@ export const start = (tree: Tree, taskId: TaskId, agent: string) =>
     return { tree: withAttempt(taken, entry), attempt: id };
   });
 
+/**
+ * The commit a submit of attempt `id` would freeze: the newest in its repo's
+ * `log` (hashes, newest first), which has to be beyond the attempt's base and
+ * descend from it. Asked before the attempt's tokens are revoked, so a refused
+ * submit leaves its agent able to push and submit again.
+ */
+export const submittable = (tree: Tree, id: AttemptId, log: ReadonlyArray<string>) =>
+  Result.gen(function* () {
+    const entry = yield* lookupAttempt(tree, id);
+
+    if (entry.state !== "Working") {
+      return yield* refuse("NotWorking", `attempt ${id} is no longer working`);
+    }
+
+    const base = node(tree, entry.base)?.commit;
+    const [latest] = log;
+
+    if (latest === undefined) {
+      return yield* refuse("NothingToSubmit", "attempt repo has no commits");
+    }
+
+    if (latest === base) {
+      return yield* refuse("NothingToSubmit", "attempt has no commits beyond its base");
+    }
+
+    if (base === undefined || !log.includes(base)) {
+      return yield* refuse("NothingToSubmit", "attempt head does not descend from its base commit");
+    }
+
+    return yield* Schema.decodeUnknownResult(Oid)(latest).pipe(
+      Result.mapError(() => new TreeError({ kind: "MalformedOid", message: `not a git object id: ${latest}` })),
+    );
+  });
+
 /** Record that `attempt` finished working at `commit`. Its checks run next. */
 export const submit = (tree: Tree, id: AttemptId, commit: Oid) =>
   Result.gen(function* () {
