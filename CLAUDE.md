@@ -28,7 +28,9 @@ deadline 2026-10-14.
   `layerRest` elsewhere). Write questions as `Decision.make` definitions, ask with `DecisionModel.decide`;
   `@effect/ai-typesafe` (Jev) would be a drop-in layer behind the same definitions.
 - Secrets: secretspec, `~/.config/ficus/.env`. Agents must set SECRETSPEC_REASON to enter the shell.
-- Public entry is the Api Worker (`infra/src/api`): Better Auth on D1 (orgs, API keys via `x-api-key`).
+- Public entry is the Api Worker (`infra/src/api`): Better Auth on D1 (orgs, API keys via `x-api-key`). Membership is
+  `getSession` plus two lookups (`memberOf`: the organization by slug, then the member row); never `getFullOrganization`,
+  which read every member, user and invitation and verified an API key twice (9 D1 round trips, ~300 ms a call).
   It forwards `/v1/orgs/<org>/trees/<t>/...` over a service binding to the internal tree Worker
   (no workers.dev) with `x-ficus-tenant` = tenant key (first 50 bits of SHA-256(org id), base32).
   Tree DO name and root repo are `<tenant>-<tree>`. Tree Worker routes, one `TreeObject` DO per tree:

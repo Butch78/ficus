@@ -86,6 +86,32 @@ const organizationId = Effect.fn("Api.organizationId")(function* (slug: string) 
 });
 
 /**
+ * The id of the organization `slug` names, if `user` is one of its members; `Hidden` otherwise.
+ * Two lookups in Better Auth's tables: `getFullOrganization` read the whole
+ * organization (its members, their users, its invitations) and verified an API
+ * key a second time, counting the request twice against the key's limit.
+ */
+const memberOf = Effect.fn("Api.memberOf")(function* (slug: string, user: string) {
+  const auth = yield* Auth;
+  const id = yield* organizationId(slug);
+
+  const member = yield* Effect.tryPromise({
+    try: async () =>
+      (await auth.$context).adapter.findOne<{ readonly id: string }>({
+        model: "member",
+        where: [
+          { field: "organizationId", value: id },
+          { field: "userId", value: user },
+        ],
+        select: ["id"],
+      }),
+    catch: authFailure("could not check the membership"),
+  });
+
+  return member === null ? yield* new Hidden() : id;
+});
+
+/**
  * The organization `slug` names, if the caller is signed in and a member; or,
  * where `anonymous` allows it, for a caller with no session and no API key.
  */
@@ -109,16 +135,9 @@ const membership = Effect.fn("Api.membership")(function* (request: Request, slug
 
   // Answers only to members: a non-member and a missing organization are the
   // same 404, so membership of an organization does not leak its existence.
-  const organization = yield* Effect.tryPromise({
-    try: () => auth.api.getFullOrganization({ query: { organizationSlug: slug }, headers: request.headers }),
-    catch: () => fail(404, `no organization ${slug} that you belong to`),
-  });
+  const id = yield* memberOf(slug, session.user.id).pipe(Effect.catchTag("Api.Hidden", () => fail(404, `no organization ${slug} that you belong to`)));
 
-  if (organization === null) {
-    return yield* fail(404, `no organization ${slug} that you belong to`);
-  }
-
-  return { id: organization.id, anonymous: false };
+  return { id, anonymous: false };
 });
 
 const listTrees = Effect.fn("Api.listTrees")(function* (env: Bindings, request: Request, slug: string) {

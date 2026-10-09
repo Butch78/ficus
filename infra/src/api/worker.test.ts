@@ -162,4 +162,29 @@ describe("a request with no session and no API key", () => {
     expect(forwarded[0]?.headers.has(ANONYMOUS_HEADER)).toBe(false);
     expect(forwarded[0]?.headers.has("cookie")).toBe(false);
   });
+
+  test("is a signed-in non-member's: 404, the same as an organization that does not exist, and the tree is never asked", async () => {
+    const json = { origin, "content-type": "application/json" };
+
+    const signUp = (email: string) =>
+      call("/api/auth/sign-up/email", { method: "POST", headers: json, body: JSON.stringify({ email, password: "a-long-enough-password", name: email }) });
+
+    const cookieOf = (response: Response) => response.headers.getSetCookie().map((set) => set.split(";")[0]).join("; ");
+    const owner = cookieOf(await signUp("owner@example.com"));
+    const outsider = cookieOf(await signUp("outsider@example.com"));
+
+    const created = await call("/api/auth/organization/create", { method: "POST", headers: { ...json, cookie: owner }, body: JSON.stringify({ name: "Closed", slug: "closed" }) });
+
+    expect(created.status).toBe(200);
+
+    for (const slug of ["closed", "nowhere"]) {
+      const response = await call(`/v1/orgs/${slug}/trees/site`, { headers: { cookie: outsider } });
+
+      expect(response.status).toBe(404);
+      expect(await response.text()).toBe(JSON.stringify({ error: `no organization ${slug} that you belong to` }));
+    }
+
+    expect(forwarded).toEqual([]);
+    expect((await call("/v1/orgs/closed/trees/site", { headers: { cookie: owner } })).status).toBe(200);
+  });
 });
