@@ -1,35 +1,24 @@
 import { Badge, Empty, Link, Text } from "@cloudflare/kumo";
 import type { Deploy } from "../lib/answers.ts";
 import { deployStatus, type DeployTone } from "../lib/release.ts";
-import type { AttemptStory, NodeStory, Outcome } from "../lib/trunk.ts";
+import type { NodeStory, Outcome } from "../lib/trunk.ts";
 import {
   attemptChains,
-  attemptDetail,
   changedPaths,
   detailsLabel,
   graftRunIntent,
   headline,
   nodeIntent,
   nodeSummary,
-  OUTCOME_WORD,
   plural,
   trunkRows,
   type TrunkRow,
 } from "../lib/trunk-words.ts";
 import { short } from "../lib/view.ts";
 import { DEPLOY_BADGE, DEPLOY_WORD, DeployList } from "./deploy-list.tsx";
+import { NodeFlow } from "./node-flow.tsx";
 import { CollapsibleBarePanel, CollapsiblePanel, CollapsibleRoot, CollapsibleTrigger } from "./kumo.ts";
 import { AttemptIcon, DeployIcon, deployMarks, NodeDrawing, reach, TrunkSegment, trunkWidth } from "./trunk-drawing.tsx";
-
-/** Kumo's badges, by what became of an attempt. */
-const OUTCOME_BADGE = {
-  accepted: "green",
-  lost: "secondary",
-  abandoned: "orange",
-  rebased: "teal",
-  retried: "teal",
-  open: "outline",
-} as const satisfies Record<Outcome, string>;
 
 /** How many rows show before the older history folds away; the root's row always shows below the fold. */
 const SHOWN = 10;
@@ -277,21 +266,15 @@ function NodeHeading({ base, story }: Omit<NodeProps, "member">) {
   );
 }
 
-/** Every attempt at the node's task and what became of it, the node's deploys, and its change. */
+/** What happened at the node as a flow (task, attempts, node, deploy), its deploys' history, and its change; open at the head. */
 function NodeDetails({ base, member, story }: NodeProps) {
   return (
-    <CollapsibleRoot>
+    <CollapsibleRoot defaultOpen={story.head}>
       <CollapsibleTrigger className={TRIGGER_CLASS}>{detailsLabel(story)}</CollapsibleTrigger>
       <CollapsiblePanel>
         <div className="flex flex-col gap-3 pt-1">
+          <NodeFlow base={base} member={member} story={story} />
           <FullIntent story={story} />
-          {story.attempts.length === 0 ? null : (
-            <ul className="flex flex-col gap-1">
-              {story.attempts.map((attempt) => (
-                <AttemptLine key={attempt.attempt} base={base} member={member} attempt={attempt} />
-              ))}
-            </ul>
-          )}
           {story.deploys.length === 0 ? null : <DeployList base={base} deploys={story.deploys} />}
           <Text variant="secondary" size="xs">
             <Link href={`${base}/nodes/${story.node}`}>Browse node {story.node}</Link>
@@ -361,7 +344,7 @@ function GraftRunWords({ base, row, deploys }: RunProps) {
   );
 }
 
-/** The task's whole intent, when the heading showed only its first sentence. */
+/** The task's whole intent, folded, when the heading showed only its first sentence. */
 function FullIntent({ story }: { readonly story: NodeStory }) {
   const intent = story.task?.intent.trim() ?? "";
 
@@ -370,31 +353,15 @@ function FullIntent({ story }: { readonly story: NodeStory }) {
   }
 
   return (
-    <p className="whitespace-pre-line">
-      <Text variant="secondary" size="sm" as="span">
-        {intent}
-      </Text>
-    </p>
-  );
-}
-
-interface AttemptLineProps {
-  readonly base: string;
-  readonly member: boolean;
-  readonly attempt: AttemptStory;
-}
-
-function AttemptLine({ base, member, attempt }: AttemptLineProps) {
-  return (
-    <li className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-      {member ? <Link href={`${base}/attempts/${attempt.attempt}`}>attempt {attempt.attempt}</Link> : <Text size="sm">attempt {attempt.attempt}</Text>}
-      <Text size="sm" as="span">
-        {attempt.agent}
-      </Text>
-      <Badge variant={OUTCOME_BADGE[attempt.outcome]}>{OUTCOME_WORD[attempt.outcome]}</Badge>
-      <Text variant="secondary" size="xs" as="span">
-        {attemptDetail(attempt)}
-      </Text>
-    </li>
+    <CollapsibleRoot>
+      <CollapsibleTrigger className={TRIGGER_CLASS}>The task in full</CollapsibleTrigger>
+      <CollapsiblePanel>
+        <p className="whitespace-pre-line">
+          <Text variant="secondary" size="sm" as="span">
+            {intent}
+          </Text>
+        </p>
+      </CollapsiblePanel>
+    </CollapsibleRoot>
   );
 }

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import * as Schema from "effect/Schema";
 import { Deploys, Tree } from "./answers.ts";
-import { deployStatus, deploying, move } from "./release.ts";
+import { deploySteps, deployStatus, deploying, move } from "./release.ts";
 
 const a = "a".repeat(40);
 
@@ -65,5 +65,20 @@ describe("deployStatus", () => {
     expect(deployStatus(deploy("errored", { error: "no sandbox" })).label).toBe("errored: no sandbox");
     expect(deployStatus(deploy("unknown")).tone).toBe("unknown");
     expect(deploying([deploy("errored")])).toBe(false);
+  });
+});
+
+describe("deploySteps", () => {
+  test("a finished deploy is its run, then the deployer's update", () => {
+    expect(deploySteps(deploy("complete", { report: { ...ran(true), deployer: ran(true) } }))).toEqual([
+      { title: "deploy", detail: "passed in 61 s", tone: "deployed" },
+      { title: "update the deployer", detail: "passed in 61 s", tone: "deployed" },
+    ]);
+  });
+
+  test("a failed run stops there; an unfinished or errored deploy is one step", () => {
+    expect(deploySteps(deploy("complete", { report: ran(false) })).map(({ tone }) => tone)).toEqual(["failed"]);
+    expect(deploySteps(deploy("running"))).toEqual([{ title: "deploy", detail: "running now", tone: "running" }]);
+    expect(deploySteps(deploy("errored", { error: "no sandbox" }))[0]?.tone).toBe("failed");
   });
 });

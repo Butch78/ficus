@@ -53,6 +53,11 @@ describe("nodeSummary", () => {
       [85, 2],
     ]);
 
+    expect(attemptChains(story.attempts).map(({ line }) => line.map((hop) => hop.attempt))).toEqual([
+      [76, 82, 86],
+      [74, 80, 85],
+    ]);
+
     expect(nodeSummary(story)).toBe("2 attempts by opus and sonnet: opus won; 1 lost (5/5 checks, cost 97); rebased 4 times along the way.");
 
     expect(detailsLabel(story)).toBe("Details: 2 attempts, 1 path changed");

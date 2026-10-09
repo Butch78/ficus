@@ -86,7 +86,9 @@ deadline 2026-10-14.
   timeouts are seconds (`sandbox-env.ts` `timeoutMs`).
 - UI pages: tree (head, release + its deploys with Release behind a Kumo Dialog, open tasks and how each stands, New task,
   history drawn as a ficus growing up: `lib/trunk.ts` a story per node, `lib/trunk-words.ts` its sentences,
-  `components/trunk-drawing.tsx` the SVG, Kumo tokens only); node (Release or Roll back to it); task (standings from
+  `components/trunk-drawing.tsx` the SVG, Kumo tokens only; each node's details open on a Kumo Flow, `components/node-flow.tsx`:
+  task, its attempts side by side with rebases as lists and losers greyed, the node, the release and its Deploy Workflow
+  steps; Flow parts come from `components/kumo.ts`); node (Release or Roll back to it); task (standings from
   `src/core/tree.ts` `standings`, which shares the winner with `accept`; the case for accepting; Start
   agents; work one yourself); attempt (timeline, actions, diff via `GET .../{attempts,nodes}/<id>/diff`, scoring
   ledger, the agent at work).

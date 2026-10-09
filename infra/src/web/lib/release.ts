@@ -66,3 +66,41 @@ export const deployStatus = (deploy: Deploy): DeployStatus => {
 
 /** Whether any deploy is still going, so the page keeps refreshing; none are when they are not shown. */
 export const deploying = (deploys: ReadonlyArray<Deploy> | undefined) => (deploys ?? []).some((deploy) => deployStatus(deploy).tone === "running");
+
+/** One step of a release's Deploy Workflow, as a flow shows it. */
+export interface DeployStep {
+  readonly title: string;
+  readonly detail: string;
+  readonly tone: DeployTone;
+}
+
+type Report = NonNullable<Deploy["report"]>;
+
+const ranStep = (title: string, report: Pick<Report, "passed" | "millis">): DeployStep => ({
+  title,
+  detail: `${report.passed ? "passed" : "failed"} in ${seconds(report.millis)}`,
+  tone: report.passed ? "deployed" : "failed",
+});
+
+/**
+ * The Deploy Workflow's steps for one deploy (src/deploys): `run` (the
+ * released commit's `[deploy] run`, in the deployer), then, once it passed,
+ * `deployer` (its `[deploy] deployer`, in a scoring sandbox). Unfinished or
+ * failed before either reported, the whole deploy is one step.
+ */
+export const deploySteps = (deploy: Deploy): ReadonlyArray<DeployStep> => {
+  const { report } = deploy;
+  const status = deployStatus(deploy);
+
+  if (report === undefined || deploy.status !== "complete") {
+    return [{ title: "deploy", detail: status.label, tone: status.tone }];
+  }
+
+  if (!report.deployed) {
+    return [{ title: "deploy", detail: "nothing to deploy", tone: "skipped" }];
+  }
+
+  const deployer = report.deployer?.deployed === true ? [ranStep("update the deployer", report.deployer)] : [];
+
+  return [ranStep("deploy", report), ...deployer];
+};

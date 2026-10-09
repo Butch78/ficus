@@ -41,6 +41,8 @@ const times = (count: number) => {
  */
 export interface AttemptChain {
   readonly last: AttemptStory;
+  /** Every attempt of the work, oldest first: the hops it was moved on through, then `last`. */
+  readonly line: ReadonlyArray<AttemptStory>;
   readonly rebased: number;
   readonly retried: number;
 }
@@ -60,18 +62,20 @@ export const attemptChains = (attempts: ReadonlyArray<AttemptStory>): ReadonlyAr
     }
 
     const seen = new Set([last.attempt]);
+      const line = [last];
       let rebased = 0;
       let retried = 0;
       let before = into.get(last.attempt);
 
       while (before !== undefined && !seen.has(before.attempt)) {
         seen.add(before.attempt);
+        line.unshift(before);
         rebased += before.outcome === "rebased" ? 1 : 0;
         retried += before.outcome === "retried" ? 1 : 0;
         before = into.get(before.attempt);
       }
 
-      return [{ last, rebased, retried }];
+      return [{ last, line, rebased, retried }];
   });
 };
 

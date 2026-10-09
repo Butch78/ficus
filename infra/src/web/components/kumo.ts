@@ -8,7 +8,7 @@
  * is a property of the reference, not an export, and comes out undefined.
  * Re-exported by name here, each part is its own reference.
  */
-import { Breadcrumbs, Collapsible, LayerCard, Table } from "@cloudflare/kumo";
+import { Breadcrumbs, Collapsible, Flow, LayerCard, Table } from "@cloudflare/kumo";
 
 export const TableHeader = Table.Header;
 
@@ -38,3 +38,9 @@ export const CollapsiblePanel = Collapsible.DefaultPanel;
 
 /** A panel without DefaultPanel's indent and rule, for content that must line up with what is around it. */
 export const CollapsibleBarePanel = Collapsible.Panel;
+
+export const FlowNode = Flow.Node;
+
+export const FlowParallel = Flow.Parallel;
+
+export const FlowList = Flow.List;
