@@ -1,5 +1,4 @@
 import { Badge, Banner, Code, Empty, Input, LayerCard, Link, Text } from "@cloudflare/kumo";
-import * as Result from "effect/Result";
 import { notFound } from "next/navigation";
 import { AgentWork } from "../../../../../../../components/agent-work.tsx";
 import { AutoRefresh } from "../../../../../../../components/auto-refresh.tsx";
@@ -17,8 +16,10 @@ import { ScoringSteps } from "../../../../../../../components/scoring-steps.tsx"
 import { StandingBadge } from "../../../../../../../components/standing-badge.tsx";
 import { SubmitButton } from "../../../../../../../components/submit-button.tsx";
 import type { AgentStatus, TaskRace } from "../../../../../../../lib/answers.ts";
+import { agentStatuses } from "../../../../../../../lib/agents.ts";
 import * as Api from "../../../../../../../lib/api.ts";
-import { load, run } from "../../../../../../../lib/run.ts";
+import { agentAttempts } from "../../../../../../../lib/growing.ts";
+import { load } from "../../../../../../../lib/run.ts";
 import { acceptCase, say } from "../../../../../../../lib/standing.ts";
 import { closeReason } from "../../../../../../../lib/view.ts";
 import { startAgents, acceptTask, retryAttempt } from "../../../../../../actions.ts";
@@ -110,17 +111,7 @@ export default async function TaskPage({ params, searchParams }: Props) {
   const inFlight = race.attempts.some(({ standing }) => standing === "Working" || standing === "Checking");
 
   // What each agent still working its attempt is doing now.
-  const agents = new Map(
-    await Promise.all(
-      race.attempts
-        .filter((entry) => entry.standing === "Working" && entry.agent !== undefined && entry.agent !== null)
-        .map(async (entry) => {
-          const status = await run(Api.agentStatus(org, tree, entry.attempt.id));
-
-          return [entry.attempt.id, Result.isSuccess(status) ? status.success : undefined] as const;
-        }),
-    ),
-  );
+  const agents = await agentStatuses(org, tree, agentAttempts([race]));
 
   return (
     <>

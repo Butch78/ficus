@@ -1,6 +1,7 @@
-import { Flow, Link, Text } from "@cloudflare/kumo";
+import { Flow, Link, Loader, Text } from "@cloudflare/kumo";
 import type { ReactNode } from "react";
 import { deploySteps, type DeployTone } from "../lib/release.ts";
+import type { GrowingStory, LiveAttempt } from "../lib/growing.ts";
 import type { AttemptStory, NodeStory } from "../lib/trunk.ts";
 import { attemptChains, attemptDetail, OUTCOME_WORD } from "../lib/trunk-words.ts";
 import { FlowList, FlowNode, FlowParallel } from "./kumo.ts";
@@ -144,5 +145,67 @@ function NodeFlowAligned({ base, member, story, align }: Props & { readonly alig
       </FlowNode>
       <DeploySteps story={story} />
     </Flow>
+  );
+}
+
+interface LiveProps {
+  readonly base: string;
+  readonly member: boolean;
+  readonly attempt: LiveAttempt;
+}
+
+/** An attempt still in the race, as it is now: who, where it stands, what it is doing. */
+function LiveStep({ base, member, attempt }: LiveProps) {
+  const title = member ? <Link href={`${base}/attempts/${attempt.attempt}`}>attempt {attempt.attempt}</Link> : `attempt ${attempt.attempt}`;
+
+  return (
+    <FlowNode key={attempt.attempt}>
+      <Step title={title}>
+        <Detail>{attempt.agent}</Detail>
+        <span className="flex items-center gap-1">
+          {attempt.live ? <Loader size={10} /> : null}
+          <Detail variant={attempt.tone === "winner" ? "success" : "secondary"}>{attempt.words}</Detail>
+        </span>
+      </Step>
+    </FlowNode>
+  );
+}
+
+interface TaskProps {
+  readonly base: string;
+  readonly member: boolean;
+  readonly story: GrowingStory;
+}
+
+function TaskFlowAligned({ base, member, story, align }: TaskProps & { readonly align: "start" | "center" }) {
+  const task = member ? <Link href={`${base}/tasks/${story.task.id}`}>task {story.task.id}</Link> : `task ${story.task.id}`;
+  const step = (attempt: LiveAttempt) => <LiveStep key={attempt.attempt} base={base} member={member} attempt={attempt} />;
+
+  return (
+    <Flow orientation="vertical" align={align} padding={{ x: 8, y: 16 }}>
+      <FlowNode>
+        <Step title={task} />
+      </FlowNode>
+      {story.attempts.length === 1 ? story.attempts.map(step) : <FlowParallel>{story.attempts.map(step)}</FlowParallel>}
+      <FlowNode disabled>
+        <Step title="the next node">
+          <Detail>once the best passing attempt is accepted</Detail>
+        </Step>
+      </FlowNode>
+    </Flow>
+  );
+}
+
+/** An open task's race as it runs: the task, its attempts side by side as they are now, and the node an accept would make. */
+export function TaskFlow(props: TaskProps) {
+  return (
+    <>
+      <div className="sm:hidden">
+        <TaskFlowAligned {...props} align="start" />
+      </div>
+      <div className="hidden sm:block">
+        <TaskFlowAligned {...props} align="center" />
+      </div>
+    </>
   );
 }

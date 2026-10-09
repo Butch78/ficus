@@ -9,7 +9,9 @@ import { ReleaseCard, treeDeploys } from "../../../../../components/release-card
 import { TONE_BADGE } from "../../../../../components/standing-badge.tsx";
 import { TrunkView } from "../../../../../components/trunk-view.tsx";
 import { VisibilitySwitch } from "../../../../../components/visibility-switch.tsx";
+import { agentStatuses } from "../../../../../lib/agents.ts";
 import * as Api from "../../../../../lib/api.ts";
+import { agentAttempts, growing } from "../../../../../lib/growing.ts";
 import { deploying } from "../../../../../lib/release.ts";
 import { load, signedIn } from "../../../../../lib/run.ts";
 import { glance } from "../../../../../lib/standing.ts";
@@ -21,7 +23,7 @@ export const dynamic = "force-dynamic";
 interface Props {
   readonly params: Promise<{ org: string; tree: string }>;
   /** `initialized` + `trace`: an init just landed; `op`/`trace`/`error`: another change did. */
-  readonly searchParams: Promise<{ initialized?: string; trace?: string; op?: string; error?: string; node?: string; older?: string }>;
+  readonly searchParams: Promise<{ initialized?: string; trace?: string; op?: string; error?: string; node?: string; older?: string; task?: string }>;
 }
 
 const GLANCE_WORDS = {
@@ -36,7 +38,7 @@ const GLANCE_WORDS = {
 } as const;
 
 export default async function TreePage({ params, searchParams }: Props) {
-  const [{ org, tree: name }, { initialized, trace, op, error, node, older }] = await Promise.all([params, searchParams]);
+  const [{ org, tree: name }, { initialized, trace, op, error, node, older, task: watching }] = await Promise.all([params, searchParams]);
   // Anyone may read a public tree; the rest of this page is for its members.
   const member = await signedIn();
   const tree = await load(Api.showTree(org, name));
@@ -44,6 +46,8 @@ export default async function TreePage({ params, searchParams }: Props) {
   const tasks = Object.values(tree.tasks).toSorted((a, b) => b.id - a.id);
   const open = tasks.filter((task) => task.state === "Open");
   const races = member ? await Promise.all(open.map((task) => load(Api.showTask(org, name, task.id)))) : [];
+  // What each agent at work on an open task is doing now, for the trunk's growing cards.
+  const agents = await agentStatuses(org, name, agentAttempts(races));
   const head = tree.nodes[String(tree.head)];
   const headAttempt = head?.accepted_from === null || head === undefined ? undefined : tree.attempts[String(head.accepted_from)];
   const inFlight = races.some((race) => race.attempts.some(({ standing }) => standing === "Working" || standing === "Checking"));
@@ -121,7 +125,7 @@ export default async function TreePage({ params, searchParams }: Props) {
       <LayerCard>
         <LayerCardSecondary>History: how the trunk grew</LayerCardSecondary>
         <LayerCardPrimary>
-          <TrunkView org={org} tree={name} member={member} stories={trunkStory(tree, deploys ?? [])} shown={node} older={older} />
+          <TrunkView org={org} tree={name} member={member} stories={trunkStory(tree, deploys ?? [])} shown={node} older={older} growing={growing(races, agents)} task={watching} />
         </LayerCardPrimary>
       </LayerCard>
     </>

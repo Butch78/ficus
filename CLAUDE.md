@@ -89,7 +89,9 @@ deadline 2026-10-14.
   `-scale-y-100`, each card flipped back; `?older=1` unfolds the older nodes into it), one card per node (`lib/trunk.ts` a
   story per node, `lib/trunk-words.ts` its sentences), and beside it the `?node=` card's own Flow (`components/node-flow.tsx`:
   task, its attempts side by side with rebases as lists and losers greyed, the node, the release and its Deploy Workflow
-  steps). Kumo's Flow does not nest (a node's motion holds a nested flow's nodes at opacity 0), hence the panel. Flow
+  steps). Open tasks with attempts in their race grow from the head as live cards (`lib/growing.ts`: each attempt's agent tool
+  call, scoring step or standing; `lib/agents.ts` asks the working agents), their race in the panel on `?task=`; the page's
+  AutoRefresh keeps them moving. Kumo's Flow does not nest (a node's motion holds a nested flow's nodes at opacity 0), hence the panel. Flow
   parts come from `components/kumo.ts`); node (Release or Roll back to it); task (standings from
   `src/core/tree.ts` `standings`, which shares the winner with `accept`; the case for accepting; Start
   agents; work one yourself); attempt (timeline, actions, diff via `GET .../{attempts,nodes}/<id>/diff`, scoring
