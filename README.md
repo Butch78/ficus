@@ -16,7 +16,7 @@ https://ficus-api-prod.fruitcards.workers.dev.
 3. On the tree, write a task ("New task"). On the task, start agents (how many, which Workers AI model),
    or work an attempt yourself with `scripts/attempt` (below).
 4. Submitted attempts are scored in a sandbox; the task page shows the standings and accepts the best.
-   Release the head (or roll back to an older node) through the Api: `POST .../release`.
+   On the tree page, release the head (or open an older node and roll back to it); each release's deploy shows there.
 
 Ficus's own tree (`ficus` in organization `ficus`) is the live example, and it is public: open
 https://ficus-web-prod.fruitcards.workers.dev/orgs/ficus/trees/ficus without an account to see its head,

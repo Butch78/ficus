@@ -10,6 +10,8 @@ const titleOf = (op: string | undefined) => {
       return "Visibility";
     case "accept":
       return "Accept";
+    case "release":
+      return "Release";
     case "retry":
       return "Retry";
     case "abandon":

@@ -84,7 +84,8 @@ deadline 2026-10-14.
   which aborts pi and `DELETE /workspace`s: an idle workspace holds one of the Sandbox class's instances, and
   when they run out new ones fail with "There is no container instance that can be provided". pi's shell
   timeouts are seconds (`sandbox-env.ts` `timeoutMs`).
-- UI pages: tree (head, open tasks and how each stands, New task, accepted history); task (standings from
+- UI pages: tree (head, release + its deploys with Release behind a Kumo Dialog, open tasks and how each stands, New task,
+  accepted history); node (Release or Roll back to it); task (standings from
   `src/core/tree.ts` `standings`, which shares the winner with `accept`; the case for accepting; Start
   agents; work one yourself); attempt (timeline, actions, diff via `GET .../{attempts,nodes}/<id>/diff`, scoring
   ledger, the agent at work).

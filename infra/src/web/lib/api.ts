@@ -203,5 +203,11 @@ export const submit = (org: string, name: string, attempt: number, operation: st
 export const startAgents = (org: string, name: string, task: number, agents: number, model: string, operation: string) =>
   marked("agents", org, operation, post(Answers.AgentsStarted, `${tree(org, name)}/tasks/${task}/agents`, JSON.stringify({ agents, model })));
 
+/** Point the release at `node`; a stage that deploys starts deploying it. */
+export const release = (org: string, name: string, node: number, operation: string) =>
+  marked("release", org, operation, send("POST", `${tree(org, name)}/release`, JSON.stringify({ node })));
+
+export const deploys = (org: string, name: string) => get(Answers.Deploys, `${tree(org, name)}/deploys`);
+
 export const agentStatus = (org: string, name: string, attempt: number) =>
   get(Answers.AgentStatus, `${tree(org, name)}/attempts/${attempt}/agent`);

@@ -320,3 +320,30 @@ export type AgentStatus = typeof AgentStatus.Type;
 
 /** `POST .../tasks/<task>/agents`. */
 export const AgentsStarted = Schema.Struct({ attempts: Schema.Array(Id) });
+
+/** src/core/deploy.ts `DeployReport`: how one command of a released commit's `[deploy]` went. */
+const DeployReport = Schema.Struct({
+  deployed: Schema.Boolean,
+  passed: Schema.Boolean,
+  millis: Schema.Number,
+  tail: Schema.String,
+});
+
+/** `GET .../deploys` (src/tree/deploys.ts `list`): the tree's deploys, newest first; `enabled` is false where the stage does not deploy. */
+export const Deploys = Schema.Struct({
+  enabled: Schema.Boolean,
+  deploys: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      node: Id,
+      commit: Oid,
+      started_at: Schema.Number,
+      /** The Workflow instance's status (queued, running, complete, errored, ...), or `unknown`. */
+      status: Schema.String,
+      report: Schema.optional(Schema.Struct({ ...DeployReport.fields, deployer: Schema.optional(DeployReport) })),
+      error: Schema.optional(Schema.NullOr(Schema.String)),
+    }),
+  ),
+});
+
+export type Deploy = (typeof Deploys.Type)["deploys"][number];

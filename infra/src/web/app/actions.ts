@@ -73,6 +73,14 @@ export async function setVisibility(form: FormData) {
   redirect(landed(treePage(org, tree), "visibility", operation, outcome));
 }
 
+export async function releaseNode(form: FormData) {
+  const [org, tree, node] = [field(form, "org"), field(form, "tree"), id(form, "node")];
+  const operation = crypto.randomUUID();
+  const outcome = await run(Api.release(org, tree, node, operation));
+
+  redirect(landed(treePage(org, tree), "release", operation, outcome));
+}
+
 export async function acceptTask(form: FormData) {
   const [org, tree, task] = [field(form, "org"), field(form, "tree"), id(form, "task")];
   const operation = crypto.randomUUID();

@@ -5,9 +5,11 @@ import { LayerCardPrimary, LayerCardSecondary } from "../../../../../components/
 import { Landed } from "../../../../../components/landed.tsx";
 import { NewTask } from "../../../../../components/new-task.tsx";
 import { PageHeader } from "../../../../../components/page-header.tsx";
+import { recentDeploys, ReleaseCard } from "../../../../../components/release-card.tsx";
 import { TONE_BADGE } from "../../../../../components/standing-badge.tsx";
 import { VisibilitySwitch } from "../../../../../components/visibility-switch.tsx";
 import * as Api from "../../../../../lib/api.ts";
+import { deploying } from "../../../../../lib/release.ts";
 import { load, signedIn } from "../../../../../lib/run.ts";
 import { glance } from "../../../../../lib/standing.ts";
 import { short } from "../../../../../lib/view.ts";
@@ -44,6 +46,7 @@ export default async function TreePage({ params, searchParams }: Props) {
   const head = tree.nodes[String(tree.head)];
   const headAttempt = head?.accepted_from === null || head === undefined ? undefined : tree.attempts[String(head.accepted_from)];
   const inFlight = races.some((race) => race.attempts.some(({ standing }) => standing === "Working" || standing === "Checking"));
+  const recent = member ? await recentDeploys(org, name) : undefined;
 
   return (
     <>
@@ -53,7 +56,10 @@ export default async function TreePage({ params, searchParams }: Props) {
         ) : (
           <Link href="/sign-in">Sign in to work on it</Link>
         )}
-        <AutoRefresh active={inFlight} what="attempts are working or being checked" />
+        <AutoRefresh
+          active={inFlight || deploying(recent)}
+          what={inFlight ? "attempts are working or being checked" : "a release is deploying"}
+        />
       </PageHeader>
       {member ? <Landed org={org} name={name} initialized={initialized} trace={trace} op={op} error={error} /> : null}
       <Glossary />
@@ -81,6 +87,8 @@ export default async function TreePage({ params, searchParams }: Props) {
           )}
         </LayerCardPrimary>
       </LayerCard>
+
+      <ReleaseCard org={org} name={name} base={base} tree={tree} member={member} deploys={recent} />
 
       <LayerCard>
         <LayerCardSecondary>Open tasks: work in progress</LayerCardSecondary>

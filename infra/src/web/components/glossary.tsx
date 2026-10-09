@@ -11,6 +11,7 @@ const WORDS = [
   ["Rebase", "replay a behind attempt's commits onto the new head, automatically; there are no merges."],
   ["Retry", "start an attempt again from the new head when its rebase conflicts."],
   ["History", "closed attempts and why they closed: the next attempt starts from them."],
+  ["Release", "point what is deployed at a node; releasing an older node rolls back."],
 ] as const;
 
 export function Glossary() {
