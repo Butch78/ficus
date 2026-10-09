@@ -8,6 +8,7 @@
  * tree reads how that went from the Workflow when asked. Nothing calls the
  * tree back.
  */
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { NodeId, Oid } from "./values.ts";
 
@@ -85,3 +86,16 @@ export type DeployRecord = typeof DeployRecord.Type;
 
 /** The Workflow instance for the `n`th deploy of a tree: one per release, so a repeated create is refused, not doubled. */
 export const deployId = (tree: string, n: number) => `${tree}-deploy-${n}`;
+
+/** How a deploy ended, as the Workflow said: kept once it ended, since a finished instance never changes. */
+export const DeployEnding = Schema.Struct({
+  status: Schema.Literals(["complete", "errored", "terminated"]),
+  report: Schema.optional(DeployOutcome),
+  error: Schema.optional(Schema.String),
+});
+
+export type DeployEnding = typeof DeployEnding.Type;
+
+/** A Workflow instance's status, as an ending to keep; none while it can still change. */
+export const ending = (status: string, report: DeployOutcome | undefined, error: string | undefined): DeployEnding | undefined =>
+  Option.getOrUndefined(Schema.decodeUnknownOption(DeployEnding)({ status, report, error }));

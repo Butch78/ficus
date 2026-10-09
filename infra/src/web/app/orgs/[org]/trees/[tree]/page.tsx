@@ -9,13 +9,14 @@ import { ReleaseCard, treeDeploys } from "../../../../../components/release-card
 import { TONE_BADGE } from "../../../../../components/standing-badge.tsx";
 import { TrunkView } from "../../../../../components/trunk-view.tsx";
 import { VisibilitySwitch } from "../../../../../components/visibility-switch.tsx";
-import { agentStatuses } from "../../../../../lib/agents.ts";
+import { liveRaces } from "../../../../../lib/agents.ts";
 import * as Api from "../../../../../lib/api.ts";
-import { agentAttempts, growing } from "../../../../../lib/growing.ts";
+import { growing } from "../../../../../lib/growing.ts";
 import { deploying } from "../../../../../lib/release.ts";
 import { load, signedIn } from "../../../../../lib/run.ts";
 import { glance } from "../../../../../lib/standing.ts";
 import { trunkStory } from "../../../../../lib/trunk.ts";
+import { headline } from "../../../../../lib/trunk-words.ts";
 import { short } from "../../../../../lib/view.ts";
 
 export const dynamic = "force-dynamic";
@@ -40,19 +41,20 @@ const GLANCE_WORDS = {
 export default async function TreePage({ params, searchParams }: Props) {
   const [{ org, tree: name }, { initialized, trace, op, error, node, older, task: watching }] = await Promise.all([params, searchParams]);
   // Anyone may read a public tree; the rest of this page is for its members.
-  const member = await signedIn();
-  const tree = await load(Api.showTree(org, name));
+  const [member, tree] = await Promise.all([signedIn(), load(Api.showTree(org, name))]);
   const base = `/orgs/${org}/trees/${name}`;
   const tasks = Object.values(tree.tasks).toSorted((a, b) => b.id - a.id);
   const open = tasks.filter((task) => task.state === "Open");
-  const races = member ? await Promise.all(open.map((task) => load(Api.showTask(org, name, task.id)))) : [];
-  // What each agent at work on an open task is doing now, for the trunk's growing cards.
-  const agents = await agentStatuses(org, name, agentAttempts(races));
+
+  // Members see the open tasks' races, what their agents are doing (the trunk's growing cards) and the deploys, asked together.
+  const [{ races, agents }, deploys] = await Promise.all([
+    member ? liveRaces(org, name, open) : { races: [], agents: new Map() },
+    member ? treeDeploys(org, name) : undefined,
+  ]);
+
   const head = tree.nodes[String(tree.head)];
   const headAttempt = head?.accepted_from === null || head === undefined ? undefined : tree.attempts[String(head.accepted_from)];
   const inFlight = races.some((race) => race.attempts.some(({ standing }) => standing === "Working" || standing === "Checking"));
-  // Members see the deploys, in the release card and on the trunk; visitors see neither.
-  const deploys = member ? await treeDeploys(org, name) : undefined;
 
   return (
     <>
@@ -82,7 +84,7 @@ export default async function TreePage({ params, searchParams }: Props) {
                 <Text variant="secondary" size="xs">
                   {headAttempt === undefined
                     ? "The root, as initialized."
-                    : `Accepted from attempt ${headAttempt.id} (${headAttempt.agent}): "${tree.tasks[String(headAttempt.task)]?.intent ?? ""}".`}
+                    : `Accepted from attempt ${headAttempt.id} (${headAttempt.agent}): "${headline(tree.tasks[String(headAttempt.task)]?.intent ?? "")}"`}
                 </Text>
               </span>
               <span className="flex gap-3">
@@ -104,10 +106,10 @@ export default async function TreePage({ params, searchParams }: Props) {
               Nothing open.
             </Text>
           ) : null}
-          {member ? null : open.map((task) => <Text key={task.id} size="sm">{task.intent}</Text>)}
+          {member ? null : open.map((task) => <Text key={task.id} size="sm">{headline(task.intent)}</Text>)}
           {races.map((race) => (
             <div key={race.task.id} className="flex flex-wrap items-center justify-between gap-2 border-b border-kumo-hairline pb-2">
-              <Link href={`${base}/tasks/${race.task.id}`}>{race.task.intent}</Link>
+              <Link href={`${base}/tasks/${race.task.id}`}>{headline(race.task.intent)}</Link>
               <span className="flex flex-wrap gap-1">
                 {race.attempts.length === 0 ? <Badge variant="outline">no attempts yet</Badge> : null}
                 {glance(race).map(({ tone, count }) => (

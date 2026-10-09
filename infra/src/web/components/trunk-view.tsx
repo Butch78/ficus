@@ -18,6 +18,7 @@ import {
 import { short } from "../lib/view.ts";
 import { DEPLOY_BADGE, DEPLOY_WORD, DeployList } from "./deploy-list.tsx";
 import { NodeFlow, TaskFlow } from "./node-flow.tsx";
+import { FullPrompt } from "./task-prompt.tsx";
 import { TONE_BADGE } from "./standing-badge.tsx";
 import { CollapsiblePanel, CollapsibleRoot, CollapsibleTrigger, FlowNode, FlowParallel } from "./kumo.ts";
 
@@ -282,9 +283,6 @@ function NodeWords({ base, member, story, selected, open }: WordsProps) {
       ) : (
         <Text size="sm">{nodeIntent(story)}</Text>
       )}
-      <Text variant="secondary" size="xs">
-        {nodeSummary(story)}
-      </Text>
       {selected ? (
         <span className="flex items-center gap-2">
           <Badge variant="outline">shown</Badge>
@@ -346,8 +344,11 @@ function NodePanel({ base, member, story }: NodeProps) {
         What happened at node {story.node}
       </Text>
       <Text size="sm">{nodeIntent(story)}</Text>
+      <Text variant="secondary" size="xs">
+        {nodeSummary(story)}
+      </Text>
       <NodeFlow base={base} member={member} story={story} />
-      <FullIntent story={story} />
+      <FullPrompt intent={story.task?.intent ?? ""} />
       {story.deploys.length === 0 ? null : <DeployList base={base} deploys={story.deploys} />}
       <Text variant="secondary" size="xs">
         <Link href={`${base}/nodes/${story.node}`}>Browse node {story.node}</Link>
@@ -369,18 +370,7 @@ function TaskPanel({ base, member, story }: { readonly base: string; readonly me
       </span>
       <Text size="sm">{headline(story.task.intent)}</Text>
       <TaskFlow base={base} member={member} story={story} />
-      {headline(story.task.intent) === story.task.intent.trim() ? null : (
-        <CollapsibleRoot>
-          <CollapsibleTrigger className={TRIGGER_CLASS}>The task in full</CollapsibleTrigger>
-          <CollapsiblePanel>
-            <p className="whitespace-pre-line">
-              <Text variant="secondary" size="sm" as="span">
-                {story.task.intent}
-              </Text>
-            </p>
-          </CollapsiblePanel>
-        </CollapsibleRoot>
-      )}
+      <FullPrompt intent={story.task.intent} />
     </section>
   );
 }
@@ -440,27 +430,5 @@ function GraftRunWords({ base, row, deploys }: RunProps) {
         </CollapsiblePanel>
       </CollapsibleRoot>
     </>
-  );
-}
-
-/** The task's whole intent, folded, when the heading showed only its first sentence. */
-function FullIntent({ story }: { readonly story: NodeStory }) {
-  const intent = story.task?.intent.trim() ?? "";
-
-  if (intent === "" || headline(intent) === intent) {
-    return null;
-  }
-
-  return (
-    <CollapsibleRoot>
-      <CollapsibleTrigger className={TRIGGER_CLASS}>The task in full</CollapsibleTrigger>
-      <CollapsiblePanel>
-        <p className="whitespace-pre-line">
-          <Text variant="secondary" size="sm" as="span">
-            {intent}
-          </Text>
-        </p>
-      </CollapsiblePanel>
-    </CollapsibleRoot>
   );
 }

@@ -10,7 +10,7 @@
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { DeployOutcome, DeployRecord, deployId, type DeployParams } from "../core/deploy.ts";
+import { DeployEnding, DeployOutcome, DeployRecord, deployId, ending, type DeployParams } from "../core/deploy.ts";
 import { refuse } from "./http.ts";
 
 /** The tree's deploy records, newest last. */
@@ -18,6 +18,9 @@ const DEPLOYS_KEY = "deploys";
 
 /** How many deploys the tree has started: the next one's number. */
 const DEPLOY_COUNT_KEY = "deploy-count";
+
+/** Where a finished deploy's ending is kept, so reading it back never asks the Workflow again. */
+const endingKey = (id: string) => `deploy-ending:${id}`;
 
 /** The most deploy records a tree keeps. */
 const MAX_RECORDS = 50;
@@ -53,8 +56,8 @@ export const start = Effect.fn("Deploys.start")(function* (storage: DurableObjec
   return record;
 });
 
-/** How one deploy stands: the Workflow's status, and the sandbox's report once there is one. */
-const statusOf = Effect.fn("Deploys.statusOf")(function* (deploys: Workflow<DeployParams>, record: DeployRecord) {
+/** How one deploy stands: the Workflow's status, and the sandbox's report once there is one; kept once it has ended. */
+const statusOf = Effect.fn("Deploys.statusOf")(function* (storage: DurableObjectStorage, deploys: Workflow<DeployParams>, record: DeployRecord) {
   const status = yield* Effect.tryPromise(async () => (await deploys.get(record.id)).status()).pipe(Effect.option);
 
   if (Option.isNone(status)) {
@@ -63,17 +66,35 @@ const statusOf = Effect.fn("Deploys.statusOf")(function* (deploys: Workflow<Depl
 
   const { status: state, error, output } = status.value;
   const report = Option.getOrUndefined(Schema.decodeUnknownOption(DeployOutcome)(output));
+  const ended = ending(state, report, error?.message);
+
+  if (ended !== undefined) {
+    yield* Effect.promise(() => storage.put(endingKey(record.id), ended));
+  }
 
   return { ...record, status: state, report, error: error?.message };
 });
 
-/** `GET /trees/<t>/deploys`: every kept deploy, newest first, with how it went. */
+const decodeEnding = Schema.decodeUnknownOption(DeployEnding);
+
+/**
+ * `GET /trees/<t>/deploys`: every kept deploy, newest first, with how it went.
+ * A deploy that has ended reads from storage; only those still going ask their
+ * Workflow, so the list stays quick as the tree releases.
+ */
 export const list = Effect.fn("Deploys.list")(function* (storage: DurableObjectStorage, deploys: Workflow<DeployParams> | undefined) {
   if (deploys === undefined) {
     return { deploys: [], enabled: false };
   }
 
   const kept = (yield* records(storage)).toReversed();
+  const endings = yield* Effect.promise(() => storage.get(kept.map((record) => endingKey(record.id))));
 
-  return { deploys: yield* Effect.forEach(kept, (record) => statusOf(deploys, record), { concurrency: 5 }), enabled: true };
+  const read = (record: DeployRecord) =>
+    Option.match(decodeEnding(endings.get(endingKey(record.id))), {
+      onNone: () => statusOf(storage, deploys, record),
+      onSome: (ended) => Effect.succeed({ ...record, ...ended }),
+    });
+
+  return { deploys: yield* Effect.forEach(kept, read, { concurrency: 5 }), enabled: true };
 });

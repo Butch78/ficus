@@ -25,10 +25,14 @@ export default async function NodePage({ params, searchParams }: Props) {
   }
 
   const base = `/orgs/${org}/trees/${tree}`;
-  const member = await signedIn();
-  // The root started from nothing; every other node is an acceptance, with a change.
-  const change = node === 0 ? undefined : await run(Api.diff(org, tree, { kind: "nodes", id: node }));
-  const stored = await load(Api.showTree(org, tree));
+
+  // Asked together. The root started from nothing; every other node is an acceptance, with a change.
+  const [member, change, stored] = await Promise.all([
+    signedIn(),
+    node === 0 ? undefined : run(Api.diff(org, tree, { kind: "nodes", id: node })),
+    load(Api.showTree(org, tree)),
+  ]);
+
   const released = stored.released ?? null;
   const nodeMove = move(stored, node);
 

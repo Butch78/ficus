@@ -16,6 +16,7 @@ import { OperationOutcome } from "../../../../../../../components/operation-outc
 import { PageHeader } from "../../../../../../../components/page-header.tsx";
 import { RepoBrowser } from "../../../../../../../components/repo-browser.tsx";
 import { ScoringSteps } from "../../../../../../../components/scoring-steps.tsx";
+import { TaskPrompt } from "../../../../../../../components/task-prompt.tsx";
 import { StandingBadge } from "../../../../../../../components/standing-badge.tsx";
 import { SubmitButton } from "../../../../../../../components/submit-button.tsx";
 import * as Api from "../../../../../../../lib/api.ts";
@@ -79,9 +80,7 @@ export default async function AttemptPage({ params, searchParams }: Props) {
         <AutoRefresh active={standing === "Working" || standing === "Checking"} what="this attempt is still moving" />
       </PageHeader>
       <Text size="sm">{say(standing).sentence}</Text>
-      <Text variant="secondary" size="sm">
-        For: {race.task.intent}
-      </Text>
+      <TaskPrompt intent={race.task.intent} />
       <OperationOutcome org={org} op={op} trace={trace} error={error} />
 
       <ChainOfThought>

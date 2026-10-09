@@ -15,6 +15,7 @@ import { PageHeader } from "../../../../../../../components/page-header.tsx";
 import { ScoringSteps } from "../../../../../../../components/scoring-steps.tsx";
 import { StandingBadge } from "../../../../../../../components/standing-badge.tsx";
 import { SubmitButton } from "../../../../../../../components/submit-button.tsx";
+import { TaskPrompt } from "../../../../../../../components/task-prompt.tsx";
 import type { AgentStatus, TaskRace } from "../../../../../../../lib/answers.ts";
 import { agentStatuses } from "../../../../../../../lib/agents.ts";
 import * as Api from "../../../../../../../lib/api.ts";
@@ -125,9 +126,7 @@ export default async function TaskPage({ params, searchParams }: Props) {
       >
         <AutoRefresh active={inFlight} what="attempts are working or being checked" />
       </PageHeader>
-      <Text variant="heading" as="h3">
-        {race.task.intent}
-      </Text>
+      <TaskPrompt intent={race.task.intent} heading />
       <OperationOutcome org={org} op={op} trace={trace} error={error} />
 
       {race.task.state === "Open" || "Closed" in race.task.state ? null : (
