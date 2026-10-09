@@ -1,9 +1,9 @@
-import { Badge, Empty, Link, Text } from "@cloudflare/kumo";
+import { Badge, Empty, Flow, Link, Text } from "@cloudflare/kumo";
+import type { ReactNode } from "react";
 import type { Deploy } from "../lib/answers.ts";
-import { deployStatus, type DeployTone } from "../lib/release.ts";
-import type { NodeStory, Outcome } from "../lib/trunk.ts";
+import { deployStatus } from "../lib/release.ts";
+import type { NodeStory } from "../lib/trunk.ts";
 import {
-  attemptChains,
   changedPaths,
   detailsLabel,
   graftRunIntent,
@@ -17,14 +17,16 @@ import {
 import { short } from "../lib/view.ts";
 import { DEPLOY_BADGE, DEPLOY_WORD, DeployList } from "./deploy-list.tsx";
 import { NodeFlow } from "./node-flow.tsx";
-import { CollapsibleBarePanel, CollapsiblePanel, CollapsibleRoot, CollapsibleTrigger } from "./kumo.ts";
-import { AttemptIcon, DeployIcon, deployMarks, NodeDrawing, reach, TrunkSegment, trunkWidth } from "./trunk-drawing.tsx";
+import { CollapsiblePanel, CollapsibleRoot, CollapsibleTrigger, FlowNode } from "./kumo.ts";
 
-/** How many rows show before the older history folds away; the root's row always shows below the fold. */
+/** How many nodes show before the older history folds away; the root always shows below the fold. */
 const SHOWN = 10;
 
-/** A details trigger that reads as a quiet action under the row's words, left-aligned when it wraps. */
+/** A details trigger that reads as a quiet action under the card's words, left-aligned when it wraps. */
 const TRIGGER_CLASS = "text-left text-sm font-normal text-kumo-subtle";
+
+/** Turns a box upside down; the flow below wears it, and each card wears it again to read the right way up. */
+const FLIP = "-scale-y-100";
 
 interface Props {
   readonly org: string;
@@ -33,103 +35,83 @@ interface Props {
   readonly member: boolean;
   /** The trunk, head first (lib/trunk.ts `trunkStory`). */
   readonly stories: ReadonlyArray<NodeStory>;
+  /** The node whose story the panel shows, from the page's `?node=`; the head when absent or unknown. */
+  readonly shown: string | undefined;
+  /** Whether the older history is unfolded, from the page's `?older=1`. */
+  readonly older: string | undefined;
 }
 
-/** The trunk's history drawn as a ficus growing upward, each node with what happened there in words. */
-export function TrunkView({ org, tree, member, stories }: Props) {
-  if (stories.length === 0) {
+/**
+ * The trunk's history as a Kumo Flow that grows upward like the tree: the root
+ * at the bottom, each node a card built on the one below, the head on top.
+ * Kumo's vertical Flow runs downward, and it places nodes from their measured
+ * sizes, which a flip leaves alone: so the flow is laid out oldest first and
+ * turned upside down, and every card is turned back. What happened at one node
+ * (its own flow) sits in a panel beside it: Kumo's Flow does not nest, since
+ * its nodes fade in through motion that a parent node's motion holds back.
+ */
+export function TrunkView({ org, tree, member, stories, shown, older }: Props) {
+  const [head] = stories;
+
+  if (head === undefined) {
     return <Empty size="sm" title="Nothing accepted yet" />;
   }
 
   const base = `/orgs/${org}/trees/${tree}`;
+  const unfolded = older === "1";
+  const selected = stories.find((story) => String(story.node) === shown) ?? head;
+
+  const here = (node: number, open: boolean) => {
+    const query = new URLSearchParams({ node: String(node) });
+
+    if (open) {
+      query.set("older", "1");
+    }
+
+    return `${base}?${query.toString()}#history`;
+  };
+
   const rows = trunkRows(stories);
-  const root = rows.length > SHOWN + 2 ? rows.at(-1) : undefined;
-  const shown = root === undefined ? rows : rows.slice(0, SHOWN);
-  // The rows a closed fold leaves: the trunk tapers over those, and the folded rows keep the fold's width.
-  const count = root === undefined ? rows.length : SHOWN + 2;
-  const width = (index: number) => trunkWidth(index, count);
+  const folds = rows.length > SHOWN + 2;
+
+  const card = (row: TrunkRow) => (
+    <TrunkCard key={row[0].node} base={base} member={member} row={row} selected={selected.node} open={here(row[0].node, unfolded)} />
+  );
+
+  const olderRows = folds && unfolded ? rows.slice(SHOWN, -1) : [];
+  const root = folds ? rows.slice(-1) : [];
+  const newest = folds ? rows.slice(0, SHOWN) : rows;
 
   return (
-    <div className="flex flex-col gap-3">
-      <TrunkKey stories={stories} />
-      <ol className="flex flex-col pt-6 sm:pt-8">
-        {shown.map((row, index) => (
-          <NodeRow key={row[0].node} base={base} member={member} row={row} top={width(index)} bottom={width(index + 1)} sway={index % 2 === 0 ? 3 : -3} />
-        ))}
-        {root === undefined ? null : (
-          <>
-            <OlderRows base={base} member={member} rows={rows.slice(SHOWN, -1)} width={width(SHOWN)} bottom={width(SHOWN + 1)} />
-            <NodeRow base={base} member={member} row={root} top={width(SHOWN + 1)} bottom={width(SHOWN + 1)} sway={0} />
-          </>
-        )}
-      </ol>
+    <div id="history" className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] lg:items-start">
+      <UpwardFlow>
+        {root.map(card)}
+        {olderRows.toReversed().map(card)}
+        {folds ? <FoldCard rows={rows.slice(SHOWN, -1)} unfolded={unfolded} toggle={here(selected.node, !unfolded)} /> : null}
+        {newest.toReversed().map(card)}
+      </UpwardFlow>
+      <NodePanel base={base} member={member} story={selected} />
     </div>
   );
 }
 
-const KEY_ATTEMPTS = [
-  ["accepted", "accepted"],
-  ["lost", "lost"],
-  ["abandoned", "abandoned"],
-  ["rebased", "rebased or retried"],
-  ["open", "still open"],
-] as const satisfies ReadonlyArray<readonly [Outcome, string]>;
-
-const KEY_DEPLOYS = [
-  ["deployed", "deployed"],
-  ["running", "deploying"],
-  ["failed", "deploy failed"],
-  ["skipped", "nothing to deploy"],
-  ["unknown", "deploy not known"],
-] as const satisfies ReadonlyArray<readonly [DeployTone, string]>;
-
-/** The attempt marks the drawing shows: each piece of work's last outcome, and a rebase's mark wherever work was moved on. */
-const drawnOutcomes = (stories: ReadonlyArray<NodeStory>) =>
-  new Set(
-    stories.flatMap(({ attempts }) =>
-      attemptChains(attempts).flatMap(({ last, rebased, retried }): ReadonlyArray<Outcome> => (rebased + retried > 0 ? [last.outcome, "rebased"] : [last.outcome])),
-    ),
-  );
-
-/** What the drawing's marks mean, each beside its own mark: only the marks it shows. */
-function TrunkKey({ stories }: { readonly stories: ReadonlyArray<NodeStory> }) {
-  const outcomes = drawnOutcomes(stories);
-  const marks = stories.flatMap((story) => deployMarks(story));
-  const tones = new Set(marks.map((mark) => mark.tone));
-  const released = marks.find((mark) => mark.released);
-
+/** A vertical Flow turned upside down: its children come oldest first and show newest on top. */
+function UpwardFlow({ children }: { readonly children: ReactNode }) {
   return (
-    <ul className="flex flex-wrap gap-x-4 gap-y-1">
-      {KEY_ATTEMPTS.flatMap(([outcome, words]) =>
-        outcomes.has(outcome)
-          ? [
-              <li key={outcome} className="flex items-center gap-1">
-                <svg width={30} height={18} viewBox="-1 -12 40 24" aria-hidden="true">
-                  <AttemptIcon outcome={outcome} />
-                </svg>
-                <Text variant="secondary" size="xs" as="span">
-                  {words}
-                </Text>
-              </li>,
-            ]
-          : [],
-      )}
-      {KEY_DEPLOYS.flatMap(([tone, words]) => (tones.has(tone) ? [<KeyDeploy key={tone} tone={tone} released={false} words={words} />] : []))}
-      {released === undefined ? null : <KeyDeploy tone={released.tone} released words="released now" />}
-    </ul>
+    <div className={`${FLIP} @container`}>
+      <Flow orientation="vertical" align="start" canvas={false}>
+        {children}
+      </Flow>
+    </div>
   );
 }
 
-function KeyDeploy({ tone, released, words }: { readonly tone: DeployTone; readonly released: boolean; readonly words: string }) {
+/** One step of the trunk, turned the right way up: wide enough for its words, never wider than the screen. */
+function Card({ children }: { readonly children: ReactNode }) {
   return (
-    <li className="flex items-center gap-1">
-      <svg width={22} height={22} viewBox="-11 -11 22 22" aria-hidden="true">
-        <DeployIcon tone={tone} released={released} />
-      </svg>
-      <Text variant="secondary" size="xs" as="span">
-        {words}
-      </Text>
-    </li>
+    <FlowNode>
+      <div className={`${FLIP} flex w-[calc(100cqw-2.5rem)] min-w-0 flex-col gap-1 text-left [overflow-wrap:anywhere]`}>{children}</div>
+    </FlowNode>
   );
 }
 
@@ -139,67 +121,46 @@ interface RowProps {
   readonly base: string;
   readonly member: boolean;
   readonly row: TrunkRow;
-  /** The trunk's width at the row's node and where the row ends. */
-  readonly top: number;
-  readonly bottom: number;
-  /** How far the trunk leans through the row; the head's and the root's short pieces stand straight. */
-  readonly sway: number;
+  /** The node the panel shows. */
+  readonly selected: number;
+  /** Where its "what happened" link goes. */
+  readonly open: string;
 }
 
-function NodeRow({ base, member, row, top, bottom, sway }: RowProps) {
+/** A node's card, or one card for a run of grafts from one place with every deploy of the run. */
+function TrunkCard({ base, member, row, selected, open }: RowProps) {
   const [story] = row;
-  const span = reach(story);
-  // A run of grafts is drawn once, with every deploy of the run.
-  const drawn = row.length === 1 ? story : { ...story, deploys: newestFirst(row.flatMap((each) => each.deploys)) };
 
   return (
-    <li className="flex gap-2 sm:gap-3">
-      <div className="relative w-16 shrink-0 sm:w-24">
-        <TrunkSegment reach={span} top={top} bottom={bottom} sway={span === "full" ? sway : 0} />
-        <NodeDrawing story={drawn} width={top} run={row.length} />
-      </div>
-      <div className="flex min-w-0 flex-1 flex-col gap-1 pt-1 pb-6 [overflow-wrap:anywhere] sm:pt-3">
-        {row.length === 1 ? <NodeWords base={base} member={member} story={story} /> : <GraftRunWords base={base} row={row} deploys={drawn.deploys} />}
-      </div>
-    </li>
+    <Card>
+      {row.length === 1 ? (
+        <NodeWords base={base} member={member} story={story} selected={selected === story.node} open={open} />
+      ) : (
+        <GraftRunWords base={base} row={row} deploys={newestFirst(row.flatMap((each) => each.deploys))} />
+      )}
+    </Card>
   );
 }
 
-interface OlderProps {
-  readonly base: string;
-  readonly member: boolean;
+interface FoldProps {
+  /** The older rows, head first. */
   readonly rows: ReadonlyArray<TrunkRow>;
-  /** The trunk's width through the fold and its rows, and where the fold's row ends. */
-  readonly width: number;
-  readonly bottom: number;
+  readonly unfolded: boolean;
+  /** The page with the older history the other way. */
+  readonly toggle: string;
 }
 
-/** The older rows, folded away under one row that says what they hold; the trunk runs on through it. */
-function OlderRows({ base, member, rows, width, bottom }: OlderProps) {
+/** Where the older history folds: what it holds, and a link that unfolds it into the trunk or folds it away again. */
+function FoldCard({ rows, unfolded, toggle }: FoldProps) {
   const nodes = rows.flat().map((story) => story.node);
 
   return (
-    <li>
-      <CollapsibleRoot>
-        <div className="flex gap-2 sm:gap-3">
-          <div className="relative min-h-14 w-16 shrink-0 sm:w-24">
-            <TrunkSegment reach="full" top={width} bottom={bottom} sway={0} />
-          </div>
-          <div className="flex min-w-0 flex-1 items-start pt-1 pb-6 sm:pt-3">
-            <CollapsibleTrigger className={TRIGGER_CLASS}>
-              Older history: {plural(nodes.length, "node")}, {Math.min(...nodes)} to {Math.max(...nodes)}
-            </CollapsibleTrigger>
-          </div>
-        </div>
-        <CollapsibleBarePanel>
-          <ol className="flex flex-col">
-            {rows.map((row, index) => (
-              <NodeRow key={row[0].node} base={base} member={member} row={row} top={width} bottom={width} sway={index % 2 === 0 ? 3 : -3} />
-            ))}
-          </ol>
-        </CollapsibleBarePanel>
-      </CollapsibleRoot>
-    </li>
+    <Card>
+      <Text variant="secondary" size="sm">
+        Older history: {plural(nodes.length, "node")}, {Math.min(...nodes)} to {Math.max(...nodes)}.{" "}
+        <Link href={toggle}>{unfolded ? "Fold it away" : "Show it"}</Link>
+      </Text>
+    </Card>
   );
 }
 
@@ -209,8 +170,15 @@ interface NodeProps {
   readonly story: NodeStory;
 }
 
-/** One node's words: its heading, what it settled, how, and its details. */
-function NodeWords({ base, member, story }: NodeProps) {
+interface WordsProps extends NodeProps {
+  /** Whether the panel shows this node. */
+  readonly selected: boolean;
+  /** Where its "what happened" link goes. */
+  readonly open: string;
+}
+
+/** One node's words: its heading, what it settled, how, and the way to what happened there. */
+function NodeWords({ base, member, story, selected, open }: WordsProps) {
   return (
     <>
       <NodeHeading base={base} story={story} />
@@ -222,7 +190,16 @@ function NodeWords({ base, member, story }: NodeProps) {
       <Text variant="secondary" size="xs">
         {nodeSummary(story)}
       </Text>
-      <NodeDetails base={base} member={member} story={story} />
+      {selected ? (
+        <span className="flex items-center gap-2">
+          <Badge variant="outline">shown</Badge>
+          <Text variant="secondary" size="xs" as="span">
+            what happened here is in the panel
+          </Text>
+        </span>
+      ) : (
+        <Link href={open}>{detailsLabel(story).replace("Details:", "What happened:")}</Link>
+      )}
     </>
   );
 }
@@ -266,23 +243,22 @@ function NodeHeading({ base, story }: Omit<NodeProps, "member">) {
   );
 }
 
-/** What happened at the node as a flow (task, attempts, node, deploy), its deploys' history, and its change; open at the head. */
-function NodeDetails({ base, member, story }: NodeProps) {
+/** What happened at one node: its flow (task, attempts, node, deploy), the task in full, its deploys, and its change. */
+function NodePanel({ base, member, story }: NodeProps) {
   return (
-    <CollapsibleRoot defaultOpen={story.head}>
-      <CollapsibleTrigger className={TRIGGER_CLASS}>{detailsLabel(story)}</CollapsibleTrigger>
-      <CollapsiblePanel>
-        <div className="flex flex-col gap-3 pt-1">
-          <NodeFlow base={base} member={member} story={story} />
-          <FullIntent story={story} />
-          {story.deploys.length === 0 ? null : <DeployList base={base} deploys={story.deploys} />}
-          <Text variant="secondary" size="xs">
-            <Link href={`${base}/nodes/${story.node}`}>Browse node {story.node}</Link>
-            {changeWords(story)}
-          </Text>
-        </div>
-      </CollapsiblePanel>
-    </CollapsibleRoot>
+    <section className="order-first flex min-w-0 flex-col gap-3 rounded-lg border border-kumo-hairline p-4 lg:sticky lg:top-4 lg:order-none">
+      <Text variant="heading3" as="h3">
+        What happened at node {story.node}
+      </Text>
+      <Text size="sm">{nodeIntent(story)}</Text>
+      <NodeFlow base={base} member={member} story={story} />
+      <FullIntent story={story} />
+      {story.deploys.length === 0 ? null : <DeployList base={base} deploys={story.deploys} />}
+      <Text variant="secondary" size="xs">
+        <Link href={`${base}/nodes/${story.node}`}>Browse node {story.node}</Link>
+        {changeWords(story)}
+      </Text>
+    </section>
   );
 }
 

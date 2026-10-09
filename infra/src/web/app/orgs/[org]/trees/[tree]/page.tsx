@@ -21,7 +21,7 @@ export const dynamic = "force-dynamic";
 interface Props {
   readonly params: Promise<{ org: string; tree: string }>;
   /** `initialized` + `trace`: an init just landed; `op`/`trace`/`error`: another change did. */
-  readonly searchParams: Promise<{ initialized?: string; trace?: string; op?: string; error?: string }>;
+  readonly searchParams: Promise<{ initialized?: string; trace?: string; op?: string; error?: string; node?: string; older?: string }>;
 }
 
 const GLANCE_WORDS = {
@@ -36,7 +36,7 @@ const GLANCE_WORDS = {
 } as const;
 
 export default async function TreePage({ params, searchParams }: Props) {
-  const [{ org, tree: name }, { initialized, trace, op, error }] = await Promise.all([params, searchParams]);
+  const [{ org, tree: name }, { initialized, trace, op, error, node, older }] = await Promise.all([params, searchParams]);
   // Anyone may read a public tree; the rest of this page is for its members.
   const member = await signedIn();
   const tree = await load(Api.showTree(org, name));
@@ -121,7 +121,7 @@ export default async function TreePage({ params, searchParams }: Props) {
       <LayerCard>
         <LayerCardSecondary>History: how the trunk grew</LayerCardSecondary>
         <LayerCardPrimary>
-          <TrunkView org={org} tree={name} member={member} stories={trunkStory(tree, deploys ?? [])} />
+          <TrunkView org={org} tree={name} member={member} stories={trunkStory(tree, deploys ?? [])} shown={node} older={older} />
         </LayerCardPrimary>
       </LayerCard>
     </>

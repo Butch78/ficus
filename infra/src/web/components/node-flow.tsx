@@ -17,7 +17,7 @@ const TONE_TEXT = {
 /** A step in the flow: what it is, then how it went. */
 function Step({ title, children }: { readonly title: ReactNode; readonly children?: ReactNode }) {
   return (
-    <span className="flex max-w-32 flex-col gap-0.5 text-left sm:max-w-56">
+    <span className="flex max-w-32 flex-col gap-0.5 text-left sm:max-w-40">
       <Text size="sm" as="span">
         {title}
       </Text>
