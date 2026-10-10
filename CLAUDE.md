@@ -182,6 +182,9 @@ deadline 2026-10-14.
 - On expanse-5950x one of Cloudflare's IPv6 edges for workers.dev is unreachable: run scripts against deployed
   stages with `CURL_HOME=<dir with .curlrc: ipv4>` if they hang.
 - The deploy token needs Containers: Edit (registry credentials) on top of Workers, Workers AI, Artifacts.
+- Prod's custom domains (`src/platform.ts` DOMAINS, zone fruit.cards): the UI at ficus.fruit.cards, the Api at
+  api.ficus.fruit.cards, both also on workers.dev. A stage with domains gets a deploy token that may manage that zone's
+  Worker domains (`src/permissions.ts` domainPolicy, minted by `secrets.run.ts`); re-run deploy:secrets after changing them.
 - `just e2e` (FICUS_API=https://ficus-dev.fruitcards.workers.dev) runs the full cycle live.
 - After a deploy, old isolates keep serving for a few seconds: wait before judging a change live
   (an API key minted 7s after a deploy still got the old 10-requests-a-day limit).

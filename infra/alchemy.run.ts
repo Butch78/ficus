@@ -34,7 +34,7 @@ import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import DeploysWorker from "./src/deploys/worker.ts";
-import { artifactsNamespace, COMPATIBILITY, OBSERVABILITY } from "./src/platform.ts";
+import { artifactsNamespace, COMPATIBILITY, DOMAINS, OBSERVABILITY } from "./src/platform.ts";
 import { SandboxWorker } from "./src/sandbox/stack.ts";
 
 export default Alchemy.Stack(
@@ -155,11 +155,15 @@ export default Alchemy.Stack(
             GITHUB_CLIENT_SECRET: yield* Cloudflare.SecretsStore.Secret.ref("GithubClientSecret", { stack: "FicusSecrets" }),
           };
 
+    const domains = DOMAINS.get(stage);
+
     const api = yield* Cloudflare.Worker("Api", {
       name: `ficus-api-${stage}`,
       main: "./src/api/worker.ts",
       compatibility: COMPATIBILITY,
       observability: OBSERVABILITY,
+      // api.ficus.fruit.cards on prod (src/platform.ts), besides workers.dev.
+      domain: domains === undefined ? null : { name: domains.api, zoneId: domains.zoneId },
       env: {
         AUTH_DB: authDb,
         BETTER_AUTH_SECRET: authSecret.text,

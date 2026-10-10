@@ -19,6 +19,16 @@ export const DEPLOY_PERMISSIONS: Array<Cloudflare.ApiToken.PermissionGroupName> 
   "Account Settings Write", // the workers.dev subdomain lookup
 ];
 
+/** What attaching a Worker to a custom domain needs of its zone: finding it, its Worker routes, the DNS record and the edge certificate. */
+export const DOMAIN_PERMISSIONS: Array<Cloudflare.ApiToken.PermissionGroupName> = ["Zone Read", "Workers Routes Write", "DNS Write", "SSL and Certificates Write"];
+
+/** A stage with custom domains (src/platform.ts DOMAINS): those permissions on that one zone. */
+export const domainPolicy = (accountId: string, zoneId: string): Cloudflare.ApiToken.Policy => ({
+  effect: "allow",
+  permissionGroups: [...DOMAIN_PERMISSIONS],
+  resources: { [`com.cloudflare.api.account.${accountId}`]: { [`com.cloudflare.api.account.zone.${zoneId}`]: "*" } },
+});
+
 /** The one policy a deploy token carries: those permissions, on the one account. */
 export const deployPolicy = (accountId: string): Cloudflare.ApiToken.Policy => ({
   effect: "allow",

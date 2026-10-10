@@ -20,7 +20,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { OWNER, REPO } from "./src/github.ts";
-import { COMPATIBILITY, OBSERVABILITY } from "./src/platform.ts";
+import { COMPATIBILITY, DOMAINS, OBSERVABILITY } from "./src/platform.ts";
 
 export default Alchemy.Stack(
   "FicusWeb",
@@ -41,9 +41,13 @@ export default Alchemy.Stack(
     const observabilityToken = yield* Config.option(Config.Redacted("FICUS_OBSERVABILITY_TOKEN"));
     const accountId = yield* Config.String("CLOUDFLARE_ACCOUNT_ID");
 
+    const domains = DOMAINS.get(stage);
+
     const web = yield* Cloudflare.Website.Vinext("Web", {
       name: `ficus-web-${stage}`,
       rootDir: `${import.meta.dirname}/src/web`,
+      // ficus.fruit.cards on prod (src/platform.ts), besides workers.dev.
+      domain: domains === undefined ? null : { name: domains.web, zoneId: domains.zoneId },
       compatibility: COMPATIBILITY,
       observability: OBSERVABILITY,
       env: {

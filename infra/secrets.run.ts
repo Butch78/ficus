@@ -25,7 +25,8 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import { deployPolicy } from "./src/permissions.ts";
+import { deployPolicy, domainPolicy } from "./src/permissions.ts";
+import { DOMAINS } from "./src/platform.ts";
 
 export default Alchemy.Stack(
   "FicusSecrets",
@@ -43,11 +44,13 @@ export default Alchemy.Stack(
 
     if (value === undefined) {
       const accountId = yield* Config.String("CLOUDFLARE_ACCOUNT_ID");
+      const domains = DOMAINS.get(stage);
 
       const minted = yield* Cloudflare.ApiToken.AccountApiToken("DeployApiToken", {
         name: `ficus-deploy-${stage}`,
         accountId,
-        policies: [deployPolicy(accountId)],
+        // A stage with custom domains may also manage its zone's Worker domains.
+        policies: domains === undefined ? [deployPolicy(accountId)] : [deployPolicy(accountId), domainPolicy(accountId, domains.zoneId)],
       });
 
       value = minted.value;
