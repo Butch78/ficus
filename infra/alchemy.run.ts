@@ -141,6 +141,20 @@ export default Alchemy.Stack(
       lifecycleRules: [{ id: "expire", deleteObjectsTransition: { condition: { type: "Age", maxAge: 90 * 24 * 60 * 60 } } }],
     });
 
+    // GitHub sign-in, once the stage has an OAuth app: its client id here (it is
+    // not secret), its client secret in the Secrets Store (secrets.run.ts with
+    // FICUS_GITHUB_CLIENT_SECRET), bound by reference. Without the id, GitHub
+    // sign-in is off and the secret is never asked for.
+    const githubClientId = yield* Config.String("FICUS_GITHUB_CLIENT_ID").pipe(Config.withDefault(""));
+
+    const github =
+      githubClientId === ""
+        ? {}
+        : {
+            GITHUB_CLIENT_ID: githubClientId,
+            GITHUB_CLIENT_SECRET: yield* Cloudflare.SecretsStore.Secret.ref("GithubClientSecret", { stack: "FicusSecrets" }),
+          };
+
     const api = yield* Cloudflare.Worker("Api", {
       name: `ficus-api-${stage}`,
       main: "./src/api/worker.ts",
@@ -152,6 +166,7 @@ export default Alchemy.Stack(
         // A service binding: the only way into the tree Worker.
         TREE: worker,
         BACKUPS: backups,
+        ...github,
       },
       // The nightly backup.
       crons: ["17 3 * * *"],

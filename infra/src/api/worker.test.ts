@@ -25,6 +25,27 @@ describe("treeRoute", () => {
   });
 });
 
+describe("sign-in providers", () => {
+  /** The GitHub part of the Api's bindings. */
+  interface GitHubBindings {
+    readonly GITHUB_CLIENT_ID?: string;
+    readonly GITHUB_CLIENT_SECRET?: { readonly get: () => Promise<string> };
+  }
+
+  const ask = async (github: GitHubBindings) => {
+    // SAFETY: the providers route reads only the GitHub bindings; the others are never touched.
+    const env = { AUTH_DB: {}, TREE: {}, BETTER_AUTH_SECRET: "test", BACKUPS: {}, ...github } as never;
+
+    return (await worker.fetch(new Request("https://api.example/v1/auth/providers"), env)).text();
+  };
+
+  test("offer GitHub only once the stage has both its OAuth app's client id and secret", async () => {
+    expect(await ask({})).toBe(JSON.stringify({ github: false }));
+    expect(await ask({ GITHUB_CLIENT_ID: "id" })).toBe(JSON.stringify({ github: false }));
+    expect(await ask({ GITHUB_CLIENT_ID: "id", GITHUB_CLIENT_SECRET: { get: async () => "secret" } })).toBe(JSON.stringify({ github: true }));
+  });
+});
+
 describe("treesRoute", () => {
   test("names the organization whose trees are listed", () => {
     expect(treesRoute("/v1/orgs/acme/trees")).toBe("acme");

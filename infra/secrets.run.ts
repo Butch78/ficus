@@ -13,6 +13,12 @@
 //   STAGE=pr-1 FICUS_DEPLOY_TOKEN=... bun run deploy:secrets
 //       keeps the token given instead (a narrower one, for a test stage)
 //
+//   the GitHub client secret   the stage's GitHub OAuth app's (sign in with
+//                        GitHub, src/api/auth.ts); kept when
+//                        FICUS_GITHUB_CLIENT_SECRET is given. Give it on every
+//                        run once set: a run without it removes the secret.
+//                        The Api binds it when its deploy has FICUS_GITHUB_CLIENT_ID.
+//
 // Run from an operator's shell, once per stage; re-run to rotate.
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -55,6 +61,20 @@ export default Alchemy.Stack(
       comment: `Ficus ${stage}: the token its Deploy Workflow deploys with`,
     });
 
-    return { deployToken: deployToken.secretName };
+    const githubClientSecret = yield* Config.option(Config.Redacted("FICUS_GITHUB_CLIENT_SECRET"));
+
+    const github = yield* Option.match(githubClientSecret, {
+      onNone: () => Effect.succeed(undefined),
+      onSome: (value) =>
+        Cloudflare.SecretsStore.Secret("GithubClientSecret", {
+          store,
+          name: `ficus-github-client-secret-${stage}`,
+          value,
+          scopes: ["workers"],
+          comment: `Ficus ${stage}: its GitHub OAuth app's client secret, for signing in with GitHub`,
+        }),
+    });
+
+    return { deployToken: deployToken.secretName, githubClientSecret: github?.secretName };
   }),
 );

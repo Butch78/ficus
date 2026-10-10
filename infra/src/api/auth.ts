@@ -10,6 +10,7 @@ import { apiKey } from "@better-auth/api-key";
 import { betterAuth, type BetterAuthOptions } from "better-auth";
 import { organization } from "better-auth/plugins";
 import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 export const AUTH_BASE_PATH = "/api/auth";
@@ -17,13 +18,21 @@ export const AUTH_BASE_PATH = "/api/auth";
 /** The header an API key travels in. */
 export const API_KEY_HEADER = "x-api-key";
 
-export const authOptions = (database: BetterAuthOptions["database"], secret: string, baseURL: string) =>
+/** A GitHub OAuth app, for signing in with GitHub; a stage has one once its credentials are set (src/api/worker.ts). */
+export interface GitHubApp {
+  readonly clientId: string;
+  readonly clientSecret: string;
+}
+
+export const authOptions = (database: BetterAuthOptions["database"], secret: string, baseURL: string, github?: GitHubApp) =>
   ({
     database,
     secret,
     baseURL,
     basePath: AUTH_BASE_PATH,
     emailAndPassword: { enabled: true },
+    // GitHub sign-in where the stage has an OAuth app; its callback is <origin>/api/auth/callback/github.
+    socialProviders: github === undefined ? {} : { github: { clientId: github.clientId, clientSecret: github.clientSecret } },
     plugins: [
       organization(),
       // A key's session is its owner's: one path (getSession) for browsers
@@ -38,8 +47,8 @@ export const authOptions = (database: BetterAuthOptions["database"], secret: str
     ],
   }) satisfies BetterAuthOptions;
 
-const build = (database: BetterAuthOptions["database"], secret: string, baseURL: string) =>
-  betterAuth(authOptions(database, secret, baseURL));
+const build = (database: BetterAuthOptions["database"], secret: string, baseURL: string, github: GitHubApp | undefined) =>
+  betterAuth(authOptions(database, secret, baseURL, github));
 
 export type AuthInstance = ReturnType<typeof build>;
 
@@ -57,17 +66,21 @@ export class Auth extends Context.Service<Auth, AuthInstance>()("@ficus/Auth") {
  */
 const instances = new Map<string, AuthInstance>();
 
-export const layer = (database: BetterAuthOptions["database"], secret: string, baseURL: string) =>
-  Layer.sync(Auth, () => {
-    const existing = instances.get(baseURL);
+/** `github` is the stage's GitHub OAuth app, if any: fixed for the isolate's life, like the database and secret. */
+export const layer = (database: BetterAuthOptions["database"], secret: string, baseURL: string, github: Effect.Effect<GitHubApp | undefined> = Effect.succeed(undefined)) =>
+  Layer.effect(
+    Auth,
+    Effect.map(github, (app) => {
+      const existing = instances.get(baseURL);
 
-    if (existing !== undefined) {
-      return existing;
-    }
+      if (existing !== undefined) {
+        return existing;
+      }
 
-    const built = build(database, secret, baseURL);
+      const built = build(database, secret, baseURL, app);
 
-    instances.set(baseURL, built);
+      instances.set(baseURL, built);
 
-    return built;
-  });
+      return built;
+    }),
+  );

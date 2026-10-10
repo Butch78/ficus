@@ -16,6 +16,7 @@
  * on marked anonymous, and the tree Worker answers it only from a public tree.
  */
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { ANONYMOUS_HEADER, anonymousMay, NO_SUCH_TREE } from "../core/visibility.ts";
@@ -32,7 +33,36 @@ interface Bindings {
   readonly BETTER_AUTH_SECRET: string;
   /** Nightly tree exports (backups.ts). */
   readonly BACKUPS: R2Bucket;
+  /** The stage's GitHub OAuth app's client id; with its secret, GitHub sign-in is on. */
+  readonly GITHUB_CLIENT_ID?: string;
+  /** Its client secret, from the account's Secrets Store (secrets.run.ts). */
+  readonly GITHUB_CLIENT_SECRET?: SecretsStoreSecret;
 }
+
+/** The GitHub OAuth app's client secret, read from the Secrets Store once per isolate, by client id. */
+const githubSecrets = new Map<string, Promise<string>>();
+
+/** The stage's GitHub OAuth app, if it has one; a secret that cannot be read leaves GitHub sign-in off. */
+const githubApp = (env: Bindings) => {
+  const { GITHUB_CLIENT_ID: clientId, GITHUB_CLIENT_SECRET: secret } = env;
+
+  if (clientId === undefined || secret === undefined) {
+    return Effect.succeed(undefined);
+  }
+
+  const reading = githubSecrets.get(clientId) ?? secret.get();
+
+  githubSecrets.set(clientId, reading);
+
+  return Effect.tryPromise(() => reading).pipe(
+    Effect.map((clientSecret) => ({ clientId, clientSecret })),
+    Effect.option,
+    Effect.map(Option.getOrUndefined),
+  );
+};
+
+/** Whether the sign-in page should offer GitHub. */
+const providers = (env: Bindings) => ({ github: env.GITHUB_CLIENT_ID !== undefined && env.GITHUB_CLIENT_SECRET !== undefined });
 
 /** Headers that carry the caller's credentials or claims, never forwarded. */
 const STRIPPED = ["cookie", "authorization", API_KEY_HEADER, TENANT_HEADER, ANONYMOUS_HEADER];
@@ -236,6 +266,7 @@ const handle = Effect.fn("Api.handle")(function* (env: Bindings, request: Reques
     return Response.json({ ok: true });
   }
 
+
   if (pathname.startsWith(`${AUTH_BASE_PATH}/`)) {
     const auth = yield* Auth;
 
@@ -268,6 +299,11 @@ export default {
       return Promise.resolve(Response.json({ ok: true }));
     }
 
+    // The ways to sign in, for the sign-in page: no authentication, and Better Auth is not built for it either.
+    if (new URL(request.url).pathname === "/v1/auth/providers") {
+      return Promise.resolve(Response.json(providers(env)));
+    }
+
     return Effect.runPromise(
       handle(env, request).pipe(
         Effect.catchTag("Api.Failure", (error) =>
@@ -279,7 +315,7 @@ export default {
         // oxlint-disable-next-line effecttsgo/strict-effect-provide -- the Worker's entry point
         Effect.provide(
           Layer.mergeAll(
-            authLayer(env.AUTH_DB, env.BETTER_AUTH_SECRET, new URL(request.url).origin),
+            authLayer(env.AUTH_DB, env.BETTER_AUTH_SECRET, new URL(request.url).origin, githubApp(env)),
             Directory.directoryLayer(env.AUTH_DB),
             CloudflareTracer.layer,
           ),

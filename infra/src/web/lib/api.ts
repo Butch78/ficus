@@ -91,6 +91,8 @@ const reading = (subject: Subject, what: "log" | "tree" | "file", query: URLSear
 
 export const session = get(Answers.Session, "/api/auth/get-session");
 
+export const providers = get(Answers.Providers, "/v1/auth/providers");
+
 export const organizations = get(Answers.Organizations, "/api/auth/organization/list");
 
 export const createOrganization = (name: string, slug: string) =>

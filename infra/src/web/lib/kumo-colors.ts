@@ -12,6 +12,7 @@ const CLASSES = {
   success: "text-kumo-success",
   green: "text-kumo-badge-green",
   teal: "text-kumo-badge-teal",
+  canvas: "text-kumo-canvas",
 } as const;
 
 export type KumoColor = keyof typeof CLASSES;
@@ -36,6 +37,7 @@ const resolve = (): KumoColors => {
     success: read("success"),
     green: read("green"),
     teal: read("teal"),
+    canvas: read("canvas"),
   };
 
   probe.remove();

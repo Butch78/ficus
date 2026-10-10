@@ -1,14 +1,13 @@
 "use client";
 
 /**
- * Ficus's shaders (shaders.com, MIT, WebGPU with a WebGL fallback), coloured
- * with Kumo's tokens: a reaction-diffusion growth pattern behind a tree's or
- * an organization's heading, and flowing strands, like a ficus's aerial roots,
- * while a page loads. Telemetry to shaders.com is off; with reduced motion
+ * Ficus's shaders (shaders.com, MIT, WebGPU), coloured with Kumo's tokens: a
+ * slow mesh gradient behind the sign-in card, and flowing strands, like a
+ * ficus's aerial roots, while a page loads. Telemetry to shaders.com is off; with reduced motion
  * they hold still; where the GPU cannot run them they leave the space plain.
  */
 import { useState } from "react";
-import { ReactionDiffusion, Shader, Strands } from "shaders/react";
+import { MeshGradient, Shader, Strands } from "shaders/react";
 import { useKumoColors, useReducedMotion } from "../lib/kumo-colors.ts";
 
 interface Props {
@@ -40,17 +39,24 @@ const useCanvas = (className: string) => {
   };
 };
 
-/** A slow growth pattern in Kumo's greens, for behind a heading; decorative. */
-export function GrowthBackdrop({ className }: Props) {
+/** Soft fields of Kumo's greens drifting slowly, for behind the sign-in card; calm enough to sit under a form. Decorative. */
+export function SignInBackdrop({ className }: Props) {
   const { colors, still, canvas } = useCanvas(className);
 
   if (colors === undefined) {
     return null;
   }
 
+  const stops = [
+    { color: colors.canvas, position: 0 },
+    { color: colors.green, position: 0.45 },
+    { color: colors.teal, position: 0.75 },
+    { color: colors.canvas, position: 1 },
+  ];
+
   return (
     <Shader {...canvas}>
-      <ReactionDiffusion preset="coral" colorA="transparent" colorB={colors.green} colorC={colors.success} speed={still ? 0 : 2} featureSize={4} contrast={0.4} />
+      <MeshGradient stops={stops} count={4} smoothness={3} variation={0.25} swirl={0.2} drift={0.3} speed={still ? 0 : 0.25} />
     </Shader>
   );
 }

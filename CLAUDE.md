@@ -28,7 +28,10 @@ deadline 2026-10-14.
   `layerRest` elsewhere). Write questions as `Decision.make` definitions, ask with `DecisionModel.decide`;
   `@effect/ai-typesafe` (Jev) would be a drop-in layer behind the same definitions.
 - Secrets: secretspec, `~/.config/ficus/.env`. Agents must set SECRETSPEC_REASON to enter the shell.
-- Public entry is the Api Worker (`infra/src/api`): Better Auth on D1 (orgs, API keys via `x-api-key`). Membership is
+- Public entry is the Api Worker (`infra/src/api`): Better Auth on D1 (orgs, API keys via `x-api-key`). GitHub sign-in
+  (Better Auth's github provider) is on where the Api has `GITHUB_CLIENT_ID` (deploy env `FICUS_GITHUB_CLIENT_ID`) and
+  `GITHUB_CLIENT_SECRET` (Secrets Store, `secrets.run.ts` with `FICUS_GITHUB_CLIENT_SECRET`); the OAuth app's callback is
+  `<UI origin>/api/auth/callback/github`; `GET /v1/auth/providers` tells the sign-in page. Membership is
   `getSession` plus two lookups (`memberOf`: the organization by slug, then the member row); never `getFullOrganization`,
   which read every member, user and invitation and verified an API key twice (9 D1 round trips, ~300 ms a call).
   It forwards `/v1/orgs/<org>/trees/<t>/...` over a service binding to the internal tree Worker
@@ -74,9 +77,9 @@ deadline 2026-10-14.
   it moves, one cache entry per race shared across the page, and refreshes the page once when it settles. The tree page's
   growing cards and race panel, the task page's attempt cards and the attempt page's agent and scoring are live this way;
   AutoRefresh (whole-page refresh) is left for a running deploy.
-  Shaders (`shaders` 4.0.4, shaders.com, MIT, WebGPU; `components/growth-shader.tsx`): a ReactionDiffusion growth pattern
-  behind the tree and organization headings (`components/hero.tsx`, `tree-hero.tsx`) and Strands, like aerial roots, on
-  `app/orgs/[org]/loading.tsx`. Colors come from Kumo tokens resolved in the browser (`lib/kumo-colors.ts`), never literals;
+  Shaders (`shaders` 4.0.4, shaders.com, MIT, WebGPU; `components/growth-shader.tsx`): a slow MeshGradient behind the
+  sign-in card and Strands, like aerial roots, on `app/orgs/[org]/loading.tsx`; headings (`components/hero.tsx`,
+  `tree-hero.tsx`) stay plain. Colors come from Kumo tokens resolved in the browser (`lib/kumo-colors.ts`), never literals;
   always `disableTelemetry` (it posts domain, browser and frame stats to shaders.com otherwise); the canvas fades in on
   `onReady` and is dropped `onUnavailable`; reduced motion holds it still. Headless Chromium cannot show WebGPU frames.
   Styled with Kumo (`@cloudflare/kumo`, Tailwind v4; guide: `node_modules/@cloudflare/kumo/ai/USAGE.md`, or
