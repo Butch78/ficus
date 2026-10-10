@@ -74,6 +74,11 @@ deadline 2026-10-14.
   it moves, one cache entry per race shared across the page, and refreshes the page once when it settles. The tree page's
   growing cards and race panel, the task page's attempt cards and the attempt page's agent and scoring are live this way;
   AutoRefresh (whole-page refresh) is left for a running deploy.
+  Shaders (`shaders` 4.0.4, shaders.com, MIT, WebGPU; `components/growth-shader.tsx`): a ReactionDiffusion growth pattern
+  behind the tree and organization headings (`components/hero.tsx`, `tree-hero.tsx`) and Strands, like aerial roots, on
+  `app/orgs/[org]/loading.tsx`. Colors come from Kumo tokens resolved in the browser (`lib/kumo-colors.ts`), never literals;
+  always `disableTelemetry` (it posts domain, browser and frame stats to shaders.com otherwise); the canvas fades in on
+  `onReady` and is dropped `onUnavailable`; reduced motion holds it still. Headless Chromium cannot show WebGPU frames.
   Styled with Kumo (`@cloudflare/kumo`, Tailwind v4; guide: `node_modules/@cloudflare/kumo/ai/USAGE.md`, or
   `bunx kumo doc <Component>`): Kumo components and semantic tokens only (`bg-kumo-*`, `text-kumo-*`,
   `border-kumo-*`), no palette colors, no `dark:` (`src/web/kumo-styling.test.ts` enforces it). Server

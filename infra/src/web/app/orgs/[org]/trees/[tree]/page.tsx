@@ -1,24 +1,21 @@
 import { Badge, LayerCard, Link, Text } from "@cloudflare/kumo";
-import { AutoRefresh } from "../../../../../components/auto-refresh.tsx";
 import { Glossary } from "../../../../../components/glossary.tsx";
 import { LayerCardPrimary, LayerCardSecondary } from "../../../../../components/kumo.ts";
 import { Landed } from "../../../../../components/landed.tsx";
 import { NewTask } from "../../../../../components/new-task.tsx";
-import { PageHeader } from "../../../../../components/page-header.tsx";
 import { ReleaseCard, treeDeploys } from "../../../../../components/release-card.tsx";
 import { TONE_BADGE } from "../../../../../components/standing-badge.tsx";
+import { TreeHero } from "../../../../../components/tree-hero.tsx";
 import { TrunkView } from "../../../../../components/trunk-view.tsx";
-import { VisibilitySwitch } from "../../../../../components/visibility-switch.tsx";
 import { liveRaces } from "../../../../../lib/agents.ts";
 import * as Api from "../../../../../lib/api.ts";
 import { toLive } from "../../../../../lib/live.ts";
-import { deploying } from "../../../../../lib/release.ts";
 import { load, signedIn } from "../../../../../lib/run.ts";
 import { glance } from "../../../../../lib/standing.ts";
 import { trunkStory } from "../../../../../lib/trunk.ts";
-import { taskName } from "../../../../../lib/trunk-words.ts";
+import { taskName, timeAgo } from "../../../../../lib/trunk-words.ts";
+import type { Tree } from "../../../../../lib/answers.ts";
 import { commitTimes } from "../../../../../lib/history.ts";
-import { short } from "../../../../../lib/view.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -39,6 +36,13 @@ const GLANCE_WORDS = {
   closed: "closed",
 } as const;
 
+/** How long ago the head's commit landed, from the head's log. */
+const headAgo = (tree: Tree, landed: ReadonlyMap<string, number>) => {
+  const at = landed.get(tree.nodes[String(tree.head)]?.commit ?? "");
+
+  return at === undefined ? undefined : timeAgo(at, Date.now());
+};
+
 export default async function TreePage({ params, searchParams }: Props) {
   const [{ org, tree: name }, { initialized, trace, op, error, node, older, task: watching }] = await Promise.all([params, searchParams]);
   // Anyone may read a public tree; the rest of this page is for its members.
@@ -54,49 +58,13 @@ export default async function TreePage({ params, searchParams }: Props) {
     commitTimes(org, name, tree.head),
   ]);
 
-  const head = tree.nodes[String(tree.head)];
-  const headAttempt = head?.accepted_from === null || head === undefined ? undefined : tree.attempts[String(head.accepted_from)];
 
   return (
     <>
-      <PageHeader trail={member ? [["Organizations", "/"], [org, `/orgs/${org}`]] : []} title={name}>
-        {member ? (
-          <VisibilitySwitch org={org} tree={name} isPublic={tree.public === true} />
-        ) : (
-          <Link href="/sign-in">Sign in to work on it</Link>
-        )}
-        {/* Attempts and agents stay live by themselves (components/live-growing.tsx); a deploy refreshes the page. */}
-        <AutoRefresh
-          active={deploying(deploys)}
-          what="a release is deploying"
-        />
-      </PageHeader>
+      <TreeHero org={org} name={name} member={member} tree={tree} ago={headAgo(tree, landed)} deploys={deploys} />
       {member ? <Landed org={org} name={name} initialized={initialized} trace={trace} op={op} error={error} /> : null}
       <Glossary />
 
-      <LayerCard>
-        <LayerCardSecondary>The code now</LayerCardSecondary>
-        <LayerCardPrimary className="flex flex-wrap items-center justify-between gap-3">
-          {head === undefined ? null : (
-            <>
-              <span className="flex flex-col gap-1">
-                <Text size="sm">
-                  Node {head.id} at <Text variant="mono">{short(head.commit)}</Text>
-                </Text>
-                <Text variant="secondary" size="xs">
-                  {headAttempt === undefined
-                    ? "The root, as initialized."
-                    : `Accepted from attempt ${headAttempt.id} (${headAttempt.agent}): "${taskName(tree.tasks[String(headAttempt.task)] ?? { intent: "" })}"`}
-                </Text>
-              </span>
-              <span className="flex gap-3">
-                <Link href={`${base}/nodes/${head.id}`}>Browse the files</Link>
-                {head.parent === null ? null : <Link href={`${base}/nodes/${head.id}#change`}>What changed</Link>}
-              </span>
-            </>
-          )}
-        </LayerCardPrimary>
-      </LayerCard>
 
       <ReleaseCard org={org} name={name} base={base} tree={tree} member={member} deploys={deploys} />
 

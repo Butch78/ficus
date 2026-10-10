@@ -1,9 +1,10 @@
-import { Empty, LayerCard, Link, Table, Text } from "@cloudflare/kumo";
+import { Badge, Empty, LayerCard, Link, Table, Text } from "@cloudflare/kumo";
 import { FailureBanner } from "../../../components/failure-banner.tsx";
-import { PageHeader } from "../../../components/page-header.tsx";
+import { Hero } from "../../../components/hero.tsx";
 import { InitForm } from "../../../components/init-form.tsx";
 import * as Api from "../../../lib/api.ts";
 import { load } from "../../../lib/run.ts";
+import { plural } from "../../../lib/trunk-words.ts";
 import { LayerCardPrimary, LayerCardSecondary, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../../components/kumo.ts";
 
 export const dynamic = "force-dynamic";
@@ -19,7 +20,19 @@ export default async function Organization({ params, searchParams }: Props) {
 
   return (
     <>
-      <PageHeader trail={[["Organizations", "/"]]} title={org} />
+      <Hero
+        eyebrow={
+          <Text variant="secondary" size="sm">
+            <Link href="/">Organizations</Link> / {org}
+          </Text>
+        }
+        title={org}
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="outline">{plural(trees.length, "tree")}</Badge>
+          <Link href="#init">Init a tree</Link>
+        </div>
+      </Hero>
       <FailureBanner error={error} />
       {trees.length === 0 ? (
         <Empty title="No trees yet" description="Init one from a public git remote below." />
@@ -52,7 +65,7 @@ export default async function Organization({ params, searchParams }: Props) {
           </LayerCardPrimary>
         </LayerCard>
       )}
-      <LayerCard>
+      <LayerCard id="init">
         <LayerCardSecondary>Init a tree</LayerCardSecondary>
         <LayerCardPrimary className="flex flex-col gap-3">
           <Text variant="secondary" size="sm">

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import * as Schema from "effect/Schema";
 import { Tree } from "./answers.ts";
-import { tasks, crumbs, join, status, trunk } from "./view.ts";
+import { tasks, crumbs, join, status, treeFacts, trunk } from "./view.ts";
 
 const a = "a".repeat(40);
 
@@ -58,6 +58,12 @@ describe("the tree as a page reads it", () => {
       [4, [5], undefined],
       [1, [2, 3], 1],
     ]);
+  });
+});
+
+describe("treeFacts", () => {
+  test("counts the changes accepted, the tasks still open, and everyone who made an attempt", () => {
+    expect(treeFacts(accepted)).toEqual({ accepted: 1, open: 1, contributors: 3 });
   });
 });
 

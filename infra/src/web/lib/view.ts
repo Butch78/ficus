@@ -110,3 +110,14 @@ export const nodeTitle = (tree: Tree, node: number) => {
 
   return task === undefined ? undefined : taskName(task);
 };
+
+/** A tree at a glance, for its heading: changes accepted onto the trunk, tasks still open, and everyone who has made an attempt. */
+export const treeFacts = (tree: Tree) => {
+  const tasks = Object.values(tree.tasks);
+
+  return {
+    accepted: tasks.filter((task) => task.state !== "Open" && "Done" in task.state).length,
+    open: tasks.filter((task) => task.state === "Open").length,
+    contributors: new Set(Object.values(tree.attempts).map((attempt) => attempt.agent)).size,
+  };
+};
