@@ -15,7 +15,7 @@
 # FICUS_AGENT names who made the attempt (default: your git name, or claude in
 # a Claude Code session).
 set -euo pipefail
-API=${FICUS_API:-https://ficus-api-prod.fruitcards.workers.dev}
+API=${FICUS_API:-https://api.ficus.fruit.cards}
 ORG=${FICUS_ORG:-ficus}
 TREE=${FICUS_TREE:-ficus}
 GITHUB=${FICUS_GITHUB:-https://github.com/Butch78/ficus}

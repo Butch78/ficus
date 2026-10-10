@@ -7,8 +7,8 @@ challenge (submissions close 2026-10-14).
 
 ## Try it
 
-Hosted: the web UI at https://ficus-web-prod.fruitcards.workers.dev, the Api at
-https://ficus-api-prod.fruitcards.workers.dev.
+Hosted: the web UI at https://ficus.fruit.cards, the Api at
+https://api.ficus.fruit.cards.
 
 1. In the UI, sign up ("No account? Sign up"), then create an organization ("New organization").
 2. In the organization, init a tree: a name and a public git URL as its source (e.g.
@@ -19,13 +19,13 @@ https://ficus-api-prod.fruitcards.workers.dev.
    On the tree page, release the head (or open an older node and roll back to it); each release's deploy shows there.
 
 Ficus's own tree (`ficus` in organization `ficus`) is the live example, and it is public: open
-https://ficus-web-prod.fruitcards.workers.dev/orgs/ficus/trees/ficus without an account to see its head,
+https://ficus.fruit.cards/orgs/ficus/trees/ficus without an account to see its head,
 open tasks and accepted history, and browse any node's files and diff. Its Api reads need no key either:
 the tree (tasks, attempts, nodes, history; `.head` is the head node), and any node's or attempt's `log`,
 `tree?path=`, `file?path=` and `diff`.
 
 ```sh
-API=https://ficus-api-prod.fruitcards.workers.dev
+API=https://api.ficus.fruit.cards
 curl -s $API/v1/orgs/ficus/trees/ficus | jq '{head, released, tasks: (.tasks | length)}'
 H=$(curl -s $API/v1/orgs/ficus/trees/ficus | jq .head)
 curl -s "$API/v1/orgs/ficus/trees/ficus/nodes/$H/file?path=README.md"
