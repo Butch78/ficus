@@ -184,6 +184,26 @@ describe("a request with no session and no API key", () => {
     expect(forwarded[0]?.headers.has("cookie")).toBe(false);
   });
 
+  test("starts built-in agents only for an allowlisted organization: refused before the tree is asked", async () => {
+    const json = { origin, "content-type": "application/json" };
+
+    const signUp = await call("/api/auth/sign-up/email", {
+      method: "POST",
+      headers: json,
+      body: JSON.stringify({ email: "agents@example.com", password: "a-long-enough-password", name: "Agents" }),
+    });
+
+    const cookie = signUp.headers.getSetCookie().map((set) => set.split(";")[0]).join("; ");
+
+    await call("/api/auth/organization/create", { method: "POST", headers: { ...json, cookie }, body: JSON.stringify({ name: "Strangers", slug: "strangers" }) });
+
+    const response = await call("/v1/orgs/strangers/trees/site/tasks/1/agents", { method: "POST", headers: { ...json, cookie }, body: JSON.stringify({ agents: 2 }) });
+
+    expect(response.status).toBe(403);
+    expect(await response.text()).toContain("bring your own agent");
+    expect(forwarded).toEqual([]);
+  });
+
   test("is a signed-in non-member's: 404, the same as an organization that does not exist, and the tree is never asked", async () => {
     const json = { origin, "content-type": "application/json" };
 

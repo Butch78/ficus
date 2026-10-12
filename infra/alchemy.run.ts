@@ -170,6 +170,8 @@ export default Alchemy.Stack(
         // A service binding: the only way into the tree Worker.
         TREE: worker,
         BACKUPS: backups,
+        // Built-in agents run on this account only for these organizations (src/api/usage.ts).
+        FICUS_AGENT_ORGS: "ficus",
         ...github,
       },
       // The nightly backup.

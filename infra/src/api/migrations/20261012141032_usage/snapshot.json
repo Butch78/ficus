@@ -1,0 +1,110 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "id": "0255b9ba-b8e8-4041-b606-00f6d2c71d2b",
+  "prevIds": [
+    "27776400-403e-4d53-8b14-0001d6b467db"
+  ],
+  "ddl": [
+    {
+      "name": "ficus_tree",
+      "entityType": "tables"
+    },
+    {
+      "name": "ficus_usage",
+      "entityType": "tables"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "organizationId",
+      "entityType": "columns",
+      "table": "ficus_tree"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "name",
+      "entityType": "columns",
+      "table": "ficus_tree"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "createdAt",
+      "entityType": "columns",
+      "table": "ficus_tree"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "organizationId",
+      "entityType": "columns",
+      "table": "ficus_usage"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "day",
+      "entityType": "columns",
+      "table": "ficus_usage"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "kind",
+      "entityType": "columns",
+      "table": "ficus_usage"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "count",
+      "entityType": "columns",
+      "table": "ficus_usage"
+    },
+    {
+      "columns": [
+        "organizationId",
+        "name"
+      ],
+      "nameExplicit": false,
+      "name": "ficus_tree_pk",
+      "entityType": "pks",
+      "table": "ficus_tree"
+    },
+    {
+      "columns": [
+        "organizationId",
+        "day",
+        "kind"
+      ],
+      "nameExplicit": false,
+      "name": "ficus_usage_pk",
+      "entityType": "pks",
+      "table": "ficus_usage"
+    }
+  ],
+  "renames": []
+}

@@ -25,3 +25,21 @@ export const ficusTree = sqliteTable(
   },
   (table) => [primaryKey({ columns: [table.organizationId, table.name] })],
 );
+
+/**
+ * What each organization used of Ficus's own account, by day: built-in agent
+ * runs and scorings, which run on Ficus's Workers AI and containers. The Api
+ * counts them and refuses past the day's cap (usage.ts).
+ */
+export const ficusUsage = sqliteTable(
+  "ficus_usage",
+  {
+    organizationId: text("organizationId").notNull(),
+    /** The UTC day, `YYYY-MM-DD`. */
+    day: text("day").notNull(),
+    /** `agents` (agent runs started) or `scoring` (attempts submitted). */
+    kind: text("kind").notNull(),
+    count: integer("count").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.organizationId, table.day, table.kind] })],
+);

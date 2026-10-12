@@ -26,6 +26,7 @@ import * as Directory from "./directory.ts";
 import * as Progress from "./progress.ts";
 import { backUpTrees } from "./backups.ts";
 import { TENANT_HEADER, tenantKey } from "./tenant.ts";
+import * as Usage from "./usage.ts";
 
 interface Bindings {
   readonly AUTH_DB: D1Database;
@@ -33,6 +34,8 @@ interface Bindings {
   readonly BETTER_AUTH_SECRET: string;
   /** Nightly tree exports (backups.ts). */
   readonly BACKUPS: R2Bucket;
+  /** The organizations (slugs, comma-separated) built-in agents run for on Ficus's account (usage.ts). */
+  readonly FICUS_AGENT_ORGS?: string;
   /** The stage's GitHub OAuth app's client id; with its secret, GitHub sign-in is on. */
   readonly GITHUB_CLIENT_ID?: string;
   /** Its client secret, from the account's Secrets Store (secrets.run.ts). */
@@ -180,12 +183,35 @@ const listTrees = Effect.fn("Api.listTrees")(function* (env: Bindings, request: 
   return Response.json({ trees });
 });
 
+/**
+ * What a request to a tree would use of Ficus's own account (usage.ts):
+ * built-in agents only for an allowlisted organization, and each kind within
+ * the organization's daily cap. Taken before the tree is asked.
+ */
+const meter = Effect.fn("Api.meter")(function* (env: Bindings, request: Request, route: { readonly org: string; readonly rest: string }, organization: string) {
+  const body = Usage.startsAgents(request.method, route.rest) ? yield* Effect.promise(() => request.clone().text()) : undefined;
+  const asked = Usage.metered(request.method, route.rest, body);
+
+  if (asked === undefined) {
+    return;
+  }
+
+  if (asked.kind === "agents" && !Usage.allowlist(env.FICUS_AGENT_ORGS).has(route.org)) {
+    return yield* Usage.notAllowed();
+  }
+
+  yield* Usage.take(organization, asked.kind, asked.count, Date.now());
+});
+
 const forwardToTree = Effect.fn("Api.forwardToTree")(function* (
   env: Bindings,
   request: Request,
   route: { readonly org: string; readonly tree: string; readonly rest: string },
 ) {
   const organization = yield* membership(request, route.org, anonymousMay(request.method, route.rest));
+
+  yield* meter(env, request, route, organization.id);
+
   const tenant = yield* tenantKey(organization.id);
   const headers = new Headers(request.headers);
 
@@ -310,6 +336,7 @@ export default {
           Effect.succeed(Response.json({ error: error.message }, { status: error.status })),
         ),
         Effect.catchTag("Api.Hidden", () => Effect.succeed(new Response(NO_SUCH_TREE, { status: 404 }))),
+        Effect.catchTag("Usage.Refused", (refused) => Effect.succeed(Response.json({ error: refused.message }, { status: refused.status }))),
         // Better Auth builds its URLs from the origin it is served on; the
         // directory has its D1 client; the tracer records this request's Effect spans in its Cloudflare trace.
         // oxlint-disable-next-line effecttsgo/strict-effect-provide -- the Worker's entry point

@@ -58,6 +58,11 @@ deadline 2026-10-14.
   the org id by slug in Better Auth's `organization` table and forwards with `x-ficus-anonymous` (stripped from
   every caller's request), and the tree Worker answers it 404 `no such tree` unless the tree is public, the same as
   an unknown tree or organization. Members' requests are unchanged; everything else needs a member.
+- Usage (`src/api/usage.ts`, table `ficus_usage`): the Api meters what runs on Ficus's own account. Built-in agents
+  (`POST .../tasks/<id>/agents`) start only for organizations in `FICUS_AGENT_ORGS` (prod: `ficus`), 403 otherwise; each
+  organization gets `DAILY_CAPS` per UTC day (20 agent runs, 60 scorings: every submit or retry), 429 past it. Agents
+  brought with an API key pay for their own AI. Migrations must apply twice (`IF NOT EXISTS`, migrations.test.ts):
+  generate with drizzle-kit and commit them, since a sandboxed deploy cannot commit what alchemy would write.
 - Api D1: Drizzle 1.0 RC (pinned to alchemy's peer, `1.0.0-rc.5-ab785fc`). Ficus's tables are declared in
   `infra/src/api/schema.ts` and queried through `drizzle-orm/effect-d1` (`@effect/sql-d1`'s `D1Client`, provided
   per request). Migrations are drizzle-kit folders in `src/api/migrations`: alchemy's `Drizzle.Schema` writes
