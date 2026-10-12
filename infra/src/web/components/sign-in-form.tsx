@@ -3,8 +3,11 @@
 /**
  * Email sign-in and sign-up, posted to Better Auth through this origin
  * (app/api/auth), which answers with the session cookie; and, where the stage
- * has a GitHub OAuth app, GitHub sign-in, which leaves for GitHub and comes
- * back to /api/auth/callback/github on this origin.
+ * has a GitHub OAuth app or a Cloudflare OAuth client, signing in with those,
+ * which leaves for them and comes back to /api/auth/callback/<provider> on
+ * this origin. Where the stage sends mail, a new email address is confirmed
+ * first (src/api/mail.ts): sign-up answers without a session and the form
+ * says to follow the link.
  */
 import { Banner, Button, Input, LayerCard, Text } from "@cloudflare/kumo";
 import { CloudIcon, GithubLogoIcon } from "@phosphor-icons/react";
@@ -14,14 +17,28 @@ import { type FormEvent, useEffect, useState } from "react";
 
 type Mode = "sign-in" | "sign-up";
 
-/** Better Auth's refusal: `{ message }`, e.g. "Invalid email or password". */
-const decodeRefusal = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({ message: Schema.String })));
+/** Better Auth's refusal: `{ message, code? }`, e.g. "Invalid email or password". */
+const decodeRefusal = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({ message: Schema.String, code: Schema.optional(Schema.String) })));
 
-const failureOf = async (response: Response) =>
+/** Signing in with an address not yet confirmed: Better Auth has just sent a new link. */
+const UNCONFIRMED = "EMAIL_NOT_VERIFIED";
+
+const refusalOf = async (response: Response) =>
   Option.match(decodeRefusal(await response.text()), {
-    onNone: () => `${response.status} ${response.statusText}`,
-    onSome: (refusal) => refusal.message,
+    onNone: () => ({ message: `${response.status} ${response.statusText}`, code: undefined }),
+    onSome: (refusal) => refusal,
   });
+
+const failureOf = async (response: Response) => (await refusalOf(response)).message;
+
+/** Better Auth's answer to an email sign-up: no session token while the address waits to be confirmed. */
+const decodeSignedUp = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({ token: Schema.NullOr(Schema.String) })));
+
+/** Why a Cloudflare or GitHub sign-in came back refused, said for the person (Better Auth's error codes). */
+const refusedWhy = (code: string) =>
+  code === "account_not_linked"
+    ? "You already have a Ficus account with this email, not yet confirmed. Sign in with your email and password, follow the link we send you, then continue with Cloudflare or GitHub."
+    : `Signing in failed: ${code}`;
 
 /** Better Auth's answer to a social sign-in: where to send the browser. */
 const decodeRedirect = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({ url: Schema.String })));
@@ -49,7 +66,9 @@ const STARTS = {
 
 export function SignInForm({ github, cloudflare, refused }: Props) {
   const [mode, setMode] = useState<Mode>("sign-in");
-  const [failure, setFailure] = useState<string | undefined>(refused === undefined ? undefined : `Signing in failed: ${refused}`);
+  const [failure, setFailure] = useState<string | undefined>(refused === undefined ? undefined : refusedWhy(refused));
+  // Where a confirmation link went, once one is on its way.
+  const [sentTo, setSentTo] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   // Until React has hydrated, a submit would be the browser's own: a GET
   // with the password in the URL. The button waits for `submit` to exist.
@@ -61,6 +80,7 @@ export function SignInForm({ github, cloudflare, refused }: Props) {
     event.preventDefault();
     setBusy(true);
     setFailure(undefined);
+    setSentTo(undefined);
 
     const form = new FormData(event.currentTarget);
     const email = field(form, "email");
@@ -69,16 +89,33 @@ export function SignInForm({ github, cloudflare, refused }: Props) {
     const response = await fetch(`/api/auth/${mode}/email`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(fields),
+      // Where a confirmation link lands once followed, signed in.
+      body: JSON.stringify({ ...fields, callbackURL: "/" }),
     });
 
     if (response.ok) {
+      const signedUp = mode === "sign-up" ? decodeSignedUp(await response.text()) : Option.none();
+
+      if (Option.isSome(signedUp) && signedUp.value.token === null) {
+        setSentTo(email);
+        setBusy(false);
+
+        return;
+      }
+
       window.location.assign("/");
 
       return;
     }
 
-    setFailure(await failureOf(response));
+    const refusal = await refusalOf(response);
+
+    if (refusal.code === UNCONFIRMED) {
+      setSentTo(email);
+    } else {
+      setFailure(refusal.message);
+    }
+
     setBusy(false);
   };
 
@@ -137,6 +174,9 @@ export function SignInForm({ github, cloudflare, refused }: Props) {
             required
           />
           {failure === undefined ? null : <Banner variant="error" size="sm" description={failure} />}
+          {sentTo === undefined ? null : (
+            <Banner size="sm" title="Check your email" description={`We sent a link to ${sentTo}. Follow it to confirm the address and sign in.`} />
+          )}
           <div className="flex items-center justify-between gap-2">
             <Button type="submit" variant="primary" loading={busy} disabled={!hydrated}>
               {mode === "sign-in" ? "Sign in" : "Sign up"}

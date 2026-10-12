@@ -17,6 +17,7 @@ export const DEPLOY_PERMISSIONS: Array<Cloudflare.ApiToken.PermissionGroupName> 
   "D1 Write", // the accounts database and its migrations
   "Workers Tail Read", // deploy-time log streaming
   "Account Settings Write", // the workers.dev subdomain lookup
+  "Email Sending Write", // the sending domain of a stage with domains (mail)
 ];
 
 /** What attaching a Worker to a custom domain needs of its zone: finding it, its Worker routes, the DNS record and the edge certificate. */

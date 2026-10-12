@@ -38,7 +38,12 @@ deadline 2026-10-14.
   `<UI origin>/api/auth/callback/cloudflare` (Better Auth 1.7's generic OAuth plugin registers it as a social provider: sign
   in through `/sign-in/social`, not `/sign-in/oauth2`); OAuth tokens are stored encrypted and accounts link by email. The
   client was made with the Cloudflare API (`POST /accounts/<id>/oauth_clients`, an OAuth Client Write token), its domain
-  verified by a TXT record on ficus.fruit.cards. Membership is
+  verified by a TXT record on ficus.fruit.cards. Mail (`src/api/mail.ts`): a stage with domains has Cloudflare Email Sending on the UI's domain
+  (`Cloudflare.Email.SendingSubdomain`, the deploy token's Email Sending Write) and the Api's `EMAIL` send_email binding
+  (`MAIL_FROM` noreply@<UI domain>); there Better Auth requires a confirmed email (`emailVerification`: the link goes on
+  sign-up and on signing in unconfirmed, and signs you in). Linking a Cloudflare or GitHub sign-in to an existing
+  account needs that account's email confirmed (`requireLocalEmailVerified`); never turn that off: with unconfirmed
+  addresses it hands an account made with someone else's email to its maker. Stages without domains send no mail. Membership is
   `getSession` plus two lookups (`memberOf`: the organization by slug, then the member row); never `getFullOrganization`,
   which read every member, user and invitation and verified an API key twice (9 D1 round trips, ~300 ms a call).
   It forwards `/v1/orgs/<org>/trees/<t>/...` over a service binding to the internal tree Worker

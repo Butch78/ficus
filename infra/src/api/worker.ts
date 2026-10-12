@@ -23,6 +23,7 @@ import { ANONYMOUS_HEADER, anonymousMay, NO_SUCH_TREE } from "../core/visibility
 import * as CloudflareTracer from "../observability/tracer.ts";
 import { API_KEY_HEADER, AUTH_BASE_PATH, Auth, layer as authLayer } from "./auth.ts";
 import * as Directory from "./directory.ts";
+import type { Mailer } from "./mail.ts";
 import * as Progress from "./progress.ts";
 import { backUpTrees } from "./backups.ts";
 import { TENANT_HEADER, tenantKey } from "./tenant.ts";
@@ -44,6 +45,10 @@ interface Bindings {
   readonly CLOUDFLARE_CLIENT_ID?: string;
   /** Its client secret, from the account's Secrets Store (secrets.run.ts). */
   readonly CLOUDFLARE_CLIENT_SECRET?: SecretsStoreSecret;
+  /** Cloudflare Email Sending, on a stage with domains: confirmation links (mail.ts). */
+  readonly EMAIL?: SendEmail;
+  /** The address that mail comes from, on the stage's sending domain. */
+  readonly MAIL_FROM?: string;
 }
 
 /**
@@ -73,6 +78,25 @@ const oauthApp = (clientId: string | undefined, secret: SecretsStoreSecret | und
     Effect.option,
     Effect.map(Option.getOrUndefined),
   );
+};
+
+/** The stage's way to send mail, where it has the binding and a sender; failures are logged and passed to Better Auth. */
+const mailer = (env: Bindings): Mailer | undefined => {
+  const { EMAIL: email, MAIL_FROM: from } = env;
+
+  if (email === undefined || from === undefined) {
+    return undefined;
+  }
+
+  return async (mail) => {
+    try {
+      await email.send({ from: { name: "Ficus", email: from }, to: mail.to, subject: mail.subject, text: mail.text, html: mail.html });
+    } catch (error) {
+      console.error(`sending "${mail.subject}": ${String(error)}`);
+
+      throw error;
+    }
+  };
 };
 
 /** The stage's sign-in apps (auth.ts). */
@@ -360,7 +384,7 @@ export default {
         // oxlint-disable-next-line effecttsgo/strict-effect-provide -- the Worker's entry point
         Effect.provide(
           Layer.mergeAll(
-            authLayer(env.AUTH_DB, env.BETTER_AUTH_SECRET, new URL(request.url).origin, signInApps(env)),
+            authLayer(env.AUTH_DB, env.BETTER_AUTH_SECRET, new URL(request.url).origin, signInApps(env), mailer(env)),
             Directory.directoryLayer(env.AUTH_DB),
             CloudflareTracer.layer,
           ),

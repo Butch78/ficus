@@ -10,6 +10,7 @@ import { apiKey } from "@better-auth/api-key";
 import { betterAuth, type BetterAuthOptions } from "better-auth";
 import { genericOAuth, organization } from "better-auth/plugins";
 import { CLOUDFLARE_PROVIDER, cloudflareProvider, type CloudflareApp } from "./cloudflare-login.ts";
+import { type Mailer, verificationMail } from "./mail.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -33,7 +34,27 @@ export interface SignInApps {
 
 const NO_APPS: SignInApps = { github: undefined, cloudflare: undefined };
 
-export const authOptions = (database: BetterAuthOptions["database"], secret: string, baseURL: string, apps: SignInApps = NO_APPS) => {
+/**
+ * Where the stage can send mail (mail.ts), an email address must be confirmed
+ * before it signs in: sign-up sends the link, and so does signing in while
+ * unconfirmed; following it signs you in. Better Auth joins a Cloudflare or
+ * GitHub sign-in to an existing account only once that account's address is
+ * confirmed, so without this they would be refused. A stage that cannot send
+ * leaves addresses unconfirmed.
+ */
+const verification = (mail: Mailer | undefined) =>
+  mail === undefined
+    ? {}
+    : {
+        emailVerification: {
+          sendOnSignUp: true,
+          sendOnSignIn: true,
+          autoSignInAfterVerification: true,
+          sendVerificationEmail: ({ user, url }: { readonly user: { readonly email: string }; readonly url: string }) => mail(verificationMail(user.email, url)),
+        },
+      };
+
+export const authOptions = (database: BetterAuthOptions["database"], secret: string, baseURL: string, apps: SignInApps = NO_APPS, mail?: Mailer) => {
   const { github, cloudflare } = apps;
   // Cloudflare, through Better Auth's generic OAuth plugin (cloudflare-login.ts), where the stage has its client.
   const cloudflareLogin = cloudflare === undefined ? [] : [genericOAuth({ config: [cloudflareProvider(cloudflare)] })];
@@ -43,7 +64,8 @@ export const authOptions = (database: BetterAuthOptions["database"], secret: str
     secret,
     baseURL,
     basePath: AUTH_BASE_PATH,
-    emailAndPassword: { enabled: true },
+    emailAndPassword: { enabled: true, requireEmailVerification: mail !== undefined },
+    ...verification(mail),
     // GitHub sign-in where the stage has an OAuth app; its callback is <origin>/api/auth/callback/github.
     socialProviders: github === undefined ? {} : { github: { clientId: github.clientId, clientSecret: github.clientSecret } },
     account: {
@@ -68,8 +90,8 @@ export const authOptions = (database: BetterAuthOptions["database"], secret: str
   } satisfies BetterAuthOptions;
 };
 
-const build = (database: BetterAuthOptions["database"], secret: string, baseURL: string, apps: SignInApps) =>
-  betterAuth(authOptions(database, secret, baseURL, apps));
+const build = (database: BetterAuthOptions["database"], secret: string, baseURL: string, apps: SignInApps, mail: Mailer | undefined) =>
+  betterAuth(authOptions(database, secret, baseURL, apps, mail));
 
 export type AuthInstance = ReturnType<typeof build>;
 
@@ -87,8 +109,14 @@ export class Auth extends Context.Service<Auth, AuthInstance>()("@ficus/Auth") {
  */
 const instances = new Map<string, AuthInstance>();
 
-/** `apps` are the stage's sign-in OAuth apps: fixed for the isolate's life, like the database and secret. */
-export const layer = (database: BetterAuthOptions["database"], secret: string, baseURL: string, apps: Effect.Effect<SignInApps> = Effect.succeed(NO_APPS)) =>
+/** `apps` are the stage's sign-in OAuth apps and `mail` its way to send mail: fixed for the isolate's life, like the database and secret. */
+export const layer = (
+  database: BetterAuthOptions["database"],
+  secret: string,
+  baseURL: string,
+  apps: Effect.Effect<SignInApps> = Effect.succeed(NO_APPS),
+  mail?: Mailer,
+) =>
   Layer.effect(
     Auth,
     Effect.map(apps, (app) => {
@@ -100,7 +128,7 @@ export const layer = (database: BetterAuthOptions["database"], secret: string, b
         return existing;
       }
 
-      const built = build(database, secret, baseURL, app);
+      const built = build(database, secret, baseURL, app, mail);
 
       instances.set(key, built);
 

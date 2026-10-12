@@ -170,6 +170,15 @@ export default Alchemy.Stack(
 
     const domains = DOMAINS.get(stage);
 
+    // Mail (src/api/mail.ts: confirming email addresses) on a stage with
+    // domains: Cloudflare Email Sending on the UI's domain, whose DNS records
+    // (DKIM, SPF, bounces) it adds to the zone, and the Api's send_email binding.
+    if (domains !== undefined) {
+      yield* Cloudflare.Email.SendingSubdomain("MailDomain", { zoneId: domains.zoneId, name: domains.web });
+    }
+
+    const mail = domains === undefined ? {} : { EMAIL: yield* Cloudflare.Email.SendEmail("Email"), MAIL_FROM: `noreply@${domains.web}` };
+
     const api = yield* Cloudflare.Worker("Api", {
       name: `ficus-api-${stage}`,
       main: "./src/api/worker.ts",
@@ -187,6 +196,7 @@ export default Alchemy.Stack(
         FICUS_AGENT_ORGS: "ficus",
         ...github,
         ...cloudflareLogin,
+        ...mail,
       },
       // The nightly backup.
       crons: ["17 3 * * *"],
