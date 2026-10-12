@@ -1,0 +1,202 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "id": "c198736a-7e7a-4682-9adf-19b6e639f5a4",
+  "prevIds": [
+    "0255b9ba-b8e8-4041-b606-00f6d2c71d2b"
+  ],
+  "ddl": [
+    {
+      "name": "ficus_github_link",
+      "entityType": "tables"
+    },
+    {
+      "name": "ficus_tree",
+      "entityType": "tables"
+    },
+    {
+      "name": "ficus_usage",
+      "entityType": "tables"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "organizationId",
+      "entityType": "columns",
+      "table": "ficus_github_link"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "tree",
+      "entityType": "columns",
+      "table": "ficus_github_link"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "repositoryId",
+      "entityType": "columns",
+      "table": "ficus_github_link"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "fullName",
+      "entityType": "columns",
+      "table": "ficus_github_link"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "branch",
+      "entityType": "columns",
+      "table": "ficus_github_link"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "createdAt",
+      "entityType": "columns",
+      "table": "ficus_github_link"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "organizationId",
+      "entityType": "columns",
+      "table": "ficus_tree"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "name",
+      "entityType": "columns",
+      "table": "ficus_tree"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "createdAt",
+      "entityType": "columns",
+      "table": "ficus_tree"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "organizationId",
+      "entityType": "columns",
+      "table": "ficus_usage"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "day",
+      "entityType": "columns",
+      "table": "ficus_usage"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "kind",
+      "entityType": "columns",
+      "table": "ficus_usage"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "count",
+      "entityType": "columns",
+      "table": "ficus_usage"
+    },
+    {
+      "columns": [
+        "organizationId",
+        "tree"
+      ],
+      "nameExplicit": false,
+      "name": "ficus_github_link_pk",
+      "entityType": "pks",
+      "table": "ficus_github_link"
+    },
+    {
+      "columns": [
+        "organizationId",
+        "name"
+      ],
+      "nameExplicit": false,
+      "name": "ficus_tree_pk",
+      "entityType": "pks",
+      "table": "ficus_tree"
+    },
+    {
+      "columns": [
+        "organizationId",
+        "day",
+        "kind"
+      ],
+      "nameExplicit": false,
+      "name": "ficus_usage_pk",
+      "entityType": "pks",
+      "table": "ficus_usage"
+    },
+    {
+      "columns": [
+        {
+          "value": "repositoryId",
+          "isExpression": false
+        },
+        {
+          "value": "branch",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "ficus_github_link_repository",
+      "entityType": "indexes",
+      "table": "ficus_github_link"
+    }
+  ],
+  "renames": []
+}

@@ -25,6 +25,14 @@
 //                        run once set, like GitHub's. The Api binds it when its
 //                        deploy has FICUS_CLOUDFLARE_CLIENT_ID.
 //
+//   the GitHub App's private key and webhook secret   the Ficus GitHub App's
+//                        (adding repos from GitHub, src/api/github.ts); kept
+//                        when FICUS_GITHUB_APP_PRIVATE_KEY (PKCS#8, DER, base64:
+//                        `openssl pkcs8 -topk8 -nocrypt -in key.pem -outform DER
+//                        | base64 -w0`) and FICUS_GITHUB_WEBHOOK_SECRET are
+//                        given, on every run once set. The Api binds them when
+//                        its deploy has FICUS_GITHUB_APP_ID and FICUS_GITHUB_APP_SLUG.
+//
 // Run from an operator's shell, once per stage; re-run to rotate.
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -98,6 +106,25 @@ export default Alchemy.Stack(
         }),
     });
 
-    return { deployToken: deployToken.secretName, githubClientSecret: github?.secretName, cloudflareClientSecret: cloudflare?.secretName };
+    const optional = (id: string, variable: string, name: string, comment: string) =>
+      Config.option(Config.Redacted(variable)).pipe(
+        Effect.flatMap((given) =>
+          Option.match(given, {
+            onNone: () => Effect.succeed(undefined),
+            onSome: (value) => Cloudflare.SecretsStore.Secret(id, { store, name: `${name}-${stage}`, value, scopes: ["workers"], comment: `Ficus ${stage}: ${comment}` }),
+          }),
+        ),
+      );
+
+    const githubAppKey = yield* optional("GithubAppPrivateKey", "FICUS_GITHUB_APP_PRIVATE_KEY", "ficus-github-app-private-key", "its GitHub App's private key, for reading the repos added from GitHub");
+    const githubWebhook = yield* optional("GithubWebhookSecret", "FICUS_GITHUB_WEBHOOK_SECRET", "ficus-github-webhook-secret", "its GitHub App's webhook secret, for checking GitHub's pushes");
+
+    return {
+      deployToken: deployToken.secretName,
+      githubClientSecret: github?.secretName,
+      cloudflareClientSecret: cloudflare?.secretName,
+      githubAppPrivateKey: githubAppKey?.secretName,
+      githubWebhookSecret: githubWebhook?.secretName,
+    };
   }),
 );

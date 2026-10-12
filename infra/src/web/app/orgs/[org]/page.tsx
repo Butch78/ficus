@@ -1,9 +1,11 @@
 import { Badge, Empty, LayerCard, Link, Table, Text } from "@cloudflare/kumo";
+import * as Result from "effect/Result";
+import { ConnectGitHub } from "../../../components/connect-github.tsx";
 import { FailureBanner } from "../../../components/failure-banner.tsx";
 import { Hero } from "../../../components/hero.tsx";
 import { InitForm } from "../../../components/init-form.tsx";
 import * as Api from "../../../lib/api.ts";
-import { load } from "../../../lib/run.ts";
+import { load, run } from "../../../lib/run.ts";
 import { plural } from "../../../lib/trunk-words.ts";
 import { LayerCardPrimary, LayerCardSecondary, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../../components/kumo.ts";
 
@@ -16,7 +18,9 @@ interface Props {
 
 export default async function Organization({ params, searchParams }: Props) {
   const [{ org }, { error }] = await Promise.all([params, searchParams]);
-  const { trees } = await load(Api.trees(org));
+  // Asked together; the GitHub card shows only where the stage has the GitHub App.
+  const [{ trees }, github] = await Promise.all([load(Api.trees(org)), run(Api.githubRepos)]);
+  const offered = Result.isSuccess(github) && github.success.enabled ? github.success : undefined;
 
   return (
     <>
@@ -62,6 +66,35 @@ export default async function Organization({ params, searchParams }: Props) {
                 ))}
               </TableBody>
             </Table>
+          </LayerCardPrimary>
+        </LayerCard>
+      )}
+      {offered === undefined ? null : (
+        <LayerCard id="github">
+          <LayerCardSecondary>Add from GitHub</LayerCardSecondary>
+          <LayerCardPrimary className="flex flex-col gap-3">
+            {offered.connected ? (
+              <>
+                <Text variant="secondary" size="sm">
+                  Your repos where the Ficus GitHub App is installed, private ones too. The tree follows its branch: every push to GitHub becomes its new head.
+                </Text>
+                {offered.repositories.length === 0 ? (
+                  <Text size="sm">No repos yet: install the app on the ones you want.</Text>
+                ) : (
+                  <InitForm org={org} repositories={offered.repositories} />
+                )}
+                {offered.installUrl === null ? null : (
+                  <Link href={offered.installUrl}>{offered.repositories.length === 0 ? "Install the Ficus GitHub App" : "Install it on more repos"}</Link>
+                )}
+              </>
+            ) : (
+              <>
+                <Text variant="secondary" size="sm">
+                  Connect your GitHub account to add your repos, private ones too, and keep each tree in sync with every push.
+                </Text>
+                <ConnectGitHub back={`/orgs/${org}#github`} />
+              </>
+            )}
           </LayerCardPrimary>
         </LayerCard>
       )}

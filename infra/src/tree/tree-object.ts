@@ -19,6 +19,7 @@ import { change, parsePath, parseRef, Subject, view } from "../core/browse.ts";
 import { applyStep, closeLedger, CONTENT_TYPE as PROGRESS, emptyLedger, type InitStep, Ledger, outcomeBody, outcomeLine, parseLine, stepLine, type StepState, textOf } from "../core/progress.ts";
 import { type BootPlan, bootPlans, CheckSpec, RebaseReport, type RebaseRequest, ScoreAnswer, ScoreReport, scoreOf, type ScoreRequest, SNAPSHOT_REFUSED_MS, snapshotAfter, warmable } from "../core/scoring.ts";
 import type { DeployParams } from "../core/deploy.ts";
+import { withoutCredentials } from "../core/remote.ts";
 import * as T from "../core/tree.ts";
 import { AttemptId, NodeId, Oid, RepoName, TaskId, type TreeError } from "../core/values.ts";
 import { ANONYMOUS_HEADER, anonymousMay, isPublic, NO_SUCH_TREE } from "../core/visibility.ts";
@@ -540,7 +541,7 @@ export class TreeObject extends DurableObject<Bindings> {
     };
 
     if (body.source !== undefined) {
-      progress.step("import", "active", body.source);
+      progress.step("import", "active", withoutCredentials(body.source));
 
       // ALREADY_EXISTS means an earlier init got this far and then timed out: pick up the repo it imported.
       yield* Artifacts.importRepo(this.#artifacts(), body.source, body.branch, name).pipe(
@@ -823,7 +824,9 @@ export class TreeObject extends DurableObject<Bindings> {
       return json({ node: T.head(tree).id, commit: head, grafted: false });
     }
 
-    const source = body.branch === undefined ? body.source : `${body.source}#${body.branch}`;
+    // Kept in the tree's history: never with the token a private repo is fetched with.
+    const remote = withoutCredentials(body.source);
+    const source = body.branch === undefined ? remote : `${remote}#${body.branch}`;
     const grafted = yield* fromTree(T.graft(tree, reserved.node, head, reserved.repo, source));
 
     yield* this.#save(grafted);

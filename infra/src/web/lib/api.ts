@@ -93,6 +93,11 @@ export const session = get(Answers.Session, "/api/auth/get-session");
 
 export const providers = get(Answers.Providers, "/v1/auth/providers");
 
+export const githubRepos = get(Answers.GitHubRepos, "/v1/github/repos");
+
+/** Where a tree comes from: a public git remote, or a GitHub repo through the Ficus GitHub App (by GitHub's id). */
+export type InitSource = { readonly source: string } | { readonly github: number };
+
 export const organizations = get(Answers.Organizations, "/api/auth/organization/list");
 
 export const createOrganization = (name: string, slug: string) =>
@@ -109,7 +114,7 @@ export const PROGRESS = "application/x-ndjson";
  * the organization, which is how its Cloudflare trace is found again
  * (lib/trace.ts) to show what happened.
  */
-export const init = Effect.fn("ficus.init")(function* (org: string, name: string, source: string, operation: string) {
+export const init = Effect.fn("ficus.init")(function* (org: string, name: string, from: InitSource, operation: string) {
   yield* Effect.annotateCurrentSpan({ [OPERATION_ATTRIBUTE]: operation, [ORG_ATTRIBUTE]: org, "ficus.tree": name });
 
   const upstream = yield* Upstream;
@@ -125,7 +130,7 @@ export const init = Effect.fn("ficus.init")(function* (org: string, name: string
         new Request(new URL(`${tree(org, name)}/init`, upstream.origin), {
           method: "POST",
           headers,
-          body: JSON.stringify({ source }),
+          body: JSON.stringify("github" in from ? { github: { repository: from.github } } : { source: from.source }),
         }),
       ),
     catch: (cause) => new ApiError({ status: 502, message: `the Api is unreachable: ${String(cause)}` }),

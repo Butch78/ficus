@@ -6,6 +6,7 @@ import * as Schema from "effect/Schema";
 import type { BrowseError } from "../core/browse.ts";
 import type { TreeError, TreeErrorKind } from "../core/values.ts";
 import { type ArtifactsError, statusOf } from "./artifacts.ts";
+import { redactCredentials } from "../core/remote.ts";
 
 /** A refusal: a status and the reason, as text. */
 export class Refused extends Schema.TaggedError<Refused>()("Tree.Refused", {
@@ -48,7 +49,8 @@ const TREE_STATUS: Readonly<Record<TreeErrorKind, number>> = {
 
 export const treeRefused = (error: TreeError) => refuse(TREE_STATUS[error.kind], error.message);
 
-export const artifactsRefused = (error: ArtifactsError) => refuse(statusOf(error), `Artifacts ${error.code}: ${error.message}`);
+/** Artifacts' refusal, said on: never with the credentials of a remote it quotes (an import's token, src/core/remote.ts). */
+export const artifactsRefused = (error: ArtifactsError) => refuse(statusOf(error), redactCredentials(`Artifacts ${error.code}: ${error.message}`));
 
 export const browseRefused = (error: BrowseError) => refuse(400, error.message);
 

@@ -171,6 +171,24 @@ export default Alchemy.Stack(
             CLOUDFLARE_CLIENT_SECRET: yield* Cloudflare.SecretsStore.Secret.ref("CloudflareClientSecret", { stack: "FicusSecrets" }),
           };
 
+    // The Ficus GitHub App (src/api/github.ts): adding repos from GitHub and
+    // grafting their pushes. Its id and slug from the deploy
+    // (FICUS_GITHUB_APP_ID, FICUS_GITHUB_APP_SLUG); its private key and
+    // webhook secret from the Secrets Store (secrets.run.ts). Signing in with
+    // GitHub uses the same app's client id and secret (above).
+    const githubAppId = yield* Config.String("FICUS_GITHUB_APP_ID").pipe(Config.withDefault(""));
+    const githubAppSlug = yield* Config.String("FICUS_GITHUB_APP_SLUG").pipe(Config.withDefault(""));
+
+    const githubApp =
+      githubAppId === "" || githubAppSlug === ""
+        ? {}
+        : {
+            GITHUB_APP_ID: githubAppId,
+            GITHUB_APP_SLUG: githubAppSlug,
+            GITHUB_APP_PRIVATE_KEY: yield* Cloudflare.SecretsStore.Secret.ref("GithubAppPrivateKey", { stack: "FicusSecrets" }),
+            GITHUB_WEBHOOK_SECRET: yield* Cloudflare.SecretsStore.Secret.ref("GithubWebhookSecret", { stack: "FicusSecrets" }),
+          };
+
     const domains = DOMAINS.get(stage);
 
     // Mail (src/api/mail.ts: confirming email addresses) on a stage with
@@ -201,6 +219,7 @@ export default Alchemy.Stack(
         FICUS_AGENT_ORGS: "ficus",
         ...github,
         ...cloudflareLogin,
+        ...githubApp,
         ...mail,
       },
       // The nightly backup.

@@ -7,6 +7,9 @@ import { API_KEY_HEADER } from "./auth.ts";
 import { TENANT_HEADER, tenantKey } from "./tenant.ts";
 import worker, { treeRoute, treesRoute } from "./worker.ts";
 
+/** The execution context, as far as the Api uses it: these calls leave no background work (only the GitHub webhook does). */
+const CTX = { waitUntil: () => undefined };
+
 describe("treeRoute", () => {
   test("splits organization, tree and the rest of the path", () => {
     expect(treeRoute("/v1/orgs/acme/trees/site")).toEqual({ org: "acme", tree: "site", rest: "" });
@@ -38,7 +41,7 @@ describe("sign-in providers", () => {
     // SAFETY: the providers route reads only the GitHub bindings; the others are never touched.
     const env = { AUTH_DB: {}, TREE: {}, BETTER_AUTH_SECRET: "test", BACKUPS: {}, ...github } as never;
 
-    return (await worker.fetch(new Request("https://api.example/v1/auth/providers"), env)).text();
+    return (await worker.fetch(new Request("https://api.example/v1/auth/providers"), env, CTX)).text();
   };
 
   test("offer GitHub or Cloudflare only once the stage has both that app's client id and secret", async () => {
@@ -74,6 +77,7 @@ describe("GET /v1/health", () => {
       new Request("https://api.example.com/v1/health", { method: "GET" }),
       // SAFETY: the health route touches no binding, so the stubs are never used.
       { AUTH_DB: {}, TREE, BETTER_AUTH_SECRET: "test", BACKUPS: {} } as never,
+      CTX,
     );
 
     expect(response.status).toBe(200);
@@ -104,7 +108,7 @@ describe("a request with no session and no API key", () => {
   const call = async (path: string, init: RequestInit = {}) => {
     forwarded.length = 0;
 
-    return worker.fetch(new Request(`${origin}${path}`, init), env);
+    return worker.fetch(new Request(`${origin}${path}`, init), env, CTX);
   };
 
   const spoofed = { [ANONYMOUS_HEADER]: "false", [TENANT_HEADER]: "aaaaaaaaaa" };

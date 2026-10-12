@@ -12,7 +12,7 @@
  * here, so Drizzle never diffs them. For the same reason `ficus_tree`'s
  * foreign key to `organization` lives in the baseline SQL only.
  */
-import { integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 /** Each organization's trees: a tree is listed once an init answered 2xx. */
 export const ficusTree = sqliteTable(
@@ -42,4 +42,24 @@ export const ficusUsage = sqliteTable(
     count: integer("count").notNull(),
   },
   (table) => [primaryKey({ columns: [table.organizationId, table.day, table.kind] })],
+);
+
+/**
+ * Trees added from GitHub through the Ficus GitHub App (github.ts): a push to
+ * `branch` of the repository is grafted into the tree as its new head.
+ */
+export const ficusGithubLink = sqliteTable(
+  "ficus_github_link",
+  {
+    organizationId: text("organizationId").notNull(),
+    tree: text("tree").notNull(),
+    /** GitHub's id for the repository: it stays the same across renames and transfers. */
+    repositoryId: integer("repositoryId").notNull(),
+    /** `owner/name` when the tree was added, for showing. */
+    fullName: text("fullName").notNull(),
+    branch: text("branch").notNull(),
+    /** Milliseconds since the epoch. */
+    createdAt: integer("createdAt").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.organizationId, table.tree] }), index("ficus_github_link_repository").on(table.repositoryId, table.branch)],
 );

@@ -199,6 +199,24 @@ export const Trees = Schema.Struct({
 /** Better Auth's `GET /api/auth/organization/list`, the fields the UI shows. */
 export const Organizations = Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String, slug: Schema.String }));
 
+/** A repo the signed-in person can add from GitHub (src/api/github.ts). */
+export const GitHubRepository = Schema.Struct({
+  id: Schema.Number,
+  full_name: Schema.String,
+  private: Schema.Boolean,
+  default_branch: Schema.String,
+});
+
+export type GitHubRepository = typeof GitHubRepository.Type;
+
+/** `GET /v1/github/repos`: whether the stage has the GitHub App, whether the person connected GitHub, and the repos they can add. */
+export const GitHubRepos = Schema.Struct({
+  enabled: Schema.Boolean,
+  connected: Schema.Boolean,
+  installUrl: Schema.NullOr(Schema.String),
+  repositories: Schema.Array(GitHubRepository),
+});
+
 /** `GET /v1/auth/providers`: the ways to sign in besides email. */
 export const Providers = Schema.Struct({ github: Schema.Boolean, cloudflare: Schema.optional(Schema.Boolean) });
 

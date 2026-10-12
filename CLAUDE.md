@@ -31,7 +31,17 @@ deadline 2026-10-14.
 - Public entry is the Api Worker (`infra/src/api`): Better Auth on D1 (orgs, API keys via `x-api-key`). GitHub sign-in
   (Better Auth's github provider) is on where the Api has `GITHUB_CLIENT_ID` (deploy env `FICUS_GITHUB_CLIENT_ID`) and
   `GITHUB_CLIENT_SECRET` (Secrets Store, `secrets.run.ts` with `FICUS_GITHUB_CLIENT_SECRET`); the OAuth app's callback is
-  `<UI origin>/api/auth/callback/github`; `GET /v1/auth/providers` tells the sign-in page. Signing in with Cloudflare (`src/api/cloudflare-login.ts`, Better
+  `<UI origin>/api/auth/callback/github`; `GET /v1/auth/providers` tells the sign-in page. The Ficus GitHub App (`ficus-fruit-cards`, id
+  5292361, owned by Butch78; `src/api/github.ts`) is that OAuth app too, and adds GitHub repos as trees: deploy env
+  `FICUS_GITHUB_APP_ID` + `FICUS_GITHUB_APP_SLUG`, Secrets Store `GithubAppPrivateKey` (PKCS#8 DER base64, from
+  `FICUS_GITHUB_APP_PRIVATE_KEY`) + `GithubWebhookSecret` (`FICUS_GITHUB_WEBHOOK_SECRET`). `GET /v1/github/repos` lists the
+  repos the signed-in person's own GitHub token reaches through the app's installations (never the app's view, which
+  spans every installer); `POST .../init {github: {repository}}` checks the repo is among them, then imports it through
+  Artifacts (public: plain URL; private: `x-access-token:<installation token>@`, read-only for that repo for an hour; Artifacts
+  imports only public remotes officially, so this rides on it passing the URL's credentials to git) and records
+  `ficus_github_link`. `POST /v1/github/webhook` (HMAC `X-Hub-Signature-256`) grafts each push into the trees following that
+  repo and branch, in `waitUntil` (GitHub waits 10 s). Tokens never reach progress lines, refusals or the tree's history
+  (`src/core/remote.ts`). The app reads only: contents, metadata, emails. Signing in with Cloudflare (`src/api/cloudflare-login.ts`, Better
   Auth's generic OAuth plugin, plain OAuth with Cloudflare's endpoints given, since a discovery URL makes Better Auth add `openid`; scopes offline_access, user-details.read,
   memberships.read, ai.read, ai.write: a self-managed client may not have `openid`, so the person comes from `/client/v4/user`) is on where the Api has `CLOUDFLARE_CLIENT_ID` (ficus.toml's deploy sets
   `FICUS_CLOUDFLARE_CLIENT_ID`) and `CLOUDFLARE_CLIENT_SECRET` (Secrets Store, `FICUS_CLOUDFLARE_CLIENT_SECRET`); callback
