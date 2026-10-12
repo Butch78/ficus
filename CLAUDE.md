@@ -32,8 +32,8 @@ deadline 2026-10-14.
   (Better Auth's github provider) is on where the Api has `GITHUB_CLIENT_ID` (deploy env `FICUS_GITHUB_CLIENT_ID`) and
   `GITHUB_CLIENT_SECRET` (Secrets Store, `secrets.run.ts` with `FICUS_GITHUB_CLIENT_SECRET`); the OAuth app's callback is
   `<UI origin>/api/auth/callback/github`; `GET /v1/auth/providers` tells the sign-in page. Signing in with Cloudflare (`src/api/cloudflare-login.ts`, Better
-  Auth's generic OAuth plugin on Cloudflare's OpenID discovery; scopes openid, offline_access, user-details.read,
-  memberships.read, ai.read, ai.write) is on where the Api has `CLOUDFLARE_CLIENT_ID` (ficus.toml's deploy sets
+  Auth's generic OAuth plugin, plain OAuth with Cloudflare's endpoints given, since a discovery URL makes Better Auth add `openid`; scopes offline_access, user-details.read,
+  memberships.read, ai.read, ai.write: a self-managed client may not have `openid`, so the person comes from `/client/v4/user`) is on where the Api has `CLOUDFLARE_CLIENT_ID` (ficus.toml's deploy sets
   `FICUS_CLOUDFLARE_CLIENT_ID`) and `CLOUDFLARE_CLIENT_SECRET` (Secrets Store, `FICUS_CLOUDFLARE_CLIENT_SECRET`); callback
   `<UI origin>/api/auth/callback/cloudflare` (Better Auth 1.7's generic OAuth plugin registers it as a social provider: sign
   in through `/sign-in/social`, not `/sign-in/oauth2`); OAuth tokens are stored encrypted and accounts link by email. The

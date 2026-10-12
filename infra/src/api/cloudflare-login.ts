@@ -1,9 +1,13 @@
 /**
- * Signing in with Cloudflare: Cloudflare is an OpenID Connect provider
- * (https://dash.cloudflare.com/.well-known/openid-configuration), and Ficus is
- * an OAuth client of it, created on Ficus's account (scripts or dashboard).
- * Besides who you are, Ficus asks for your account memberships and Workers AI,
- * so the agents you start can run on an account of yours, billed to it.
+ * Signing in with Cloudflare: Ficus is an OAuth client of Cloudflare, created
+ * on Ficus's account (scripts or dashboard). A self-managed client may not ask
+ * for `openid` (Cloudflare drops it from the client and refuses it at sign-in),
+ * so Ficus signs in with plain OAuth: the endpoints are given rather than
+ * discovered (Better Auth adds `openid` to any provider whose discovery
+ * document signs ID tokens, as Cloudflare's does), and who you are comes from
+ * Cloudflare's user API (`user-details.read`). Ficus
+ * also asks for your account memberships and Workers AI, so the agents you
+ * start can run on an account of yours, billed to it.
  */
 import type { GenericOAuthConfig, GenericOAuthUserInfo } from "better-auth/plugins";
 import * as Option from "effect/Option";
@@ -17,23 +21,17 @@ export interface CloudflareApp {
 
 export const CLOUDFLARE_PROVIDER = "cloudflare";
 
-const DISCOVERY = "https://dash.cloudflare.com/.well-known/openid-configuration";
+/** From https://dash.cloudflare.com/.well-known/openid-configuration. */
+const AUTHORIZATION = "https://dash.cloudflare.com/oauth2/auth";
 
-const USERINFO = "https://dash.cloudflare.com/oauth2/userinfo";
+const TOKEN = "https://dash.cloudflare.com/oauth2/token";
 
 const API_USER = "https://api.cloudflare.com/client/v4/user";
 
 /** Who you are, the accounts you belong to, Workers AI on them, and a refresh token to keep it working. */
-export const CLOUDFLARE_SCOPES = ["openid", "offline_access", "user-details.read", "memberships.read", "ai.read", "ai.write"];
+export const CLOUDFLARE_SCOPES = ["offline_access", "user-details.read", "memberships.read", "ai.read", "ai.write"];
 
-/** OpenID's userinfo, as far as Ficus reads it. */
-const OpenIdUser = Schema.Struct({
-  sub: Schema.String,
-  email: Schema.optional(Schema.String),
-  name: Schema.optional(Schema.String),
-});
-
-/** Cloudflare's `GET /client/v4/user`, as far as Ficus reads it: where userinfo says no email. */
+/** Cloudflare's `GET /client/v4/user`, as far as Ficus reads it. */
 const ApiUser = Schema.Struct({
   result: Schema.Struct({
     id: Schema.String,
@@ -43,53 +41,39 @@ const ApiUser = Schema.Struct({
   }),
 });
 
+const decodeUser = Schema.decodeUnknownOption(Schema.fromJsonString(ApiUser));
+
 /** The part of `fetch` reading a Cloudflare endpoint needs. */
 export type Fetcher = (url: string, init: { readonly headers: Record<string, string> }) => Promise<Response>;
-
-const readJson = async (fetcher: Fetcher, url: string, accessToken: string) => {
-  const response = await fetcher(url, { headers: { authorization: `Bearer ${accessToken}` } });
-
-  return response.ok ? response.text() : undefined;
-};
 
 /** A name from Cloudflare's profile, or the email's local part when it has none. */
 const nameOf = (email: string, first: string | null | undefined, last: string | null | undefined) =>
   [first, last].filter((part) => part !== null && part !== undefined && part !== "").join(" ") || (email.split("@")[0] ?? email);
 
-/**
- * The signed-in person, from OpenID's userinfo when it carries an email, else
- * from Cloudflare's user API (the `user-details.read` scope); null when
- * neither answers, which Better Auth turns into a failed sign-in.
- */
+/** The signed-in person, from Cloudflare's user API; null when it does not answer, which Better Auth turns into a failed sign-in. */
 export const cloudflareUser = async (accessToken: string | undefined, fetcher: Fetcher = fetch): Promise<GenericOAuthUserInfo | null> => {
   if (accessToken === undefined) {
     return null;
   }
 
-  const openId = Option.flatMap(Option.fromUndefinedOr(await readJson(fetcher, USERINFO, accessToken)), Schema.decodeUnknownOption(Schema.fromJsonString(OpenIdUser)));
+  const response = await fetcher(API_USER, { headers: { authorization: `Bearer ${accessToken}` } });
+  const user = response.ok ? decodeUser(await response.text()) : Option.none();
 
-  if (Option.isSome(openId) && openId.value.email !== undefined) {
-    const { sub, email, name } = openId.value;
-
-    return { id: sub, email, name: name ?? nameOf(email, undefined, undefined), emailVerified: true };
-  }
-
-  const api = Option.flatMap(Option.fromUndefinedOr(await readJson(fetcher, API_USER, accessToken)), Schema.decodeUnknownOption(Schema.fromJsonString(ApiUser)));
-
-  if (Option.isNone(api)) {
+  if (Option.isNone(user)) {
     return null;
   }
 
-  const { id, email, first_name: first, last_name: last } = api.value.result;
+  const { id, email, first_name: first, last_name: last } = user.value.result;
 
-  return { id: Option.isSome(openId) ? openId.value.sub : id, email, name: nameOf(email, first, last), emailVerified: true };
+  return { id, email, name: nameOf(email, first, last), emailVerified: true };
 };
 
 /** Better Auth's generic OAuth provider for Cloudflare. */
 export const cloudflareProvider = (app: CloudflareApp): GenericOAuthConfig => ({
   providerId: CLOUDFLARE_PROVIDER,
   name: "Cloudflare",
-  discoveryUrl: DISCOVERY,
+  authorizationUrl: AUTHORIZATION,
+  tokenUrl: TOKEN,
   clientId: app.clientId,
   clientSecret: app.clientSecret,
   scopes: CLOUDFLARE_SCOPES,

@@ -10,24 +10,22 @@ const answering =
     return body === undefined ? new Response("", { status: 403 }) : new Response(body);
   };
 
-const USERINFO = "https://dash.cloudflare.com/oauth2/userinfo";
-
 const API_USER = "https://api.cloudflare.com/client/v4/user";
 
 describe("cloudflareUser", () => {
-  test("is OpenID's userinfo when it carries an email", async () => {
-    const user = await cloudflareUser("t", answering(new Map([[USERINFO, JSON.stringify({ sub: "u-1", email: "ada@example.com", name: "Ada" })]])));
+  test("is Cloudflare's user, named from the profile", async () => {
+    const user = await cloudflareUser("t", answering(new Map([[API_USER, JSON.stringify({ result: { id: "a-9", email: "ada@example.com", first_name: "Ada", last_name: null } })]])));
 
-    expect(user).toEqual({ id: "u-1", email: "ada@example.com", name: "Ada", emailVerified: true });
+    expect(user).toEqual({ id: "a-9", email: "ada@example.com", name: "Ada", emailVerified: true });
   });
 
-  test("asks Cloudflare's user API when userinfo has no email, keeping userinfo's subject", async () => {
-    const user = await cloudflareUser("t", answering(new Map([[USERINFO, JSON.stringify({ sub: "u-1" })], [API_USER, JSON.stringify({ result: { id: "a-9", email: "ada@example.com", first_name: "Ada", last_name: null } })]])));
+  test("is named by the email's local part when the profile has no name", async () => {
+    const user = await cloudflareUser("t", answering(new Map([[API_USER, JSON.stringify({ result: { id: "a-9", email: "ada@example.com" } })]])));
 
-    expect(user).toEqual({ id: "u-1", email: "ada@example.com", name: "Ada", emailVerified: true });
+    expect(user).toEqual({ id: "a-9", email: "ada@example.com", name: "ada", emailVerified: true });
   });
 
-  test("is nobody without a token, or when neither answers", async () => {
+  test("is nobody without a token, or when the user API does not answer", async () => {
     expect(await cloudflareUser(undefined, answering(new Map()))).toBeNull();
     expect(await cloudflareUser("t", answering(new Map()))).toBeNull();
   });
