@@ -41,10 +41,10 @@ interface Props {
   readonly refused: string | undefined;
 }
 
-/** Where each sign-in starts: GitHub is Better Auth's social provider, Cloudflare its generic OAuth one. */
+/** Where each sign-in starts: both are Better Auth social providers (Cloudflare through the generic OAuth plugin, which registers it as one). */
 const STARTS = {
   github: { path: "/api/auth/sign-in/social", body: { provider: "github" } },
-  cloudflare: { path: "/api/auth/sign-in/oauth2", body: { providerId: "cloudflare" } },
+  cloudflare: { path: "/api/auth/sign-in/social", body: { provider: "cloudflare" } },
 } as const;
 
 export function SignInForm({ github, cloudflare, refused }: Props) {

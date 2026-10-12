@@ -35,7 +35,8 @@ deadline 2026-10-14.
   Auth's generic OAuth plugin on Cloudflare's OpenID discovery; scopes openid, offline_access, user-details.read,
   memberships.read, ai.read, ai.write) is on where the Api has `CLOUDFLARE_CLIENT_ID` (ficus.toml's deploy sets
   `FICUS_CLOUDFLARE_CLIENT_ID`) and `CLOUDFLARE_CLIENT_SECRET` (Secrets Store, `FICUS_CLOUDFLARE_CLIENT_SECRET`); callback
-  `<UI origin>/api/auth/oauth2/callback/cloudflare`; OAuth tokens are stored encrypted and accounts link by email. The
+  `<UI origin>/api/auth/callback/cloudflare` (Better Auth 1.7's generic OAuth plugin registers it as a social provider: sign
+  in through `/sign-in/social`, not `/sign-in/oauth2`); OAuth tokens are stored encrypted and accounts link by email. The
   client was made with the Cloudflare API (`POST /accounts/<id>/oauth_clients`, an OAuth Client Write token), its domain
   verified by a TXT record on ficus.fruit.cards. Membership is
   `getSession` plus two lookups (`memberOf`: the organization by slug, then the member row); never `getFullOrganization`,
