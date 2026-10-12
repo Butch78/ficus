@@ -40,22 +40,24 @@ interface Bindings {
   readonly GITHUB_CLIENT_ID?: string;
   /** Its client secret, from the account's Secrets Store (secrets.run.ts). */
   readonly GITHUB_CLIENT_SECRET?: SecretsStoreSecret;
+  /** The stage's Cloudflare OAuth client's id; with its secret, signing in with Cloudflare is on. */
+  readonly CLOUDFLARE_CLIENT_ID?: string;
+  /** Its client secret, from the account's Secrets Store (secrets.run.ts). */
+  readonly CLOUDFLARE_CLIENT_SECRET?: SecretsStoreSecret;
 }
 
-/** The GitHub OAuth app's client secret, read from the Secrets Store once per isolate, by client id. */
-const githubSecrets = new Map<string, Promise<string>>();
+/** OAuth apps' client secrets, read from the Secrets Store once per isolate, by client id. */
+const clientSecrets = new Map<string, Promise<string>>();
 
-/** The stage's GitHub OAuth app, if it has one; a secret that cannot be read leaves GitHub sign-in off. */
-const githubApp = (env: Bindings) => {
-  const { GITHUB_CLIENT_ID: clientId, GITHUB_CLIENT_SECRET: secret } = env;
-
+/** An OAuth app the stage has, if it has both its client id and secret; a secret that cannot be read leaves that sign-in off. */
+const oauthApp = (clientId: string | undefined, secret: SecretsStoreSecret | undefined) => {
   if (clientId === undefined || secret === undefined) {
     return Effect.succeed(undefined);
   }
 
-  const reading = githubSecrets.get(clientId) ?? secret.get();
+  const reading = clientSecrets.get(clientId) ?? secret.get();
 
-  githubSecrets.set(clientId, reading);
+  clientSecrets.set(clientId, reading);
 
   return Effect.tryPromise(() => reading).pipe(
     Effect.map((clientSecret) => ({ clientId, clientSecret })),
@@ -64,8 +66,15 @@ const githubApp = (env: Bindings) => {
   );
 };
 
-/** Whether the sign-in page should offer GitHub. */
-const providers = (env: Bindings) => ({ github: env.GITHUB_CLIENT_ID !== undefined && env.GITHUB_CLIENT_SECRET !== undefined });
+/** The stage's sign-in apps (auth.ts). */
+const signInApps = (env: Bindings) =>
+  Effect.all({ github: oauthApp(env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET), cloudflare: oauthApp(env.CLOUDFLARE_CLIENT_ID, env.CLOUDFLARE_CLIENT_SECRET) });
+
+/** Which sign-ins the sign-in page should offer besides email. */
+const providers = (env: Bindings) => ({
+  github: env.GITHUB_CLIENT_ID !== undefined && env.GITHUB_CLIENT_SECRET !== undefined,
+  cloudflare: env.CLOUDFLARE_CLIENT_ID !== undefined && env.CLOUDFLARE_CLIENT_SECRET !== undefined,
+});
 
 /** Headers that carry the caller's credentials or claims, never forwarded. */
 const STRIPPED = ["cookie", "authorization", API_KEY_HEADER, TENANT_HEADER, ANONYMOUS_HEADER];
@@ -342,7 +351,7 @@ export default {
         // oxlint-disable-next-line effecttsgo/strict-effect-provide -- the Worker's entry point
         Effect.provide(
           Layer.mergeAll(
-            authLayer(env.AUTH_DB, env.BETTER_AUTH_SECRET, new URL(request.url).origin, githubApp(env)),
+            authLayer(env.AUTH_DB, env.BETTER_AUTH_SECRET, new URL(request.url).origin, signInApps(env)),
             Directory.directoryLayer(env.AUTH_DB),
             CloudflareTracer.layer,
           ),

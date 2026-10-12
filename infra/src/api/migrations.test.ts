@@ -38,5 +38,11 @@ describe("the Api's migrations", () => {
     const pending = await getMigrations(authOptions(db, "schema-only-secret-not-used-for-anything", "http://localhost"));
 
     expect([...pending.toBeCreated, ...pending.toBeAdded].map((change) => change.table)).toEqual([]);
+
+    // Signing in with Cloudflare (Better Auth's generic OAuth plugin) keeps its tokens in the account table: nothing new either.
+    const apps = { github: undefined, cloudflare: { clientId: "id", clientSecret: "secret" } };
+    const withCloudflare = await getMigrations(authOptions(db, "schema-only-secret-not-used-for-anything", "http://localhost", apps));
+
+    expect([...withCloudflare.toBeCreated, ...withCloudflare.toBeAdded].map((change) => change.table)).toEqual([]);
   });
 });

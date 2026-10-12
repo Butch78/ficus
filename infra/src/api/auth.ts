@@ -8,7 +8,8 @@
  */
 import { apiKey } from "@better-auth/api-key";
 import { betterAuth, type BetterAuthOptions } from "better-auth";
-import { organization } from "better-auth/plugins";
+import { genericOAuth, organization } from "better-auth/plugins";
+import { CLOUDFLARE_PROVIDER, cloudflareProvider, type CloudflareApp } from "./cloudflare-login.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -24,8 +25,20 @@ export interface GitHubApp {
   readonly clientSecret: string;
 }
 
-export const authOptions = (database: BetterAuthOptions["database"], secret: string, baseURL: string, github?: GitHubApp) =>
-  ({
+/** The OAuth apps a stage signs people in with, besides email: each absent until the stage has its credentials. */
+export interface SignInApps {
+  readonly github: GitHubApp | undefined;
+  readonly cloudflare: CloudflareApp | undefined;
+}
+
+const NO_APPS: SignInApps = { github: undefined, cloudflare: undefined };
+
+export const authOptions = (database: BetterAuthOptions["database"], secret: string, baseURL: string, apps: SignInApps = NO_APPS) => {
+  const { github, cloudflare } = apps;
+  // Cloudflare, through Better Auth's generic OAuth plugin (cloudflare-login.ts), where the stage has its client.
+  const cloudflareLogin = cloudflare === undefined ? [] : [genericOAuth({ config: [cloudflareProvider(cloudflare)] })];
+
+  return {
     database,
     secret,
     baseURL,
@@ -33,6 +46,12 @@ export const authOptions = (database: BetterAuthOptions["database"], secret: str
     emailAndPassword: { enabled: true },
     // GitHub sign-in where the stage has an OAuth app; its callback is <origin>/api/auth/callback/github.
     socialProviders: github === undefined ? {} : { github: { clientId: github.clientId, clientSecret: github.clientSecret } },
+    account: {
+      // Cloudflare's tokens run agents on the person's account: kept encrypted, never in the clear.
+      encryptOAuthTokens: true,
+      // Signing in with GitHub or Cloudflare as an email you already use joins that account.
+      accountLinking: { enabled: true, trustedProviders: ["github", CLOUDFLARE_PROVIDER] },
+    },
     plugins: [
       organization(),
       // A key's session is its owner's: one path (getSession) for browsers
@@ -44,11 +63,13 @@ export const authOptions = (database: BetterAuthOptions["database"], secret: str
         // seconds. 600 a minute is 10 a second per key.
         rateLimit: { enabled: true, timeWindow: 60_000, maxRequests: 600 },
       }),
+      ...cloudflareLogin,
     ],
-  }) satisfies BetterAuthOptions;
+  } satisfies BetterAuthOptions;
+};
 
-const build = (database: BetterAuthOptions["database"], secret: string, baseURL: string, github: GitHubApp | undefined) =>
-  betterAuth(authOptions(database, secret, baseURL, github));
+const build = (database: BetterAuthOptions["database"], secret: string, baseURL: string, apps: SignInApps) =>
+  betterAuth(authOptions(database, secret, baseURL, apps));
 
 export type AuthInstance = ReturnType<typeof build>;
 
@@ -66,11 +87,11 @@ export class Auth extends Context.Service<Auth, AuthInstance>()("@ficus/Auth") {
  */
 const instances = new Map<string, AuthInstance>();
 
-/** `github` is the stage's GitHub OAuth app, if any: fixed for the isolate's life, like the database and secret. */
-export const layer = (database: BetterAuthOptions["database"], secret: string, baseURL: string, github: Effect.Effect<GitHubApp | undefined> = Effect.succeed(undefined)) =>
+/** `apps` are the stage's sign-in OAuth apps: fixed for the isolate's life, like the database and secret. */
+export const layer = (database: BetterAuthOptions["database"], secret: string, baseURL: string, apps: Effect.Effect<SignInApps> = Effect.succeed(NO_APPS)) =>
   Layer.effect(
     Auth,
-    Effect.map(github, (app) => {
+    Effect.map(apps, (app) => {
       const existing = instances.get(baseURL);
 
       if (existing !== undefined) {

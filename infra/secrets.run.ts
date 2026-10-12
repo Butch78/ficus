@@ -19,6 +19,12 @@
 //                        run once set: a run without it removes the secret.
 //                        The Api binds it when its deploy has FICUS_GITHUB_CLIENT_ID.
 //
+//   the Cloudflare client secret   the stage's Cloudflare OAuth client's (sign
+//                        in with Cloudflare, src/api/cloudflare-login.ts); kept
+//                        when FICUS_CLOUDFLARE_CLIENT_SECRET is given, on every
+//                        run once set, like GitHub's. The Api binds it when its
+//                        deploy has FICUS_CLOUDFLARE_CLIENT_ID.
+//
 // Run from an operator's shell, once per stage; re-run to rotate.
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -78,6 +84,20 @@ export default Alchemy.Stack(
         }),
     });
 
-    return { deployToken: deployToken.secretName, githubClientSecret: github?.secretName };
+    const cloudflareClientSecret = yield* Config.option(Config.Redacted("FICUS_CLOUDFLARE_CLIENT_SECRET"));
+
+    const cloudflare = yield* Option.match(cloudflareClientSecret, {
+      onNone: () => Effect.succeed(undefined),
+      onSome: (value) =>
+        Cloudflare.SecretsStore.Secret("CloudflareClientSecret", {
+          store,
+          name: `ficus-cloudflare-client-secret-${stage}`,
+          value,
+          scopes: ["workers"],
+          comment: `Ficus ${stage}: its Cloudflare OAuth client's secret, for signing in with Cloudflare`,
+        }),
+    });
+
+    return { deployToken: deployToken.secretName, githubClientSecret: github?.secretName, cloudflareClientSecret: cloudflare?.secretName };
   }),
 );

@@ -155,6 +155,19 @@ export default Alchemy.Stack(
             GITHUB_CLIENT_SECRET: yield* Cloudflare.SecretsStore.Secret.ref("GithubClientSecret", { stack: "FicusSecrets" }),
           };
 
+    // Signing in with Cloudflare, the same way: the OAuth client's id from the
+    // deploy (FICUS_CLOUDFLARE_CLIENT_ID), its secret from the Secrets Store
+    // (secrets.run.ts with FICUS_CLOUDFLARE_CLIENT_SECRET).
+    const cloudflareClientId = yield* Config.String("FICUS_CLOUDFLARE_CLIENT_ID").pipe(Config.withDefault(""));
+
+    const cloudflareLogin =
+      cloudflareClientId === ""
+        ? {}
+        : {
+            CLOUDFLARE_CLIENT_ID: cloudflareClientId,
+            CLOUDFLARE_CLIENT_SECRET: yield* Cloudflare.SecretsStore.Secret.ref("CloudflareClientSecret", { stack: "FicusSecrets" }),
+          };
+
     const domains = DOMAINS.get(stage);
 
     const api = yield* Cloudflare.Worker("Api", {
@@ -173,6 +186,7 @@ export default Alchemy.Stack(
         // Built-in agents run on this account only for these organizations (src/api/usage.ts).
         FICUS_AGENT_ORGS: "ficus",
         ...github,
+        ...cloudflareLogin,
       },
       // The nightly backup.
       crons: ["17 3 * * *"],

@@ -7,7 +7,7 @@
  * back to /api/auth/callback/github on this origin.
  */
 import { Banner, Button, Input, LayerCard, Text } from "@cloudflare/kumo";
-import { GithubLogoIcon } from "@phosphor-icons/react";
+import { CloudIcon, GithubLogoIcon } from "@phosphor-icons/react";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { type FormEvent, useEffect, useState } from "react";
@@ -35,13 +35,21 @@ const field = (form: FormData, name: string) => {
 interface Props {
   /** Whether the stage offers GitHub sign-in. */
   readonly github: boolean;
-  /** Why a GitHub sign-in came back refused, if one did. */
+  /** Whether the stage offers signing in with Cloudflare, whose agents then run on an account of yours. */
+  readonly cloudflare: boolean;
+  /** Why a GitHub or Cloudflare sign-in came back refused, if one did. */
   readonly refused: string | undefined;
 }
 
-export function SignInForm({ github, refused }: Props) {
+/** Where each sign-in starts: GitHub is Better Auth's social provider, Cloudflare its generic OAuth one. */
+const STARTS = {
+  github: { path: "/api/auth/sign-in/social", body: { provider: "github" } },
+  cloudflare: { path: "/api/auth/sign-in/oauth2", body: { providerId: "cloudflare" } },
+} as const;
+
+export function SignInForm({ github, cloudflare, refused }: Props) {
   const [mode, setMode] = useState<Mode>("sign-in");
-  const [failure, setFailure] = useState<string | undefined>(refused === undefined ? undefined : `GitHub sign-in failed: ${refused}`);
+  const [failure, setFailure] = useState<string | undefined>(refused === undefined ? undefined : `Signing in failed: ${refused}`);
   const [busy, setBusy] = useState(false);
   // Until React has hydrated, a submit would be the browser's own: a GET
   // with the password in the URL. The button waits for `submit` to exist.
@@ -74,14 +82,16 @@ export function SignInForm({ github, refused }: Props) {
     setBusy(false);
   };
 
-  const withGitHub = async () => {
+  const withProvider = async (provider: keyof typeof STARTS) => {
     setBusy(true);
     setFailure(undefined);
 
-    const response = await fetch("/api/auth/sign-in/social", {
+    const start = STARTS[provider];
+
+    const response = await fetch(start.path, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ provider: "github", callbackURL: "/", errorCallbackURL: "/sign-in" }),
+      body: JSON.stringify({ ...start.body, callbackURL: "/", errorCallbackURL: "/sign-in" }),
     });
 
     const redirect = response.ok ? decodeRedirect(await response.text()) : Option.none();
@@ -92,7 +102,7 @@ export function SignInForm({ github, refused }: Props) {
       return;
     }
 
-    setFailure(response.ok ? "GitHub sign-in did not answer with where to go" : await failureOf(response));
+    setFailure(response.ok ? "the sign-in did not answer with where to go" : await failureOf(response));
     setBusy(false);
   };
 
@@ -100,15 +110,20 @@ export function SignInForm({ github, refused }: Props) {
     <LayerCard className="mx-auto w-full max-w-md">
       <LayerCard.Secondary>{mode === "sign-in" ? "Sign in" : "Create an account"}</LayerCard.Secondary>
       <LayerCard.Primary className="flex flex-col gap-4">
+        {cloudflare ? (
+          <Button type="button" variant="primary" className="w-full justify-center" icon={<CloudIcon />} loading={busy} disabled={!hydrated} onClick={() => void withProvider("cloudflare")}>
+            Continue with Cloudflare
+          </Button>
+        ) : null}
         {github ? (
-          <>
-            <Button type="button" variant="secondary" className="w-full justify-center" icon={<GithubLogoIcon />} loading={busy} disabled={!hydrated} onClick={() => void withGitHub()}>
-              Continue with GitHub
-            </Button>
-            <Text variant="secondary" size="xs">
-              or with email
-            </Text>
-          </>
+          <Button type="button" variant="secondary" className="w-full justify-center" icon={<GithubLogoIcon />} loading={busy} disabled={!hydrated} onClick={() => void withProvider("github")}>
+            Continue with GitHub
+          </Button>
+        ) : null}
+        {github || cloudflare ? (
+          <Text variant="secondary" size="xs">
+            or with email
+          </Text>
         ) : null}
         <form method="post" onSubmit={submit} className="flex flex-col gap-4">
           <Input name="email" type="email" label="Email" autoComplete="email" required />

@@ -49,7 +49,7 @@ no = "Part of the task is missing, or the diff changes unrelated code."
 # The Cloudflare token is prod's deploy token, added by the sandbox's egress;
 # the commands only ever see a placeholder.
 [deploy]
-run = "cd infra && bun install --frozen-lockfile && ../scripts/restore-builds prod && STAGE=prod FICUS_DEPLOYS=true bun run deploy && STAGE=prod bun run deploy:web"
+run = "cd infra && bun install --frozen-lockfile && ../scripts/restore-builds prod && STAGE=prod FICUS_DEPLOYS=true FICUS_CLOUDFLARE_CLIENT_ID=c3c2cf853e48848ae25cc51f8d87b719 bun run deploy && STAGE=prod bun run deploy:web"
 deployer = "cd infra && bun install --frozen-lockfile && ../scripts/restore-builds prod && STAGE=prod bun run deploy:deployer"
 hosts = [
   "registry.npmjs.org",

@@ -5,7 +5,7 @@ import * as Api from "../../lib/api.ts";
 import { run } from "../../lib/run.ts";
 
 interface Props {
-  /** `error`: GitHub sign-in came back refused (Better Auth's error code). */
+  /** `error`: GitHub or Cloudflare sign-in came back refused (Better Auth's error code). */
   readonly searchParams: Promise<{ error?: string }>;
 }
 
@@ -13,11 +13,12 @@ export default async function SignIn({ searchParams }: Props) {
   const [{ error }, providers] = await Promise.all([searchParams, run(Api.providers)]);
   // Offered only once the stage has a GitHub OAuth app; if the Api cannot say, email alone.
   const github = Result.isSuccess(providers) && providers.success.github;
+  const cloudflare = Result.isSuccess(providers) && providers.success.cloudflare === true;
 
   return (
     <section className="relative isolate flex min-h-[70vh] items-center justify-center overflow-hidden rounded-xl border border-kumo-hairline px-4 py-12">
       <SignInBackdrop className="absolute inset-0 -z-10 h-full w-full" />
-      <SignInForm github={github} refused={error} />
+      <SignInForm github={github} cloudflare={cloudflare} refused={error} />
     </section>
   );
 }

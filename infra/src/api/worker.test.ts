@@ -30,6 +30,8 @@ describe("sign-in providers", () => {
   interface GitHubBindings {
     readonly GITHUB_CLIENT_ID?: string;
     readonly GITHUB_CLIENT_SECRET?: { readonly get: () => Promise<string> };
+    readonly CLOUDFLARE_CLIENT_ID?: string;
+    readonly CLOUDFLARE_CLIENT_SECRET?: { readonly get: () => Promise<string> };
   }
 
   const ask = async (github: GitHubBindings) => {
@@ -39,10 +41,11 @@ describe("sign-in providers", () => {
     return (await worker.fetch(new Request("https://api.example/v1/auth/providers"), env)).text();
   };
 
-  test("offer GitHub only once the stage has both its OAuth app's client id and secret", async () => {
-    expect(await ask({})).toBe(JSON.stringify({ github: false }));
-    expect(await ask({ GITHUB_CLIENT_ID: "id" })).toBe(JSON.stringify({ github: false }));
-    expect(await ask({ GITHUB_CLIENT_ID: "id", GITHUB_CLIENT_SECRET: { get: async () => "secret" } })).toBe(JSON.stringify({ github: true }));
+  test("offer GitHub or Cloudflare only once the stage has both that app's client id and secret", async () => {
+    expect(await ask({})).toBe(JSON.stringify({ github: false, cloudflare: false }));
+    expect(await ask({ GITHUB_CLIENT_ID: "id" })).toBe(JSON.stringify({ github: false, cloudflare: false }));
+    expect(await ask({ GITHUB_CLIENT_ID: "id", GITHUB_CLIENT_SECRET: { get: async () => "secret" } })).toBe(JSON.stringify({ github: true, cloudflare: false }));
+    expect(await ask({ CLOUDFLARE_CLIENT_ID: "id", CLOUDFLARE_CLIENT_SECRET: { get: async () => "secret" } })).toBe(JSON.stringify({ github: false, cloudflare: true }));
   });
 });
 

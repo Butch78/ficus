@@ -200,7 +200,7 @@ export const Trees = Schema.Struct({
 export const Organizations = Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String, slug: Schema.String }));
 
 /** `GET /v1/auth/providers`: the ways to sign in besides email. */
-export const Providers = Schema.Struct({ github: Schema.Boolean });
+export const Providers = Schema.Struct({ github: Schema.Boolean, cloudflare: Schema.optional(Schema.Boolean) });
 
 /** Better Auth's `GET /api/auth/get-session`: null when signed out. */
 export const Session = Schema.NullOr(

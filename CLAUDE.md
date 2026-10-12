@@ -31,7 +31,13 @@ deadline 2026-10-14.
 - Public entry is the Api Worker (`infra/src/api`): Better Auth on D1 (orgs, API keys via `x-api-key`). GitHub sign-in
   (Better Auth's github provider) is on where the Api has `GITHUB_CLIENT_ID` (deploy env `FICUS_GITHUB_CLIENT_ID`) and
   `GITHUB_CLIENT_SECRET` (Secrets Store, `secrets.run.ts` with `FICUS_GITHUB_CLIENT_SECRET`); the OAuth app's callback is
-  `<UI origin>/api/auth/callback/github`; `GET /v1/auth/providers` tells the sign-in page. Membership is
+  `<UI origin>/api/auth/callback/github`; `GET /v1/auth/providers` tells the sign-in page. Signing in with Cloudflare (`src/api/cloudflare-login.ts`, Better
+  Auth's generic OAuth plugin on Cloudflare's OpenID discovery; scopes openid, offline_access, user-details.read,
+  memberships.read, ai.read, ai.write) is on where the Api has `CLOUDFLARE_CLIENT_ID` (ficus.toml's deploy sets
+  `FICUS_CLOUDFLARE_CLIENT_ID`) and `CLOUDFLARE_CLIENT_SECRET` (Secrets Store, `FICUS_CLOUDFLARE_CLIENT_SECRET`); callback
+  `<UI origin>/api/auth/oauth2/callback/cloudflare`; OAuth tokens are stored encrypted and accounts link by email. The
+  client was made with the Cloudflare API (`POST /accounts/<id>/oauth_clients`, an OAuth Client Write token), its domain
+  verified by a TXT record on ficus.fruit.cards. Membership is
   `getSession` plus two lookups (`memberOf`: the organization by slug, then the member row); never `getFullOrganization`,
   which read every member, user and invitation and verified an API key twice (9 D1 round trips, ~300 ms a call).
   It forwards `/v1/orgs/<org>/trees/<t>/...` over a service binding to the internal tree Worker
