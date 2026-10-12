@@ -49,6 +49,8 @@ interface Bindings {
   readonly EMAIL?: SendEmail;
   /** The address that mail comes from, on the stage's sending domain. */
   readonly MAIL_FROM?: string;
+  /** Sessions, read at the edge (sessions.ts); without it they are read from D1. */
+  readonly SESSIONS?: KVNamespace;
 }
 
 /**
@@ -384,7 +386,7 @@ export default {
         // oxlint-disable-next-line effecttsgo/strict-effect-provide -- the Worker's entry point
         Effect.provide(
           Layer.mergeAll(
-            authLayer(env.AUTH_DB, env.BETTER_AUTH_SECRET, new URL(request.url).origin, signInApps(env), mailer(env)),
+            authLayer(env.AUTH_DB, env.BETTER_AUTH_SECRET, new URL(request.url).origin, signInApps(env), { mail: mailer(env), sessions: env.SESSIONS }),
             Directory.directoryLayer(env.AUTH_DB),
             CloudflareTracer.layer,
           ),

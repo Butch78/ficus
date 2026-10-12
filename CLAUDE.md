@@ -46,6 +46,10 @@ deadline 2026-10-14.
   addresses it hands an account made with someone else's email to its maker. Stages without domains send no mail. Membership is
   `getSession` plus two lookups (`memberOf`: the organization by slug, then the member row); never `getFullOrganization`,
   which read every member, user and invitation and verified an API key twice (9 D1 round trips, ~300 ms a call).
+  Sessions (`src/api/sessions.ts`): read from KV (`SESSIONS`, Better Auth's secondary storage), written to D1 too
+  (`storeSessionInDatabase`), and trusted from a signed cookie for 5 minutes (`cookieCache`); verification values stay in
+  D1 and rate limits in memory (KV has no atomic consume or increment and ~1 write/s per key). `validateSchema: false`:
+  Better Auth otherwise reads the database layout (3 D1 round trips) on every new instance; migrations.test.ts covers it.
   It forwards `/v1/orgs/<org>/trees/<t>/...` over a service binding to the internal tree Worker
   (no workers.dev) with `x-ficus-tenant` = tenant key (first 50 bits of SHA-256(org id), base32).
   Tree DO name and root repo are `<tenant>-<tree>`. Tree Worker routes, one `TreeObject` DO per tree:
@@ -62,7 +66,8 @@ deadline 2026-10-14.
   `POST /trees/<t>/visibility {public}` (members; `public` is optional in the tree, absent = private) ·
   `POST /trees/<t>/graft {source, branch?}` (imports an outside commit into `<t>-g<id>` as the new head;
   open attempts become behind and are rebased; `.github/workflows/graft.yml` follows GitHub's main) ·
-  `GET /trees/<t>/{attempts,nodes}/<id>/{log,tree,file}?ref=&path=` (reads through Artifacts; the tree picks
+  `GET /trees/<t>/{attempts,nodes}/<id>/{log,tree,file}?ref=&path=` (`nodes/head/...` is the head; a log at a full commit id is
+  kept in KV `LOGS` for 30 days, since opening a repo through Artifacts takes up to a second cold; reads through Artifacts; the tree picks
   the repo, `src/core/browse.ts`; files leave as text/plain or octet-stream, never HTML).
   The Api lists an org's trees (`GET /v1/orgs/<org>/trees`) from D1 (`ficus_tree`), recorded on each 2xx init.
   Public trees (`src/core/visibility.ts`): a request with no session and no API key passes the Api only for GET
@@ -119,7 +124,8 @@ deadline 2026-10-14.
   when they run out new ones fail with "There is no container instance that can be provided". pi's shell
   timeouts are seconds (`sandbox-env.ts` `timeoutMs`).
 - UI pages: tree (head, release + its deploys with Release behind a Kumo Dialog, open tasks and how each stands, New task,
-  history as a Kumo Flow growing upward (`components/trunk-view.tsx`: laid out oldest first and flipped with
+  history as a Kumo Flow growing upward (the page asks the tree, its head's log (`nodes/head/log`) and its deploys at once;
+  the open tasks and history, which wait on the races, stream in behind a Suspense boundary) (`components/trunk-view.tsx`: laid out oldest first and flipped with
   `-scale-y-100`, each card flipped back; `?older=1` unfolds the older nodes into it), one card per node (`lib/trunk.ts` a
   story per node, `lib/trunk-words.ts` its sentences; a card leads with the task's title, then commit and time ago from the
   head's log, `lib/history.ts`), and beside it the `?node=` card's own Flow (`components/node-flow.tsx`:

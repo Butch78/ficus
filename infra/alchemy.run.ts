@@ -112,6 +112,9 @@ export default Alchemy.Stack(
         FICUS_AGENTS_SCRIPT: agents.workerName,
         // Workers AI, which names tasks (src/tree/titles.ts).
         AI: Cloudflare.Workers.AI(),
+        // Logs read at a fixed commit, kept: a commit's log never changes, and
+        // reading one through Artifacts takes up to a second when cold.
+        LOGS: yield* Cloudflare.KV.Namespace("Logs", { title: `ficus-logs-${stage}` }),
         ...deploys,
       },
     });
@@ -188,6 +191,8 @@ export default Alchemy.Stack(
       domain: domains === undefined ? null : { name: domains.api, zoneId: domains.zoneId },
       env: {
         AUTH_DB: authDb,
+        // Sessions, read at the edge instead of from D1 (src/api/sessions.ts).
+        SESSIONS: yield* Cloudflare.KV.Namespace("Sessions", { title: `ficus-sessions-${stage}` }),
         BETTER_AUTH_SECRET: authSecret.text,
         // A service binding: the only way into the tree Worker.
         TREE: worker,

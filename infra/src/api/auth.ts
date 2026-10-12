@@ -11,6 +11,7 @@ import { betterAuth, type BetterAuthOptions } from "better-auth";
 import { genericOAuth, organization } from "better-auth/plugins";
 import { CLOUDFLARE_PROVIDER, cloudflareProvider, type CloudflareApp } from "./cloudflare-login.ts";
 import { type Mailer, verificationMail } from "./mail.ts";
+import { kvSessions, type SessionKv } from "./sessions.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -54,7 +55,31 @@ const verification = (mail: Mailer | undefined) =>
         },
       };
 
-export const authOptions = (database: BetterAuthOptions["database"], secret: string, baseURL: string, apps: SignInApps = NO_APPS, mail?: Mailer) => {
+/** What a stage may have besides its database: a way to send mail (mail.ts), and KV for sessions (sessions.ts). */
+export interface StageServices {
+  readonly mail?: Mailer | undefined;
+  readonly sessions?: SessionKv | undefined;
+}
+
+/** How long a session is trusted from its signed cookie before it is looked up again (seconds). */
+const SESSION_COOKIE_CACHE_SECONDS = 5 * 60;
+
+/**
+ * Where the stage has KV, sessions are read from it (sessions.ts) and kept in
+ * D1 too; verification values stay in D1 and rate limits in memory, which a
+ * secondary storage would otherwise take.
+ */
+const sessionStorage = (sessions: SessionKv | undefined) =>
+  sessions === undefined
+    ? {}
+    : {
+        secondaryStorage: kvSessions(sessions),
+        verification: { storeInDatabase: true },
+        rateLimit: { storage: "memory" as const },
+      };
+
+export const authOptions = (database: BetterAuthOptions["database"], secret: string, baseURL: string, apps: SignInApps = NO_APPS, services: StageServices = {}) => {
+  const { mail, sessions } = services;
   const { github, cloudflare } = apps;
   // Cloudflare, through Better Auth's generic OAuth plugin (cloudflare-login.ts), where the stage has its client.
   const cloudflareLogin = cloudflare === undefined ? [] : [genericOAuth({ config: [cloudflareProvider(cloudflare)] })];
@@ -66,6 +91,18 @@ export const authOptions = (database: BetterAuthOptions["database"], secret: str
     basePath: AUTH_BASE_PATH,
     emailAndPassword: { enabled: true, requireEmailVerification: mail !== undefined },
     ...verification(mail),
+    ...sessionStorage(sessions),
+    session: {
+      // Written to D1 as well as KV, so D1 still lists them; read from KV.
+      storeSessionInDatabase: true,
+      // A signed copy of the session in a cookie: checking it needs no lookup until it is this old.
+      cookieCache: { enabled: true, maxAge: SESSION_COOKIE_CACHE_SECONDS },
+    },
+    advanced: {
+      // Better Auth reads the database's layout on each new instance (three D1 round trips) to check its tables;
+      // migrations.test.ts checks the same before anything deploys.
+      database: { validateSchema: false },
+    },
     // GitHub sign-in where the stage has an OAuth app; its callback is <origin>/api/auth/callback/github.
     socialProviders: github === undefined ? {} : { github: { clientId: github.clientId, clientSecret: github.clientSecret } },
     account: {
@@ -90,8 +127,8 @@ export const authOptions = (database: BetterAuthOptions["database"], secret: str
   } satisfies BetterAuthOptions;
 };
 
-const build = (database: BetterAuthOptions["database"], secret: string, baseURL: string, apps: SignInApps, mail: Mailer | undefined) =>
-  betterAuth(authOptions(database, secret, baseURL, apps, mail));
+const build = (database: BetterAuthOptions["database"], secret: string, baseURL: string, apps: SignInApps, services: StageServices) =>
+  betterAuth(authOptions(database, secret, baseURL, apps, services));
 
 export type AuthInstance = ReturnType<typeof build>;
 
@@ -109,13 +146,13 @@ export class Auth extends Context.Service<Auth, AuthInstance>()("@ficus/Auth") {
  */
 const instances = new Map<string, AuthInstance>();
 
-/** `apps` are the stage's sign-in OAuth apps and `mail` its way to send mail: fixed for the isolate's life, like the database and secret. */
+/** `apps` are the stage's sign-in OAuth apps and `services` its mail and KV: fixed for the isolate's life, like the database and secret. */
 export const layer = (
   database: BetterAuthOptions["database"],
   secret: string,
   baseURL: string,
   apps: Effect.Effect<SignInApps> = Effect.succeed(NO_APPS),
-  mail?: Mailer,
+  services: StageServices = {},
 ) =>
   Layer.effect(
     Auth,
@@ -128,7 +165,7 @@ export const layer = (
         return existing;
       }
 
-      const built = build(database, secret, baseURL, app, mail);
+      const built = build(database, secret, baseURL, app, services);
 
       instances.set(key, built);
 

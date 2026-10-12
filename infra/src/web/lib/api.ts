@@ -148,6 +148,10 @@ export const showAttempt = (org: string, name: string, attempt: number) =>
 export const log = (org: string, name: string, subject: Subject, limit: number) =>
   get(Answers.Log, tree(org, name) + reading(subject, "log", new URLSearchParams({ limit: String(limit) })));
 
+/** The head node's log, by the tree's `head` alias: read alongside the tree rather than after it. */
+export const headLog = (org: string, name: string, limit: number) =>
+  get(Answers.Log, `${tree(org, name)}/nodes/head/log?${new URLSearchParams({ limit: String(limit) }).toString()}`);
+
 export const listDirectory = (org: string, name: string, subject: Subject, path: string) =>
   get(Answers.Directory, tree(org, name) + reading(subject, "tree", new URLSearchParams({ path })));
 

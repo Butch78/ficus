@@ -9,9 +9,13 @@ import { run } from "./run.ts";
 /** As far back as the log reads in one page (src/tree/tree-object.ts `LOG_PAGE_MAX`). */
 const TRUNK_DEPTH = 100;
 
-/** Each commit's time, in seconds, by hash; empty when the log cannot be read, which leaves the times unsaid. */
-export const commitTimes = async (org: string, tree: string, head: number): Promise<ReadonlyMap<string, number>> => {
-  const log = await run(Api.log(org, tree, { kind: "nodes", id: head }, TRUNK_DEPTH));
+/**
+ * Each commit's time, in seconds, by hash; empty when the log cannot be read,
+ * which leaves the times unsaid. Read from whatever node is the head, so it
+ * need not wait for the tree to say which.
+ */
+export const commitTimes = async (org: string, tree: string): Promise<ReadonlyMap<string, number>> => {
+  const log = await run(Api.headLog(org, tree, TRUNK_DEPTH));
 
   return new Map(Result.isSuccess(log) ? log.success.commits.map((commit) => [commit.hash, commit.committed_at] as const) : []);
 };

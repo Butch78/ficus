@@ -1,4 +1,5 @@
-import { Badge, LayerCard, Link, Text } from "@cloudflare/kumo";
+import { Badge, LayerCard, Link, Loader, Text } from "@cloudflare/kumo";
+import { Suspense } from "react";
 import { Glossary } from "../../../../../components/glossary.tsx";
 import { LayerCardPrimary, LayerCardSecondary } from "../../../../../components/kumo.ts";
 import { Landed } from "../../../../../components/landed.tsx";
@@ -45,19 +46,16 @@ const headAgo = (tree: Tree, landed: ReadonlyMap<string, number>) => {
 
 export default async function TreePage({ params, searchParams }: Props) {
   const [{ org, tree: name }, { initialized, trace, op, error, node, older, task: watching }] = await Promise.all([params, searchParams]);
+  // Asked together: the head's log and the deploys need not wait for the tree. Deploys answer only
+  // members; a visitor's are not shown.
+  const deploysAsked = treeDeploys(org, name);
+  const landedAsked = commitTimes(org, name);
+
   // Anyone may read a public tree; the rest of this page is for its members.
-  const [member, tree] = await Promise.all([signedIn(), load(Api.showTree(org, name))]);
+  const [member, tree, deploysAnswer, landed] = await Promise.all([signedIn(), load(Api.showTree(org, name)), deploysAsked, landedAsked]);
+  const deploys = member ? deploysAnswer : undefined;
   const base = `/orgs/${org}/trees/${name}`;
-  const tasks = Object.values(tree.tasks).toSorted((a, b) => b.id - a.id);
-  const open = tasks.filter((task) => task.state === "Open");
-
-  // Members see the open tasks' races, what their agents are doing (the trunk's growing cards) and the deploys, asked together.
-  const [{ races, agents }, deploys, landed] = await Promise.all([
-    member ? liveRaces(org, name, open) : { races: [], agents: new Map() },
-    member ? treeDeploys(org, name) : undefined,
-    commitTimes(org, name, tree.head),
-  ]);
-
+  const open = Object.values(tree.tasks).toSorted((a, b) => b.id - a.id).filter((task) => task.state === "Open");
 
   return (
     <>
@@ -65,9 +63,62 @@ export default async function TreePage({ params, searchParams }: Props) {
       {member ? <Landed org={org} name={name} initialized={initialized} trace={trace} op={op} error={error} /> : null}
       <Glossary />
 
-
       <ReleaseCard org={org} name={name} base={base} tree={tree} member={member} deploys={deploys} />
 
+      {/* The open tasks' races and their agents take longer: the page shows first, and they stream in. */}
+      <Suspense fallback={<WorkLoading />}>
+        <TreeWork org={org} name={name} base={base} member={member} tree={tree} open={open} deploys={deploys} landed={landed} node={node} older={older} watching={watching} />
+      </Suspense>
+    </>
+  );
+}
+
+/** While the races load: the two cards, waiting. */
+function WorkLoading() {
+  return (
+    <>
+      <LayerCard>
+        <LayerCardSecondary>Open tasks: work in progress</LayerCardSecondary>
+        <LayerCardPrimary className="flex items-center gap-2">
+          <Loader size={14} />
+          <Text variant="secondary" size="sm">
+            Reading the races…
+          </Text>
+        </LayerCardPrimary>
+      </LayerCard>
+      <LayerCard>
+        <LayerCardSecondary>History: how the trunk grew</LayerCardSecondary>
+        <LayerCardPrimary className="flex items-center gap-2">
+          <Loader size={14} />
+          <Text variant="secondary" size="sm">
+            Growing the trunk…
+          </Text>
+        </LayerCardPrimary>
+      </LayerCard>
+    </>
+  );
+}
+
+interface WorkProps {
+  readonly org: string;
+  readonly name: string;
+  readonly base: string;
+  readonly member: boolean;
+  readonly tree: Tree;
+  readonly open: ReadonlyArray<Tree["tasks"][string]>;
+  readonly deploys: Awaited<ReturnType<typeof treeDeploys>>;
+  readonly landed: ReadonlyMap<string, number>;
+  readonly node: string | undefined;
+  readonly older: string | undefined;
+  readonly watching: string | undefined;
+}
+
+/** The open tasks and the trunk's history: members see each open task's race and what its agents are doing. */
+async function TreeWork({ org, name, base, member, tree, open, deploys, landed, node, older, watching }: WorkProps) {
+  const { races, agents } = member ? await liveRaces(org, name, open) : { races: [], agents: new Map() };
+
+  return (
+    <>
       <LayerCard>
         <LayerCardSecondary>Open tasks: work in progress</LayerCardSecondary>
         <LayerCardPrimary className="flex flex-col gap-3">

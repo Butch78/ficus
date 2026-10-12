@@ -39,7 +39,15 @@ export interface Bindings {
   readonly DEPLOYS?: Workflow<DeployParams>;
   /** Workers AI, which names tasks (titles.ts); without it tasks go untitled. */
   readonly AI?: TitleModel;
+  /** Logs read at a fixed commit, which never change (`#read`); without it every log is read through Artifacts. */
+  readonly LOGS?: KVNamespace;
 }
+
+/** A full commit id: a log read at one is the same forever, so it may be kept. */
+const OID = /^[0-9a-f]{40}$/u;
+
+/** How long a kept log stays in KV: long enough that a head's history is read once, short enough that old ones go. */
+const LOG_KEPT_SECONDS = 30 * 24 * 60 * 60;
 
 const TREE_KEY = "tree";
 
@@ -215,7 +223,8 @@ export class TreeObject extends DurableObject<Bindings> {
       case "attempts/:id/:read":
         return yield* this.#read(Subject.Attempt({ id: yield* idOf(AttemptId, id, "attempt") }), action, url);
       case "nodes/:id/:read":
-        return yield* this.#read(Subject.Node({ id: yield* idOf(NodeId, id, "node") }), action, url);
+        // `head`: whichever node is the head, so a page can read its log while it reads the tree.
+        return yield* this.#read(Subject.Node({ id: id === "head" ? T.head(yield* this.#tree()).id : yield* idOf(NodeId, id, "node") }), action, url);
       default:
         return yield* refuse(404, "not found");
     }
@@ -378,20 +387,33 @@ export class TreeObject extends DurableObject<Bindings> {
     const asked = url.searchParams.get("ref");
     const ref = asked === null ? seen.pinned : yield* Effect.fromResult(parseRef(asked)).pipe(Effect.mapError(browseRefused));
     const names = yield* Effect.fromResult(parsePath(url.searchParams.get("path") ?? "")).pipe(Effect.mapError(browseRefused));
-    const on = yield* Artifacts.repo(this.#artifacts(), seen.repo).pipe(Effect.mapError(artifactsRefused));
+    // Opening the repo through Artifacts takes up to a second when cold: a kept log skips it.
+    const opened = Artifacts.repo(this.#artifacts(), seen.repo).pipe(Effect.mapError(artifactsRefused));
     const label = ref ?? "HEAD";
 
     if (what === "diff") {
-      return yield* this.#diff(tree, subject, on);
+      return yield* this.#diff(tree, subject, yield* opened);
     }
 
     if (what === "log") {
       const limit = Math.min(LOG_PAGE_MAX, Math.max(1, Number.parseInt(url.searchParams.get("limit") ?? "", 10) || LOG_PAGE_DEFAULT));
       const offset = Number.parseInt(url.searchParams.get("offset") ?? "", 10) || 0;
-      const commits = yield* Artifacts.log(on, ref, limit, offset).pipe(Effect.mapError(artifactsRefused));
+      const key = ref !== undefined && OID.test(ref) ? `log/${seen.repo}/${ref}/${limit}/${offset}` : undefined;
+      const kept = yield* this.#keptLog(key);
 
-      return json({ repo: seen.repo, ref: label, commits: commits.map(committed) });
+      if (kept !== undefined) {
+        return new Response(kept, { headers: { "content-type": "application/json" } });
+      }
+
+      const commits = yield* Artifacts.log(yield* opened, ref, limit, offset).pipe(Effect.mapError(artifactsRefused));
+      const body = JSON.stringify({ repo: seen.repo, ref: label, commits: commits.map(committed) });
+
+      yield* this.#keepLog(key, body);
+
+      return new Response(body, { headers: { "content-type": "application/json" } });
     }
+
+    const on = yield* opened;
 
     if (what === "tree" || what === "file") {
       // Resolve the ref once, so the listing and every file read from it describe the same commit.
@@ -405,6 +427,35 @@ export class TreeObject extends DurableObject<Bindings> {
     }
 
     return yield* refuse(404, "not found");
+  });
+
+  /** A log kept in KV under `key`, if there is one; a KV failure reads as none. */
+  readonly #keptLog = Effect.fn("Tree.keptLog")(function* (this: TreeObject, key: string | undefined) {
+    const logs = this.env.LOGS;
+
+    if (key === undefined || logs === undefined) {
+      return undefined;
+    }
+
+    const kept = yield* Effect.tryPromise(() => logs.get(key)).pipe(Effect.orElseSucceed(() => null));
+
+    yield* Effect.annotateCurrentSpan({ "ficus.log.kept": kept !== null });
+
+    return kept ?? undefined;
+  });
+
+  /** Keep a log read at a fixed commit; a KV failure only means it is read again next time. */
+  readonly #keepLog = Effect.fn("Tree.keepLog")(function* (this: TreeObject, key: string | undefined, body: string) {
+    const logs = this.env.LOGS;
+
+    if (key === undefined || logs === undefined) {
+      return;
+    }
+
+    yield* Effect.tryPromise(() => logs.put(key, body, { expirationTtl: LOG_KEPT_SECONDS })).pipe(
+      Effect.tapError((error) => Effect.logWarning(`keeping the log ${key}: ${String(error.cause)}`)),
+      Effect.ignore,
+    );
   });
 
   /** What an attempt changed since the node it started from, or a node since its parent: the changed files and their hunks. */
