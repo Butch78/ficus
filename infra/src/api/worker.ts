@@ -46,21 +46,30 @@ interface Bindings {
   readonly CLOUDFLARE_CLIENT_SECRET?: SecretsStoreSecret;
 }
 
-/** OAuth apps' client secrets, read from the Secrets Store once per isolate, by client id. */
-const clientSecrets = new Map<string, Promise<string>>();
+/**
+ * OAuth apps' client secrets, by client id, once read from the Secrets Store.
+ * The value is kept, never the read's promise: a promise made while serving
+ * one request cannot be awaited by another, so sharing it failed every request
+ * but the first.
+ */
+const clientSecrets = new Map<string, string>();
 
-/** An OAuth app the stage has, if it has both its client id and secret; a secret that cannot be read leaves that sign-in off. */
+/** An OAuth app the stage has, if it has both its client id and secret; a secret that cannot be read leaves that sign-in off, and is logged. */
 const oauthApp = (clientId: string | undefined, secret: SecretsStoreSecret | undefined) => {
   if (clientId === undefined || secret === undefined) {
     return Effect.succeed(undefined);
   }
 
-  const reading = clientSecrets.get(clientId) ?? secret.get();
+  const known = clientSecrets.get(clientId);
 
-  clientSecrets.set(clientId, reading);
+  if (known !== undefined) {
+    return Effect.succeed({ clientId, clientSecret: known });
+  }
 
-  return Effect.tryPromise(() => reading).pipe(
+  return Effect.tryPromise(() => secret.get()).pipe(
+    Effect.tap((clientSecret) => Effect.sync(() => clientSecrets.set(clientId, clientSecret))),
     Effect.map((clientSecret) => ({ clientId, clientSecret })),
+    Effect.tapError((error) => Effect.logError(`reading the OAuth client secret of ${clientId}: ${String(error.cause)}`)),
     Effect.option,
     Effect.map(Option.getOrUndefined),
   );

@@ -92,7 +92,9 @@ export const layer = (database: BetterAuthOptions["database"], secret: string, b
   Layer.effect(
     Auth,
     Effect.map(apps, (app) => {
-      const existing = instances.get(baseURL);
+      // By origin and by the apps it signs in with: an instance built while a secret could not be read is not kept past it.
+      const key = [baseURL, app.github?.clientId ?? "", app.cloudflare?.clientId ?? ""].join(" ");
+      const existing = instances.get(key);
 
       if (existing !== undefined) {
         return existing;
@@ -100,7 +102,7 @@ export const layer = (database: BetterAuthOptions["database"], secret: string, b
 
       const built = build(database, secret, baseURL, app);
 
-      instances.set(baseURL, built);
+      instances.set(key, built);
 
       return built;
     }),
