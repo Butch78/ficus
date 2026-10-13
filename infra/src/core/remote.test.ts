@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { redactCredentials, withoutCredentials } from "./remote.ts";
+import { hasCredentials, redactCredentials, withoutCredentials } from "./remote.ts";
 
 describe("withoutCredentials", () => {
   test("drops a token from a remote", () => {
@@ -17,5 +17,12 @@ describe("redactCredentials", () => {
   test("drops credentials from every URL a message quotes", () => {
     expect(redactCredentials("could not fetch https://x-access-token:ghs_1@github.com/a/b.git (401)")).toBe("could not fetch https://github.com/a/b.git (401)");
     expect(redactCredentials("nothing to hide at https://github.com/a/b")).toBe("nothing to hide at https://github.com/a/b");
+  });
+});
+
+describe("hasCredentials", () => {
+  test("tells a remote with a token from a plain one", () => {
+    expect(hasCredentials("https://x-access-token:ghs_1@github.com/a/b.git")).toBe(true);
+    expect(hasCredentials("https://github.com/a/b.git")).toBe(false);
   });
 });

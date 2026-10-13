@@ -36,10 +36,11 @@ deadline 2026-10-14.
   `FICUS_GITHUB_APP_ID` + `FICUS_GITHUB_APP_SLUG`, Secrets Store `GithubAppPrivateKey` (PKCS#8 DER base64, from
   `FICUS_GITHUB_APP_PRIVATE_KEY`) + `GithubWebhookSecret` (`FICUS_GITHUB_WEBHOOK_SECRET`). `GET /v1/github/repos` lists the
   repos the signed-in person's own GitHub token reaches through the app's installations (never the app's view, which
-  spans every installer); `POST .../init {github: {repository}}` checks the repo is among them, then imports it through
-  Artifacts by its plain URL and records `ficus_github_link`. Private repos are refused (501) for now: Artifacts imports
-  only public remotes and refuses a URL's credentials (error 10106, tested 2026-10-13); `repositoryToken` (a read-only
-  installation token for one repo) is there for the private path (fetch the pack from GitHub, push it into an empty root). `POST /v1/github/webhook` (HMAC `X-Hub-Signature-256`) grafts each push into the trees following that
+  spans every installer); `POST .../init {github: {repository}}` checks the repo is among them and records `ficus_github_link`; a
+  public repo is imported by Artifacts from its plain URL, a private one comes as `x-access-token:<token>@` (read-only, that
+  repo, an hour). Artifacts' import refuses credentials (error 10106, "Only public repositories"), so the tree Worker copies
+  any remote with credentials itself (`src/tree/git-copy.ts`, init and graft): smart HTTP upload-pack from GitHub (the
+  branch's whole history, REF_DELTA, no side-band), then receive-pack of that pack, untouched, into a fresh repo's `main`. `POST /v1/github/webhook` (HMAC `X-Hub-Signature-256`) grafts each push into the trees following that
   repo and branch, in `waitUntil` (GitHub waits 10 s). Tokens never reach progress lines, refusals or the tree's history
   (`src/core/remote.ts`). The app reads only: contents, metadata, emails. Signing in with Cloudflare (`src/api/cloudflare-login.ts`, Better
   Auth's generic OAuth plugin, plain OAuth with Cloudflare's endpoints given, since a discovery URL makes Better Auth add `openid`; scopes offline_access, user-details.read,

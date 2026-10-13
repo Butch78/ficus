@@ -21,9 +21,6 @@ export default async function Organization({ params, searchParams }: Props) {
   // Asked together; the GitHub card shows only where the stage has the GitHub App.
   const [{ trees }, github] = await Promise.all([load(Api.trees(org)), run(Api.githubRepos)]);
   const offered = Result.isSuccess(github) && github.success.enabled ? github.success : undefined;
-  // Artifacts imports only public repos for now (src/api/worker.ts `fromGitHub`).
-  const addable = offered?.repositories.filter((repository) => !repository.private) ?? [];
-  const privateCount = (offered?.repositories.length ?? 0) - addable.length;
 
   return (
     <>
@@ -79,17 +76,12 @@ export default async function Organization({ params, searchParams }: Props) {
             {offered.connected ? (
               <>
                 <Text variant="secondary" size="sm">
-                  Your public repos where the Ficus GitHub App is installed. The tree follows its branch: every push to GitHub becomes its new head.
+                  Your repos where the Ficus GitHub App is installed, private ones too. The tree follows its branch: every push to GitHub becomes its new head.
                 </Text>
-                {addable.length === 0 ? (
-                  <Text size="sm">No public repos yet: install the app on the ones you want.</Text>
+                {offered.repositories.length === 0 ? (
+                  <Text size="sm">No repos yet: install the app on the ones you want.</Text>
                 ) : (
-                  <InitForm org={org} repositories={addable} />
-                )}
-                {privateCount === 0 ? null : (
-                  <Text variant="secondary" size="xs">
-                    {plural(privateCount, "private repo")} not shown: adding private repos is coming next.
-                  </Text>
+                  <InitForm org={org} repositories={offered.repositories} />
                 )}
                 {offered.installUrl === null ? null : (
                   <Link href={offered.installUrl}>{offered.repositories.length === 0 ? "Install the Ficus GitHub App" : "Install it on more repos"}</Link>
@@ -98,7 +90,7 @@ export default async function Organization({ params, searchParams }: Props) {
             ) : (
               <>
                 <Text variant="secondary" size="sm">
-                  Connect your GitHub account to add your repos and keep each tree in sync with every push.
+                  Connect your GitHub account to add your repos, private ones too, and keep each tree in sync with every push.
                 </Text>
                 <ConnectGitHub back={`/orgs/${org}#github`} />
               </>

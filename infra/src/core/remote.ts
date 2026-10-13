@@ -23,5 +23,8 @@ export const withoutCredentials = (url: string) => {
   return parsed.toString();
 };
 
+/** Whether `url` carries a user name or password: such a remote is copied over git, not imported (Artifacts refuses them). */
+export const hasCredentials = (url: string) => withoutCredentials(url) !== url;
+
 /** `text` with the credentials of any URL in it removed: for messages that may quote a remote, like Artifacts' errors. */
 export const redactCredentials = (text: string) => text.replaceAll(/(\w+:\/\/)[^/@\s]+@/gu, "$1");

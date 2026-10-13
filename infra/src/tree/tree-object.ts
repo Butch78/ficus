@@ -19,7 +19,8 @@ import { change, parsePath, parseRef, Subject, view } from "../core/browse.ts";
 import { applyStep, closeLedger, CONTENT_TYPE as PROGRESS, emptyLedger, type InitStep, Ledger, outcomeBody, outcomeLine, parseLine, stepLine, type StepState, textOf } from "../core/progress.ts";
 import { type BootPlan, bootPlans, CheckSpec, RebaseReport, type RebaseRequest, ScoreAnswer, ScoreReport, scoreOf, type ScoreRequest, SNAPSHOT_REFUSED_MS, snapshotAfter, warmable } from "../core/scoring.ts";
 import type { DeployParams } from "../core/deploy.ts";
-import { withoutCredentials } from "../core/remote.ts";
+import { hasCredentials, withoutCredentials } from "../core/remote.ts";
+import { copyBranch } from "./git-copy.ts";
 import * as T from "../core/tree.ts";
 import { AttemptId, NodeId, Oid, RepoName, TaskId, type TreeError } from "../core/values.ts";
 import { ANONYMOUS_HEADER, anonymousMay, isPublic, NO_SUCH_TREE } from "../core/visibility.ts";
@@ -540,6 +541,19 @@ export class TreeObject extends DurableObject<Bindings> {
       return artifactsRefused(error);
     };
 
+    if (body.source !== undefined && hasCredentials(body.source)) {
+      progress.step("import", "active", withoutCredentials(body.source));
+
+      const copied = yield* this.#copyInto(body.source, body.branch, name).pipe(
+        Effect.tapError((refused) => Effect.sync(() => progress.step("import", "error", refused.message))),
+      );
+
+      progress.step("import", "complete");
+      progress.step("settle", "complete", copied);
+
+      return { head: copied };
+    }
+
     if (body.source !== undefined) {
       progress.step("import", "active", withoutCredentials(body.source));
 
@@ -807,9 +821,8 @@ export class TreeObject extends DurableObject<Bindings> {
 
     // Saved before the import, so nothing started meanwhile takes the id.
     yield* this.#save(reserved.tree);
-    yield* Artifacts.importRepo(this.#artifacts(), body.source, body.branch, reserved.repo).pipe(Effect.mapError(artifactsRefused));
 
-    const head = yield* this.#settledHead(reserved.repo, silent);
+    const head = hasCredentials(body.source) ? yield* this.#copyInto(body.source, body.branch, reserved.repo) : yield* this.#imported(body.source, body.branch, reserved.repo);
 
     if (head === undefined) {
       return yield* refuse(504, `the import into ${reserved.repo} has not finished`);
@@ -838,6 +851,42 @@ export class TreeObject extends DurableObject<Bindings> {
     }
 
     return json({ node: reserved.node, commit: head, repo: reserved.repo, grafted: true, behind });
+  });
+
+  /** A public remote imported by Artifacts into the new repo `name`, once it has settled; undefined while it has not. */
+  readonly #imported = Effect.fn("Tree.imported")(function* (this: TreeObject, source: string, branch: string | undefined, name: RepoName) {
+    yield* Artifacts.importRepo(this.#artifacts(), source, branch, name).pipe(Effect.mapError(artifactsRefused));
+
+    return yield* this.#settledHead(name, silent);
+  });
+
+  /**
+   * A remote that needs credentials (a private GitHub repo, with a read-only
+   * token) copied into the new repo `name` over git (git-copy.ts): Artifacts'
+   * import takes only public remotes. A repo an earlier copy already filled is
+   * picked up as it is.
+   */
+  readonly #copyInto = Effect.fn("Tree.copyInto")(function* (this: TreeObject, source: string, branch: string | undefined, name: RepoName) {
+    const created = yield* Artifacts.create(this.#artifacts(), name, "ficus copy").pipe(Effect.result);
+
+    if (Result.isFailure(created)) {
+      if (!Artifacts.isCode(created.failure, "ALREADY_EXISTS")) {
+        return yield* artifactsRefused(created.failure);
+      }
+
+      const on = yield* Artifacts.repo(this.#artifacts(), name).pipe(Effect.mapError(artifactsRefused));
+      const [latest] = yield* Artifacts.log(on, undefined, 1).pipe(Effect.mapError(artifactsRefused));
+
+      if (latest === undefined) {
+        return yield* refuse(409, `${name} was created but never filled: remove it, then try again`);
+      }
+
+      return yield* Schema.decodeUnknownEffect(Oid)(latest.hash).pipe(Effect.mapError(() => refuse(502, `Artifacts gave a malformed commit id: ${latest.hash}`)));
+    }
+
+    const commit = yield* copyBranch(source, branch, { remote: created.success.remote, token: created.success.token }).pipe(Effect.mapError((failure) => refuse(502, failure.message)));
+
+    return yield* Schema.decodeUnknownEffect(Oid)(commit).pipe(Effect.mapError(() => refuse(502, `the remote gave a malformed commit id: ${commit}`)));
   });
 
   /** Point the release at a node (the head by default). A deployment follows the pointer; moving it back is a rollback. */
