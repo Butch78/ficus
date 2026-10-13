@@ -109,7 +109,14 @@ export const authOptions = (database: BetterAuthOptions["database"], secret: str
       // Cloudflare's tokens run agents on the person's account: kept encrypted, never in the clear.
       encryptOAuthTokens: true,
       // Signing in with GitHub or Cloudflare as an email you already use joins that account.
-      accountLinking: { enabled: true, trustedProviders: ["github", CLOUDFLARE_PROVIDER] },
+      accountLinking: {
+        enabled: true,
+        trustedProviders: ["github", CLOUDFLARE_PROVIDER],
+        // Connecting an account while signed in (Connect GitHub: link-social) may join one with another email: you
+        // proved both, your session and the provider's own sign-in. Joining by email at sign-in still needs the same,
+        // confirmed address, and the provider's email is not copied onto yours.
+        allowDifferentEmails: true,
+      },
     },
     plugins: [
       organization(),
