@@ -420,7 +420,13 @@ const fromGitHub = Effect.fn("Api.fromGitHub")(function* (env: Bindings, request
   }
 
   const repository = found.value;
-  const access = repository.private ? yield* GitHub.repositoryToken(app.value, repository).pipe(Effect.mapError(githubRefused)) : undefined;
+
+  // Artifacts imports only public remotes: it refuses a URL's credentials (10106).
+  if (repository.private) {
+    return yield* fail(501, `${repository.full_name} is private: adding private repos is coming next`);
+  }
+
+  const access = undefined;
   const branch = asked.value.github.branch ?? repository.default_branch;
 
   yield* Effect.annotateCurrentSpan({ "ficus.github.repository": repository.full_name, "ficus.github.private": repository.private });

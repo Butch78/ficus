@@ -37,9 +37,9 @@ deadline 2026-10-14.
   `FICUS_GITHUB_APP_PRIVATE_KEY`) + `GithubWebhookSecret` (`FICUS_GITHUB_WEBHOOK_SECRET`). `GET /v1/github/repos` lists the
   repos the signed-in person's own GitHub token reaches through the app's installations (never the app's view, which
   spans every installer); `POST .../init {github: {repository}}` checks the repo is among them, then imports it through
-  Artifacts (public: plain URL; private: `x-access-token:<installation token>@`, read-only for that repo for an hour; Artifacts
-  imports only public remotes officially, so this rides on it passing the URL's credentials to git) and records
-  `ficus_github_link`. `POST /v1/github/webhook` (HMAC `X-Hub-Signature-256`) grafts each push into the trees following that
+  Artifacts by its plain URL and records `ficus_github_link`. Private repos are refused (501) for now: Artifacts imports
+  only public remotes and refuses a URL's credentials (error 10106, tested 2026-10-13); `repositoryToken` (a read-only
+  installation token for one repo) is there for the private path (fetch the pack from GitHub, push it into an empty root). `POST /v1/github/webhook` (HMAC `X-Hub-Signature-256`) grafts each push into the trees following that
   repo and branch, in `waitUntil` (GitHub waits 10 s). Tokens never reach progress lines, refusals or the tree's history
   (`src/core/remote.ts`). The app reads only: contents, metadata, emails. Signing in with Cloudflare (`src/api/cloudflare-login.ts`, Better
   Auth's generic OAuth plugin, plain OAuth with Cloudflare's endpoints given, since a discovery URL makes Better Auth add `openid`; scopes offline_access, user-details.read,
