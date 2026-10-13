@@ -18,7 +18,8 @@ deadline 2026-10-14.
   Tasks carry their own `checks` (run after the root's, never in the repo). `acceptNext` takes the
   oldest ready task. `release` is a pointer at a node (older node = rollback). Keep matches exhaustive
   (`Phase` is a `Data.TaggedEnum`; stored enums stay externally tagged, `legacy.ts` renames old keys).
-- `infra/`: alchemy 2.0.0-beta.80 + Effect 4.0.0 + bun 1.4.2 (nix pin). `just infra-check`
+- `infra/`: alchemy 2.0.0-beta.83 + Effect 4.0.4 + bun 1.4.2 (nix pin). Since beta.82 alchemy deploys Durable Objects with
+  Cloudflare's declarative exports: a stack deployed on it cannot go back to an older alchemy (upgrade every deployer together). `just infra-check`
   after TS changes. Unstable Effect modules (effect/http, …) are allowed: deps track the
   latest release, so bump them rather than avoid an API (`effecttsgo/unstable-api-usage` is off).
 - Lint layers: oxlint with @effect/tsgo (type-aware) + vendored anti-slop at

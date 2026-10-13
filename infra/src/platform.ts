@@ -26,11 +26,13 @@ export const DOMAINS = new Map<string, StageDomains>([
 
 // Logs and traces for every Worker (Durable Object calls, service bindings,
 // subrequests): queryable through the Workers Observability API, which is
-// how a failed run is diagnosed without re-running it.
+// how a failed run is diagnosed without re-running it. Workers Issues groups
+// recurring failures in the dashboard.
 export const OBSERVABILITY = {
   enabled: true,
   logs: { enabled: true, invocationLogs: true },
   traces: { enabled: true },
+  issues: { enabled: true },
 } as const;
 
 /**
