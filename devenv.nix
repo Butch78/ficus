@@ -23,9 +23,10 @@ in
     jq
     curl
 
-    # scripts/push-sandbox-image: pushes the nix-built sandbox image to
-    # Cloudflare's registry without Docker (a deploy sandbox has none).
-    skopeo
+    # scripts/sandbox-image: appends Ficus's files to the sandbox's base image
+    # in Cloudflare's registry without Docker (a deploy sandbox has none).
+    crane
+    gnutar
   ];
 
   # Filtered rather than defaulted to "": Effect's Config treats an empty

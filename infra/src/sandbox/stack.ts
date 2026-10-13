@@ -16,6 +16,7 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
 import * as Output from "alchemy/Output";
+import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import { COMPATIBILITY, OBSERVABILITY } from "../platform.ts";
 
@@ -45,14 +46,21 @@ export const sandboxWorker = (role: SandboxRole) => Effect.gen(function* () {
   const scorerHash = Output.map(scorerBinary.hash.output, (hash) => hash ?? "unhashed");
 
   // The image. `alchemy dev` (stage local) builds context/Dockerfile with
-  // Docker. Every other stage builds it with nix and pushes it to
-  // Cloudflare's registry (scripts/sandbox-image), which a deploy sandbox can
-  // do with no Docker: Ficus deploys itself that way. Memoized on what the
-  // image is made of; the scorer's hash in its env rebuilds it for a new
-  // scorer, and orders it after the scorer's build.
+  // Docker. Every other stage appends Ficus's files to the pinned base image
+  // (base-image, scripts/build-sandbox-base) in Cloudflare's registry
+  // (scripts/sandbox-image), which a deploy sandbox can do with no Docker:
+  // Ficus deploys itself that way. Memoized on what the image is made of;
+  // the scorer's hash in its env rebuilds it for a new scorer, and orders it
+  // after the scorer's build.
+  // A prebuilt image pinned by digest (FICUS_SANDBOX_IMAGE) takes the place of building one.
+  const pinned = yield* Config.String("FICUS_SANDBOX_IMAGE").pipe(Config.withDefault(""));
+
   const image =
-    stage === "local"
-      ? { context: `${import.meta.dirname}/context`, env: { FICUS_SCORER_HASH: scorerHash } }
+    pinned !== ""
+      ? { image: pinned }
+      : stage === "local"
+      ? // From the scorer's hash, so the image builds after the scorer it copies.
+        { context: Output.map(scorerHash, () => `${import.meta.dirname}/context`) }
       : {
           image: Output.map(
             (yield* Command.Build("SandboxImage", {
@@ -61,14 +69,7 @@ export const sandboxWorker = (role: SandboxRole) => Effect.gen(function* () {
               outdir: SANDBOX_IMAGE_DIR,
               env: { FICUS_SCORER_HASH: scorerHash },
               memo: {
-                include: [
-                  "nix/sandbox-image.nix",
-                  "infra/src/sandbox/context/**",
-                  "devenv.lock",
-                  "scripts/sandbox-image",
-                  "scripts/build-sandbox-image",
-                  "scripts/push-sandbox-image",
-                ],
+                include: ["infra/src/sandbox/base-image", "infra/src/sandbox/context/**", "scripts/sandbox-image"],
                 lockfile: false,
               },
             })).hash.output,
@@ -77,19 +78,14 @@ export const sandboxWorker = (role: SandboxRole) => Effect.gen(function* () {
           ),
         };
 
+  // Managed by the Durable Object (`schedulingPolicy: "durable_object"`):
+  // each `Sandbox` starts the image itself, choosing its size then
+  // (sandbox.ts `SANDBOX_INSTANCE`), and may start from a snapshot, which
+  // only this policy offers. The image is found in `ctx.container.images`
+  // under this Container's id (sandbox.ts `SANDBOX_IMAGE`).
   const container = Cloudflare.Container("SandboxContainer", {
-    name: `ficus-${role}-${stage}`,
-    // The Durable Object class in sandbox.ts that drives it.
-    className: "Sandbox",
+    schedulingPolicy: "durable_object",
     ...image,
-    instances: 0,
-    // Scoring and agents run many at once; deploys one per tree at a time.
-    maxInstances: role === "sandbox" ? 20 : 4,
-    // A root's devenv shell plus its checks. Ficus's own, when it was
-    // Rust, filled standard-1's disk; standard-4 stays until a TS-only
-    // root is seen to fit a smaller one. Billed while a sandbox runs:
-    // scoring, deploys, and agents' workspaces until idle.
-    instanceType: "standard-4",
     observability: { logs: { enabled: true } },
   });
 
@@ -99,8 +95,12 @@ export const sandboxWorker = (role: SandboxRole) => Effect.gen(function* () {
     compatibility: COMPATIBILITY,
     observability: OBSERVABILITY,
     workersDev: false,
-    // Workers AI, for Clef: the root's judges are asked from here.
-    env: { SANDBOX: container, AI: Cloudflare.Workers.AI() },
+    env: {
+      // The Durable Object class in sandbox.ts, with its container.
+      SANDBOX: Cloudflare.DurableObject("SANDBOX", { className: "Sandbox", containers: [container] }),
+      // Workers AI, for Clef: the root's judges are asked from here.
+      AI: Cloudflare.Workers.AI(),
+    },
   });
 });
 

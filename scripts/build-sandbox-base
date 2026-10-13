@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Build the sandbox's base image (infra/src/sandbox/base/Dockerfile: Debian,
+# nix, devenv, bun and the store Ficus's devenv shell needs) with Docker, push
+# it to Cloudflare's registry, and pin it by digest in
+# infra/src/sandbox/base-image (and the FROM of context/Dockerfile). Run by an
+# operator when the base should change: devenv.lock, nix/sandbox-store.nix or
+# devenv.nix `packages` moved. Deploys append Ficus's files to the pinned base
+# without Docker (scripts/sandbox-image).
+#
+#   scripts/build-sandbox-base
+#
+# Needs Docker, CLOUDFLARE_ACCOUNT_ID, and a CLOUDFLARE_API_TOKEN with
+# Containers: Edit (it mints push credentials good for 15 minutes).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+: "${CLOUDFLARE_ACCOUNT_ID:?set CLOUDFLARE_ACCOUNT_ID}" "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
+registry=registry.cloudflare.com
+repository="$registry/$CLOUDFLARE_ACCOUNT_ID/ficus-sandbox-base"
+
+# The build context: the Dockerfile, and what the store is made from.
+context=$(mktemp -d)
+trap 'rm -r "$context"' EXIT
+cp infra/src/sandbox/base/Dockerfile devenv.nix devenv.yaml devenv.lock secretspec.toml "$context/"
+cp -r nix "$context/nix"
+
+credentials=$(curl -sf -X POST "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/containers/registries/$registry/credentials" \
+  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "content-type: application/json" \
+  -d '{"expiration_minutes":15,"permissions":["push","pull"]}')
+jq -r '.result.password' <<<"$credentials" | docker login "$registry" -u "$(jq -r '.result.username // .result.user' <<<"$credentials")" --password-stdin >&2
+
+tag=$(date -u +%Y%m%d%H%M%S)
+docker build --platform linux/amd64 -t "$repository:$tag" "$context" >&2
+# The registry can drop a layer upload on a slow link: push again until it holds.
+for _ in 1 2 3 4; do
+  if pushed=$(docker push "$repository:$tag" 2>&1); then break; fi
+  echo "$pushed" | tail -1 >&2
+done
+digest=$(echo "$pushed" | grep -o 'digest: sha256:[0-9a-f]*' | cut -d' ' -f2)
+[ -n "$digest" ] || { echo "the push did not finish" >&2; exit 1; }
+reference="$repository@$digest"
+printf '%s\n' "$reference" > infra/src/sandbox/base-image
+sed -i "s|^FROM .*|FROM $reference|" infra/src/sandbox/context/Dockerfile
+echo "sandbox base: $reference" >&2

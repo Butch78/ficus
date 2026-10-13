@@ -172,7 +172,13 @@ deadline 2026-10-14.
   `POST /rebase`: Egress grants the behind repo read and the fresh repo write; a conflict is 422
   and final, a sandbox failure retries up to 5 times), then scores every Checking attempt in parallel, one `Sandbox` per attempt
   (infra/src/sandbox: TS Durable Object on native `ctx.container`, Sandbox SDK 1.0 style; NOT the
-  legacy @cloudflare/containers class, which ends 2026-12-31). Internet is off; `Egress` (a
+  legacy @cloudflare/containers class, which ends 2026-12-31). The container is Durable Object-managed
+  (`schedulingPolicy: "durable_object"`, bound through `Cloudflare.DurableObject("SANDBOX", { containers })`): each start
+  names its image (`ctx.container.images.SandboxContainer`) and size (`standard-4`), and may restore a snapshot, which
+  only this policy offers; it has no instance cap. Snapshot warming is off (`SNAPSHOTS` in sandbox.ts): on this policy
+  `snapshotContainer` gave no answer within 5 minutes for the sandbox (2026-10-13), and a scoring stuck on it restarted
+  forever. The policy launched 2026-09-30 and also showed bare "internal error" and "Network connection lost" container
+  stops, and a Durable Object whose first start timed out during an image pull fails every later start (crabbox #2625). Internet is off; `Egress` (a
   WorkerEntrypoint via ctx.exports with props) is the only way out: prepare phase = attempt repo (token
   added by Egress, never in the container) + nix/devenv caches; check phase = nothing.
   `ficus-scorer prepare|check` is a CLI run by native exec. The root's `ficus.toml` and devenv files
@@ -207,10 +213,18 @@ deadline 2026-10-14.
   `deploy:deployer`, each after `scripts/restore-builds prod`: Command.Build calls a missing outdir changed, so in a
   fresh clone the scorer and image builds would always update and redeploy the sandbox (resetting the scoring and
   agents it runs). Rebuilt first (both reproducible), they noop when unchanged. The stack builds
-  the sandbox image itself: `Command.Build("SandboxImage")` (src/sandbox/stack.ts, memoized on nix/sandbox-image.nix,
-  the context and devenv.lock) runs `scripts/sandbox-image`: nix `dockerTools` build, skopeo push (from the devenv,
-  15-minute registry credentials), the reference into `infra/.sandbox-image/reference`; the container deploys it
-  as-is. Stage `local` (`alchemy dev`) builds `context/Dockerfile` with Docker instead. Inside the devenv shell,
+  the sandbox image itself: `Command.Build("SandboxImage")` (src/sandbox/stack.ts, memoized on `base-image`, the context
+  and the script) runs `scripts/sandbox-image`: Ficus's files (scorer, entrypoint, egress script) as one reproducible tar
+  layer, `crane append`ed to the pinned base in Cloudflare's registry (from the devenv, 15-minute registry credentials;
+  ~10 s, no Docker), the reference into `infra/.sandbox-image/reference`. The base (`infra/src/sandbox/base/Dockerfile`:
+  node:24.20.0-trixie-slim + Determinate nix + `nix/sandbox-store.nix` built from devenv.lock's nixpkgs: devenv, bun,
+  Ficus's devenv shell inputs and that nixpkgs, so scoring Ficus downloads next to nothing; keep its package list in
+  step with devenv.nix) is built with Docker by `scripts/build-sandbox-base`, which pins it in
+  `infra/src/sandbox/base-image` and the FROM of `context/Dockerfile`; rebuild it when devenv.lock or the shell moves.
+  Without the baked store every scoring downloaded nixpkgs and the whole shell first and never finished (2026-10-13). Debian because Cloudflare's image preparation for
+  Durable Object containers fails `nixos/nix`-based images ("runtime image build failed", 2026-10-13), nix-built ones
+  included. Stage `local` (`alchemy dev`) builds `context/Dockerfile` (the pinned base plus the files) with Docker;
+  `FICUS_SANDBOX_IMAGE=<ref@digest>` pins a prebuilt image on any stage. Inside the devenv shell,
   secretspec loads `~/.config/ficus/.env` over your environment: run deploys with another token outside it.
 - Backups: `GET /trees/<t>/export` (all storage, assignments left out); the Api's nightly cron writes every tree in
   the directory to R2 `ficus-backups-<stage>` as `trees/<org>/<tree>/<date>.json`, expired after 90 days.

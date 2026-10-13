@@ -1,17 +1,54 @@
 #!/usr/bin/env bash
 # The sandbox image for a stage, as alchemy's `SandboxImage` build runs it
-# (infra/src/sandbox/stack.ts): built with nix, pushed to Cloudflare's
-# registry, and its reference written to <outdir>/reference for the
-# container to deploy as-is. No Docker: a deploy sandbox has none.
+# (infra/src/sandbox/stack.ts): Ficus's files (the scorer, the entrypoint, the
+# egress script) appended as one layer to the pinned base
+# (infra/src/sandbox/base-image, scripts/build-sandbox-base), pushed to
+# Cloudflare's registry, and its reference written to <outdir>/reference. No
+# Docker: a deploy sandbox has none, so `crane` writes the layer straight to
+# the registry, where the base's layers already are.
 #
 #   scripts/sandbox-image <stage> <outdir>
+#
+# Needs CLOUDFLARE_ACCOUNT_ID, and a CLOUDFLARE_API_TOKEN with Containers:
+# Edit: it mints push credentials good for 15 minutes. In a deploy sandbox the
+# token is a placeholder that the sandbox's egress replaces.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 stage=${1:?usage: sandbox-image <stage> <outdir>}
 outdir=${2:?usage: sandbox-image <stage> <outdir>}
+: "${CLOUDFLARE_ACCOUNT_ID:?set CLOUDFLARE_ACCOUNT_ID}" "${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN}"
+registry=registry.cloudflare.com
+base=$(cat infra/src/sandbox/base-image)
+context=infra/src/sandbox/context
 
-image=$(scripts/build-sandbox-image "$stage")
-reference=$(scripts/push-sandbox-image "$image" "ficus-sandbox-$stage")
+[ -s "$context/ficus-scorer.js" ] || scripts/build-scorer >&2
+
+# The layer, reproducibly: the same files make the same tar, so an unchanged
+# sandbox keeps its tag and its image (scripts/restore-builds relies on it).
+work=$(mktemp -d)
+trap 'rm -r "$work"' EXIT
+mkdir -p "$work/root/usr/local/bin" "$work/root/usr/local/lib"
+install -m 0644 "$context/ficus-scorer.js" "$work/root/usr/local/lib/ficus-scorer.js"
+install -m 0755 "$context/ficus-scorer" "$work/root/usr/local/bin/ficus-scorer"
+install -m 0755 "$context/entrypoint.sh" "$work/root/usr/local/bin/ficus-entrypoint"
+install -m 0755 "$context/trust-egress.sh" "$work/root/usr/local/bin/ficus-trust-egress"
+tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@1 --format=gnu -C "$work/root" -cf "$work/layer.tar" usr
+
+tag=$({ echo "$base"; sha256sum < "$work/layer.tar"; } | sha256sum | cut -c1-20)
+target="$registry/$CLOUDFLARE_ACCOUNT_ID/ficus-sandbox-$stage:$tag"
+
+credentials=$(curl -sf -X POST "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/containers/registries/$registry/credentials" \
+  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "content-type: application/json" \
+  -d '{"expiration_minutes":15,"permissions":["push","pull"]}')
+jq -r '.result.password' <<<"$credentials" | crane auth login "$registry" -u "$(jq -r '.result.username // .result.user' <<<"$credentials")" --password-stdin >&2
+
+# The tag is the base and the layer: if the registry has it, it has this image.
+if ! digest=$(crane digest "$target" 2>/dev/null); then
+  crane append --platform linux/amd64 --base "$base" --new_layer "$work/layer.tar" --new_tag "$target" >&2
+  digest=$(crane digest "$target")
+fi
+
+reference="$registry/$CLOUDFLARE_ACCOUNT_ID/ficus-sandbox-$stage@$digest"
 mkdir -p "$outdir"
 printf '%s\n' "$reference" > "$outdir/reference"
 echo "sandbox image: $reference" >&2

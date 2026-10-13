@@ -170,6 +170,20 @@ const DEVENV_WARM_LOG = "/tmp/devenv-warm.log";
  */
 const WORKSPACE_IDLE_MS = 20 * 60 * 1000;
 
+/** The sandbox image's key in `ctx.container.images`: its Container's id in stack.ts. */
+const SANDBOX_IMAGE = "SandboxContainer";
+
+/**
+ * The container's size, chosen at each start. A root's devenv shell plus its
+ * checks: Ficus's own, when it was Rust, filled standard-1's disk; standard-4
+ * stays until a TS-only root is seen to fit a smaller one. Billed while a
+ * sandbox runs: scoring, deploys, and agents' workspaces until idle.
+ */
+const SANDBOX_INSTANCE = "standard-4";
+
+/** Whether a scoring may warm a snapshot of its base: off until snapshots answer on Durable Object-managed containers. */
+const SNAPSHOTS = false;
+
 /** Snapshotting the container may not hold its scoring up longer than this. */
 const SNAPSHOT_TIMEOUT = "5 minutes";
 
@@ -592,7 +606,10 @@ export class Sandbox extends DurableObject<Bindings> {
     // A snapshot that will not restore, or whose container fails before its
     // checks for the sandbox's own reasons, gives way to the image in this
     // same scoring, which warms a fresh one; the tree forgets the stale one.
-    const { run, taken, stale } = yield* this.#scoreIn(score, say, given, given === undefined && score.warm === true).pipe(
+    // Warming is off: on Durable Object-managed containers `snapshotContainer`
+    // gave no answer within SNAPSHOT_TIMEOUT for the sandbox (2026-10-13), and a
+    // cold boot is fast there (the store is baked into the image).
+    const { run, taken, stale } = yield* this.#scoreIn(score, say, given, given === undefined && score.warm === true && SNAPSHOTS).pipe(
       Effect.catchIf(
         (error) => given !== undefined && error.status !== 422,
         (error) => {
@@ -756,6 +773,22 @@ export class Sandbox extends DurableObject<Bindings> {
     return { ...run.report, checks: [...run.report.checks, ...outcomes] };
   });
 
+  /**
+   * The image to boot, by its Container's id in the stack (stack.ts): the
+   * Durable Object picks it at `start()`. The only image, should the key ever
+   * differ.
+   */
+  #image(container: Container) {
+    const images = container.images;
+    const image = images[SANDBOX_IMAGE] ?? Object.values(images)[0];
+
+    if (image === undefined) {
+      throw new Error("the Sandbox class has no container image: check its binding's containers in stack.ts");
+    }
+
+    return image;
+  }
+
   #container(): Container {
     const container = this.ctx.container;
 
@@ -785,7 +818,20 @@ export class Sandbox extends DurableObject<Bindings> {
           boot = crypto.randomUUID();
           const env = { FICUS_BOOT: boot };
 
-          container.start(snapshot === undefined ? { enableInternet: false, env } : { enableInternet: false, env, containerSnapshot: { id: snapshot } });
+          const options: NonNullable<Parameters<Container["start"]>[0]> =
+            snapshot === undefined
+              ? { image: this.#image(container), instance: SANDBOX_INSTANCE, enableInternet: false, env }
+              : { instance: SANDBOX_INSTANCE, enableInternet: false, env, containerSnapshot: { id: snapshot } };
+
+          try {
+            container.start(options);
+          } catch (error) {
+            console.log(`sandbox: start failed (${"image" in options ? options.image : `snapshot ${snapshot}`}): ${String(error)}`);
+            throw error;
+          }
+
+          // A container that stops says why here; the probe below only sees that it is gone.
+          container.monitor().catch((error: Error) => console.log(`sandbox: the container stopped: ${String(error)}`));
         }
 
         const probe = await container.exec(["/bin/sh", "-c", 'test -f /run/ficus-ready && { [ -z "$0" ] || [ "$(cat /run/ficus-ready)" = "$0" ]; }', boot], {
