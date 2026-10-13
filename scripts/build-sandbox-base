@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Build the sandbox's base image (infra/src/sandbox/base/Dockerfile: Debian,
-# nix, devenv, bun and the store Ficus's devenv shell needs) with Docker, push
+# nix, devenv and bun) with Docker, push
 # it to Cloudflare's registry, and pin it by digest in
 # infra/src/sandbox/base-image (and the FROM of context/Dockerfile). Run by an
-# operator when the base should change: devenv.lock, nix/sandbox-store.nix or
-# devenv.nix `packages` moved. Deploys append Ficus's files to the pinned base
+# operator when the base should change: devenv.lock or nix/sandbox-store.nix
+# moved. Deploys append Ficus's files to the pinned base
 # without Docker (scripts/sandbox-image).
 #
 #   scripts/build-sandbox-base
@@ -20,7 +20,7 @@ repository="$registry/$CLOUDFLARE_ACCOUNT_ID/ficus-sandbox-base"
 # The build context: the Dockerfile, and what the store is made from.
 context=$(mktemp -d)
 trap 'rm -r "$context"' EXIT
-cp infra/src/sandbox/base/Dockerfile devenv.nix devenv.yaml devenv.lock secretspec.toml "$context/"
+cp infra/src/sandbox/base/Dockerfile devenv.lock "$context/"
 cp -r nix "$context/nix"
 
 credentials=$(curl -sf -X POST "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/containers/registries/$registry/credentials" \

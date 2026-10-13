@@ -66,7 +66,8 @@ export default class Deploy extends Cloudflare.Workflow<Deploy>()(
       const token = yield* repo.createToken("read", READ_TOKEN_TTL_SECS).pipe(Effect.mapError((error) => failed(`minting a read token: ${error.message}`)));
       const cloudflareToken = yield* deployToken.pipe(Effect.mapError((error) => failed(`reading the deploy token: ${error.message}`)));
       const namespace = yield* sandboxes(part);
-      const sandbox = namespace.get(namespace.idFromName(`deploy:${params.tree}`));
+      // A fresh sandbox per run, as for scoring (src/tree/tree-object.ts `#askSandbox`).
+      const sandbox = namespace.get(namespace.idFromName(`deploy:${params.tree}:${part}:${Date.now()}`));
 
       const answer = yield* Effect.tryPromise({
         try: async () => {

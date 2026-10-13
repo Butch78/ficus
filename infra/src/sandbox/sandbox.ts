@@ -98,7 +98,8 @@ export const NIX_HOSTS = [
  * the one the entrypoint extends with the egress CA.
  */
 const EXEC_ENV = {
-  PATH: "/usr/local/bin:/root/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/nix/var/nix/profiles/default/sbin",
+  // nix first, then the base system's own tools (coreutils and the rest live in /usr/bin on the Debian base).
+  PATH: "/usr/local/bin:/root/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/nix/var/nix/profiles/default/sbin:/usr/sbin:/usr/bin:/sbin:/bin",
   HOME: "/root",
   USER: "root",
   SSL_CERT_FILE: "/etc/ssl/certs/ca-bundle.crt",
@@ -171,7 +172,7 @@ const DEVENV_WARM_LOG = "/tmp/devenv-warm.log";
 const WORKSPACE_IDLE_MS = 20 * 60 * 1000;
 
 /** The sandbox image's key in `ctx.container.images`: its Container's id in stack.ts. */
-const SANDBOX_IMAGE = "SandboxContainer";
+const SANDBOX_IMAGE = "SandboxDurableContainer";
 
 /**
  * The container's size, chosen at each start. A root's devenv shell plus its
@@ -462,7 +463,13 @@ export class Sandbox extends DurableObject<Bindings> {
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
     const writer = writable.getWriter();
     const encoder = new TextEncoder();
-    const report: Report = (line) => void writer.write(encoder.encode(`${line}\n`));
+    const started = Date.now();
+
+    // Each step goes to the tree and, with its time, to the logs: telemetry shows where a scoring is.
+    const report: Report = (line) => {
+      console.log(`sandbox: ${((Date.now() - started) / 1000).toFixed(1)} s ${line.slice(0, 300)}`);
+      void writer.write(encoder.encode(`${line}\n`));
+    };
 
     const outcome = this.#scoreWithClef(request, report).pipe(
       Effect.match({
@@ -834,7 +841,13 @@ export class Sandbox extends DurableObject<Bindings> {
           container.monitor().catch((error: Error) => console.log(`sandbox: the container stopped: ${String(error)}`));
         }
 
-        const probe = await container.exec(["/bin/sh", "-c", 'test -f /run/ficus-ready && { [ -z "$0" ] || [ "$(cat /run/ficus-ready)" = "$0" ]; }', boot], {
+        // Only a container restored from a snapshot can hold a marker from an
+        // earlier boot; a fresh image has none, so its marker passes as it is
+        // (Durable Object-managed containers do not hand `start`'s env to the
+        // entrypoint: the marker stays empty).
+        const nonce = snapshot === undefined ? "" : boot;
+
+        const probe = await container.exec(["/bin/sh", "-c", 'test -f /run/ficus-ready && { [ -z "$0" ] || [ "$(cat /run/ficus-ready)" = "$0" ]; }', nonce], {
           env: { ...EXEC_ENV },
         });
 

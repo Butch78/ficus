@@ -62,7 +62,7 @@ export default Alchemy.Stack(
         // `AgentActor` is the Durable Object class src/agents/worker.ts exports.
         AGENTS: Cloudflare.DurableObject("AGENTS", { className: "AgentActor" }),
         // An agent's workspace is a sandbox: the scorer's image, its egress.
-        SANDBOX: Cloudflare.DurableObject("SANDBOX", { className: "Sandbox", scriptName: `ficus-sandbox-${stage}` }),
+        SANDBOX: Cloudflare.DurableObject("SANDBOX", { className: "DurableSandbox", scriptName: `ficus-sandbox-${stage}` }),
         FICUS_SANDBOX_SCRIPT: sandbox.workerName,
       },
     });
@@ -104,7 +104,7 @@ export default Alchemy.Stack(
         // By literal name: `alchemy dev` cannot coerce a deploy-time Output
         // into a class's scriptName. The env value below keeps the edge that
         // deploys the sandbox Worker (and its class) before this one.
-        SANDBOX: Cloudflare.DurableObject("SANDBOX", { className: "Sandbox", scriptName: `ficus-sandbox-${stage}` }),
+        SANDBOX: Cloudflare.DurableObject("SANDBOX", { className: "DurableSandbox", scriptName: `ficus-sandbox-${stage}` }),
         FICUS_SANDBOX_SCRIPT: sandbox.workerName,
         // The agents that work attempts: `AgentActor` in the agents Worker, by
         // literal name like SANDBOX, with the same deploy-order edge.

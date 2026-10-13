@@ -1,6 +1,5 @@
-# The sandbox's base image: Debian with nix, devenv and bun, and the nix store
-# Ficus's own devenv shell needs (nix/sandbox-store.nix, from the nixpkgs
-# devenv.lock pins), so scoring an attempt at Ficus downloads next to nothing.
+# The sandbox's base image: Debian with nix, and devenv and bun from what
+# devenv.lock pins (nix/sandbox-store.nix). Small and generic: nothing per repo.
 # Built with Docker by scripts/build-sandbox-base, which assembles this
 # directory with devenv.lock and nix/, and pinned by digest in
 # infra/src/sandbox/base-image; deploys append Ficus's files to it without
@@ -30,8 +29,8 @@ RUN printf '%s\n' \
 
 ENV PATH=/usr/local/bin:/root/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/nix/var/nix/profiles/default/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# The store, from devenv.lock's nixpkgs, into the default profile (which keeps
-# it from the garbage collector); nix's CA bundle as the one every tool reads,
+# devenv and bun, from devenv.lock, into the default profile; nix's CA bundle
+# as the one every tool reads,
 # which trust-egress.sh extends with the egress CA.
 COPY devenv.lock /tmp/sandbox-store/devenv.lock
 COPY nix/ /tmp/sandbox-store/nix/
@@ -47,13 +46,5 @@ RUN nixpkgs=$(nix eval --raw --impure --expr 'let n = (builtins.fromJSON (builti
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt \
     NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt \
     GIT_SSL_CAINFO=/etc/ssl/certs/ca-bundle.crt
-
-# Open Ficus's own devenv shell once, with the network: devenv fetches its
-# inputs into its own caches (which the store above does not fill the way it
-# reads them) and builds the shell, and all of it stays in the image. A
-# scoring's shell then evaluates offline. No garbage collection after this.
-COPY devenv.nix devenv.yaml devenv.lock secretspec.toml /tmp/ficus-shell/
-COPY nix/ /tmp/ficus-shell/nix/
-RUN cd /tmp/ficus-shell && devenv shell -- true && cd / && rm -r /tmp/ficus-shell
 
 ENTRYPOINT ["/usr/local/bin/ficus-entrypoint"]

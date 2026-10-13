@@ -79,11 +79,13 @@ export const sandboxWorker = (role: SandboxRole) => Effect.gen(function* () {
         };
 
   // Managed by the Durable Object (`schedulingPolicy: "durable_object"`):
-  // each `Sandbox` starts the image itself, choosing its size then
+  // each `DurableSandbox` starts the image itself, choosing its size then
   // (sandbox.ts `SANDBOX_INSTANCE`), and may start from a snapshot, which
   // only this policy offers. The image is found in `ctx.container.images`
-  // under this Container's id (sandbox.ts `SANDBOX_IMAGE`).
-  const container = Cloudflare.Container("SandboxContainer", {
+  // under this Container's id (sandbox.ts `SANDBOX_IMAGE`). A new id and a new
+  // class: a container cannot switch scheduling policy in place, so the
+  // fleet-scheduled `SandboxContainer` and its class `Sandbox` were replaced.
+  const container = Cloudflare.Container("SandboxDurableContainer", {
     schedulingPolicy: "durable_object",
     ...image,
     observability: { logs: { enabled: true } },
@@ -96,8 +98,12 @@ export const sandboxWorker = (role: SandboxRole) => Effect.gen(function* () {
     observability: OBSERVABILITY,
     workersDev: false,
     env: {
-      // The Durable Object class in sandbox.ts, with its container.
-      SANDBOX: Cloudflare.DurableObject("SANDBOX", { className: "Sandbox", containers: [container] }),
+      // The Durable Object class in worker.ts, with its container.
+      SANDBOX: Cloudflare.DurableObject("SANDBOX", { className: "DurableSandbox", containers: [container] }),
+      // The class it replaced, kept without a container for a release so a
+      // binding still naming it never points at a class that is gone. No one
+      // reaches it any more; remove it next.
+      LEGACY_SANDBOX: Cloudflare.DurableObject("LEGACY_SANDBOX", { className: "Sandbox" }),
       // Workers AI, for Clef: the root's judges are asked from here.
       AI: Cloudflare.Workers.AI(),
     },

@@ -35,9 +35,9 @@ export default class DeploysWorker extends Cloudflare.Worker<DeploysWorker>()(
         // By literal name: `alchemy dev` cannot coerce a deploy-time Output into
         // a class's scriptName. The env value below is the edge that deploys
         // the sandbox Worker (and its class) before this one.
-        SANDBOX: Cloudflare.DurableObject("SANDBOX", { className: "Sandbox", scriptName: `ficus-sandbox-${stage}` }),
+        SANDBOX: Cloudflare.DurableObject("SANDBOX", { className: "DurableSandbox", scriptName: `ficus-sandbox-${stage}` }),
         FICUS_SANDBOX_SCRIPT: sandbox.workerName,
-        DEPLOYER: Cloudflare.DurableObject("DEPLOYER", { className: "Sandbox", scriptName: `ficus-deployer-${stage}` }),
+        DEPLOYER: Cloudflare.DurableObject("DEPLOYER", { className: "DurableSandbox", scriptName: `ficus-deployer-${stage}` }),
         FICUS_DEPLOYER_SCRIPT: deployer.workerName,
       },
     };

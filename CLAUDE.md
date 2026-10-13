@@ -173,9 +173,13 @@ deadline 2026-10-14.
   and final, a sandbox failure retries up to 5 times), then scores every Checking attempt in parallel, one `Sandbox` per attempt
   (infra/src/sandbox: TS Durable Object on native `ctx.container`, Sandbox SDK 1.0 style; NOT the
   legacy @cloudflare/containers class, which ends 2026-12-31). The container is Durable Object-managed
-  (`schedulingPolicy: "durable_object"`, bound through `Cloudflare.DurableObject("SANDBOX", { containers })`): each start
-  names its image (`ctx.container.images.SandboxContainer`) and size (`standard-4`), and may restore a snapshot, which
-  only this policy offers; it has no instance cap. Snapshot warming is off (`SNAPSHOTS` in sandbox.ts): on this policy
+  (`schedulingPolicy: "durable_object"`; class `DurableSandbox`, container `SandboxDurableContainer`, bound through
+  `Cloudflare.DurableObject("SANDBOX", { className: "DurableSandbox", containers })`): each start names its image
+  (`ctx.container.images.SandboxDurableContainer`) and size (`standard-4`), and may restore a snapshot, which
+  only this policy offers; it has no instance cap. A container cannot switch scheduling policy in
+  place, hence the new class and container id; the old class `Sandbox` stays bound without a container for one release
+  (`LEGACY_SANDBOX`), then goes. Every scoring, rebase and deploy gets a fresh sandbox (`<repo>:<action>:<ms>`): a Durable
+  Object whose first start failed can fail every later one. The sandbox logs each step with its time (`sandbox: …`). Snapshot warming is off (`SNAPSHOTS` in sandbox.ts): on this policy
   `snapshotContainer` gave no answer within 5 minutes for the sandbox (2026-10-13), and a scoring stuck on it restarted
   forever. The policy launched 2026-09-30 and also showed bare "internal error" and "Network connection lost" container
   stops, and a Durable Object whose first start timed out during an image pull fails every later start (crabbox #2625). Internet is off; `Egress` (a
@@ -217,11 +221,11 @@ deadline 2026-10-14.
   and the script) runs `scripts/sandbox-image`: Ficus's files (scorer, entrypoint, egress script) as one reproducible tar
   layer, `crane append`ed to the pinned base in Cloudflare's registry (from the devenv, 15-minute registry credentials;
   ~10 s, no Docker), the reference into `infra/.sandbox-image/reference`. The base (`infra/src/sandbox/base/Dockerfile`:
-  node:24.20.0-trixie-slim + Determinate nix + `nix/sandbox-store.nix` built from devenv.lock's nixpkgs: devenv, bun,
-  Ficus's devenv shell inputs and that nixpkgs, so scoring Ficus downloads next to nothing; keep its package list in
-  step with devenv.nix) is built with Docker by `scripts/build-sandbox-base`, which pins it in
-  `infra/src/sandbox/base-image` and the FROM of `context/Dockerfile`; rebuild it when devenv.lock or the shell moves.
-  Without the baked store every scoring downloaded nixpkgs and the whole shell first and never finished (2026-10-13). Debian because Cloudflare's image preparation for
+  node:24.20.0-trixie-slim + Determinate nix + `nix/sandbox-store.nix`: devenv built from the devenv source devenv.lock
+  pins, and bun; ~1.9 GB, nothing per repo) is built with Docker by `scripts/build-sandbox-base`, which pins it in
+  `infra/src/sandbox/base-image` and the FROM of `context/Dockerfile`; rebuild it when devenv.lock moves. A repo's
+  devenv shell is built by its scoring; a 4.6 GB image with Ficus's shell warmed in lost its container connections
+  (2026-10-13), so per-repo warmth belongs in directory snapshots (`snapshotDirectory`), not the image. Debian because Cloudflare's image preparation for
   Durable Object containers fails `nixos/nix`-based images ("runtime image build failed", 2026-10-13), nix-built ones
   included. Stage `local` (`alchemy dev`) builds `context/Dockerfile` (the pinned base plus the files) with Docker;
   `FICUS_SANDBOX_IMAGE=<ref@digest>` pins a prebuilt image on any stage. Inside the devenv shell,

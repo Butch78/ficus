@@ -1020,7 +1020,10 @@ export class TreeObject extends DurableObject<Bindings> {
           await storage.put(key, steps);
         }
 
-        const stub = this.env.SANDBOX.get(this.env.SANDBOX.idFromName(repo));
+        // A fresh sandbox per run: a Durable Object whose first container start
+        // failed can fail every later start (Cloudflare, 2026-10), and a scoring
+        // or rebase keeps nothing in its sandbox once it is done.
+        const stub = this.env.SANDBOX.get(this.env.SANDBOX.idFromName(`${repo}:${action}:${Date.now()}`));
         const headers = new Headers({ "content-type": "application/json" });
 
         if (key !== undefined) {
