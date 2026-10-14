@@ -30,7 +30,7 @@ call() { # method path [body]
   curl "${args[@]}" "$API/v1/orgs/$ORG/trees/$TREE$2"
 }
 attempt_of() { git -C "${1:-.}" config ficus.attempt || { echo "${1:-.} is not an attempt clone" >&2; exit 1; }; }
-report() { call GET "/attempts/$1" | jq -c '{state: .attempt.state, cost: .report.cost, checks: [.report.checks[]? | {name, passed}]}'; }
+report() { call GET "/attempts/$1" | jq -c '{state: .attempt.state, cost: .report.cost, checks: [.report.checks[]? | {name, passed} + (if .skipped then {skipped} else {} end)]}'; }
 
 cmd=${1:-}; shift || true
 case "$cmd" in

@@ -23,6 +23,7 @@ export function AttemptCard({ entry, org, tree, agent }: CardProps) {
   const { attempt, standing, report, scoring } = entry;
   const href = `/orgs/${org}/trees/${tree}/attempts/${attempt.id}`;
   const failing = report?.checks.filter((check) => !check.passed) ?? [];
+  const skipped = report?.checks.filter((check) => check.skipped !== undefined).length ?? 0;
 
   return (
     <LayerCard>
@@ -42,8 +43,8 @@ export function AttemptCard({ entry, org, tree, agent }: CardProps) {
         {standing === "Checking" && scoring !== undefined && scoring !== null ? <ScoringSteps ledger={scoring} compact /> : null}
         {report === null ? null : (
           <Text variant="secondary" size="xs">
-            {report.checks.filter((check) => check.passed).length} of {report.checks.length} checks pass · a {report.cost}-line
-            change
+            {report.checks.filter((check) => check.passed).length} of {report.checks.length} checks pass
+            {skipped === 0 ? "" : ` (${skipped} skipped: the change touched nothing they watch)`} · a {report.cost}-line change
           </Text>
         )}
         {failing.map((check) => (

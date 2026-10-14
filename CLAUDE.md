@@ -191,6 +191,12 @@ deadline 2026-10-14.
   `ficus-scorer prepare|check` is a CLI run by native exec. The root's `ficus.toml` and devenv files
   come from the base commit (LOCKED_PATHS), so a attempt cannot change its own checks; the task's checks
   travel in the request and run after the root's. Cost = diff lines; the report also lists `touched` paths.
+  A check (root or task) may name `paths` (globs, `src/core/paths.ts`: `**`, `*`, `?`, a directory takes what is under it):
+  it runs only when the attempt changed a matching path (both sides of a rename), else it is reported `skipped` with the
+  reason and counts as passed in `checks_passed` and `checks_total` (`scoreOf`), so every attempt on a base has the same
+  total. Unknown changes, or a change to a root-owned file (LOCKED_PATHS, any root `devenv*`), run every check. The
+  previous release's deployer parses the released ficus.toml strictly, so a new ficus.toml key ships only after the
+  release that teaches the scorer it.
   `[fetch] {hosts, run}` in ficus.toml (from the base, like the checks): scoring is `ficus-scorer prepare` (clone,
   restore; reports the hosts) → the Sandbox opens them → `fetch` (devenv build + `run`) → every route closes →
   `check`. Agent workspaces open the same hosts, read once at the base (`ficus-scorer hosts`). Ficus's own

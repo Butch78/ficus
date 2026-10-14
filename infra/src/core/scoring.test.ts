@@ -21,6 +21,8 @@ import {
   ScoreReport,
   ScoreRequest,
   bootPlans,
+  runsEverything,
+  skipReason,
   SNAPSHOT_REFUSED_MS,
   snapshotAfter,
   snapshotRefused,
@@ -115,6 +117,9 @@ describe("a root's ficus.toml", () => {
     expect(refusal('[[check]]\nname = "a"\nrun = "  "\n')).toBe("EmptyRun");
     expect(refusal('[[check]]\nname = "a"\n')).toBe("Unparsable");
     expect(refusal('[[check]]\nname = "a"\nrun = "x"\nsudo = true\n')).toBe("Unparsable");
+    expect(refusal('[[check]]\nname = "a"\nrun = "x"\npaths = []\n')).toBe("EmptyPaths");
+    expect(refusal('[[check]]\nname = "a"\nrun = "x"\npaths = ["docs", " "]\n')).toBe("EmptyPaths");
+    expect(refusal('[[check]]\nname = "a"\nrun = "x"\npaths = ["docs/**"]\n')).toBe("parsed");
   });
 
   test("judges sit beside checks", () => {
@@ -233,5 +238,36 @@ describe("warm snapshots of a base", () => {
     expect(ok(Schema.decodeUnknownResult(ScoreRequest)({ ...request, snapshot: "snap" })).snapshot).toBe("snap");
     expect(ok(Schema.decodeUnknownResult(ScoreAnswer)(answer))).toEqual(answer);
     expect(ok(Schema.decodeUnknownResult(ScoreReport)(answer))).toEqual({ checks: answer.checks, cost: 1, phases: answer.phases });
+  });
+});
+
+describe("a check's paths", () => {
+  const check = { name: "infra", run: "true", paths: ["infra/**", "package.json"] };
+
+  test("a check without paths always runs", () => {
+    expect(skipReason({ name: "a", run: "true" }, ["docs/a.md"])).toBeUndefined();
+  });
+
+  test("runs when the attempt touched a matching path, is skipped with a reason otherwise", () => {
+    expect(skipReason(check, ["docs/a.md", "infra/src/x.ts"])).toBeUndefined();
+    expect(skipReason(check, ["package.json"])).toBeUndefined();
+    expect(skipReason(check, ["docs/a.md"])).toBe("touched nothing under infra/**, package.json");
+    expect(skipReason(check, [])).toBe("touched nothing under infra/**, package.json");
+  });
+
+  test("every check runs when what was touched is unknown, or it includes a file the root owns", () => {
+    expect(runsEverything(undefined)).toBe(true);
+    expect(runsEverything(["docs/a.md", "ficus.toml"])).toBe(true);
+    expect(runsEverything([".envrc"])).toBe(true);
+    expect(runsEverything(["devenv.local.nix"])).toBe(true);
+    expect(runsEverything(["docs/ficus.toml", "docs/devenv.nix"])).toBe(false);
+    expect(skipReason(check, undefined)).toBeUndefined();
+    expect(skipReason(check, ["docs/a.md", "devenv.lock"])).toBeUndefined();
+  });
+
+  test("a skipped check counts as passed, so totals stay the same across attempts", () => {
+    const skipped: CheckOutcome = { ...outcome("infra", true), skipped: "touched nothing under infra/**" };
+
+    expect(ok(scoreOf({ checks: [skipped, outcome("always", true)], cost: 1 }))).toEqual({ checks_passed: 2, checks_total: 2, cost: 1, confidence: null });
   });
 });

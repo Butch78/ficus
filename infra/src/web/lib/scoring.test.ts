@@ -13,6 +13,8 @@ describe("scoring, in words", () => {
     expect(scoringLabel(entry("restore", "complete"))).toBe("Put the root's checks back: the attempt cannot change them");
     expect(scoringLabel(entry("check", "active", "tests"))).toBe("Running check tests, no network");
     expect(scoringLabel(entry("check", "error", "tests"))).toBe("Check tests failed");
+    expect(scoringLabel(entry("check", "complete", "tests"))).toBe("Check tests passed");
+    expect(scoringLabel({ ...entry("check", "complete", "tests"), detail: "skipped: touched nothing under infra/**" })).toBe("Check tests skipped: touched nothing under infra/**");
   });
 
   test("the current step is the running one, else the last", () => {

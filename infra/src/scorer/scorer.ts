@@ -38,6 +38,7 @@ import {
   type RebaseReport,
   type RootChecks,
   ScorePhase,
+  skipReason,
 } from "../core/scoring.ts";
 import { Oid } from "../core/values.ts";
 import { git, removeAll, run, ScoreError, succeeds } from "./shell.ts";
@@ -241,10 +242,24 @@ export const fetch = Effect.fn("Scorer.fetch")(function* (workdir: string) {
   yield* writePrepared(workdir, { ...prepared, fetched, phases });
 });
 
-const runChecks = Effect.fn("Scorer.runChecks")(function* (repo: string, specs: ReadonlyArray<readonly [CheckOrigin, CheckSpec]>, inDevenv: boolean) {
+/** Every check in turn, but a check whose `paths` match nothing in `changed` is reported skipped, not run. */
+const runChecks = Effect.fn("Scorer.runChecks")(function* (
+  repo: string,
+  specs: ReadonlyArray<readonly [CheckOrigin, CheckSpec]>,
+  inDevenv: boolean,
+  changed: ReadonlyArray<string> | undefined,
+) {
   const outcomes: Array<CheckOutcome> = [];
 
   for (const [origin, check] of specs) {
+    const skipped = skipReason(check, changed);
+
+    if (skipped !== undefined) {
+      yield* progress("check", "complete", check.name, `skipped: ${skipped}`);
+      outcomes.push({ name: check.name, origin, passed: true, skipped, millis: 0, tail: `skipped: ${skipped}` });
+      continue;
+    }
+
     yield* progress("check", "active", check.name);
 
     const ran = yield* run(repo, inShell(inDevenv, check.run), checkTimeoutSecs(check));
@@ -303,9 +318,16 @@ export const check = Effect.fn("Scorer.check")(function* (workdir: string) {
 
   const failure = prepared.fetched ?? "";
 
+  // Every path the attempt changed, locked files and both sides of a rename included, for the checks' `paths`;
+  // unknown (so every check runs) when git cannot say.
+  const changed = yield* git(repo, "diff", ["diff", "--name-only", "--no-renames", base, head]).pipe(
+    Effect.map((names) => names.split("\n").filter((line) => line !== "")),
+    Effect.orElseSucceed(() => undefined),
+  );
+
   const checks =
     failure === ""
-      ? yield* runChecks(repo, specs, prepared.in_devenv)
+      ? yield* runChecks(repo, specs, prepared.in_devenv, changed)
       : specs.map(([origin, spec]): CheckOutcome => ({ name: spec.name, origin, passed: false, millis: 0, tail: failure }));
 
   const cost = yield* stepped("cost", diffCost(repo, base, head));

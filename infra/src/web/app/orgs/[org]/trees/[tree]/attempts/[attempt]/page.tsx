@@ -136,9 +136,15 @@ export default async function AttemptPage({ params, searchParams }: Props) {
             detail.report.checks.map((check) => (
               <CollapsibleRoot key={check.name}>
                 <CollapsibleTrigger>
-                  <span className={check.passed ? "text-kumo-success" : "text-kumo-danger"}>
-                    {check.passed ? "Passed" : "Failed"}: {check.name} · {(check.millis / 1000).toFixed(1)} s
-                  </span>
+                  {check.skipped === undefined ? (
+                    <span className={check.passed ? "text-kumo-success" : "text-kumo-danger"}>
+                      {check.passed ? "Passed" : "Failed"}: {check.name} · {(check.millis / 1000).toFixed(1)} s
+                    </span>
+                  ) : (
+                    <span className="text-kumo-subtle">
+                      Skipped: {check.name} · {check.skipped}
+                    </span>
+                  )}
                 </CollapsibleTrigger>
                 <CollapsiblePanel>
                   <pre className="overflow-x-auto rounded-md border border-kumo-hairline bg-kumo-recessed p-3 font-mono text-xs text-kumo-default">

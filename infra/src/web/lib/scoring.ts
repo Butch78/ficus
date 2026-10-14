@@ -17,12 +17,17 @@ const WORDS = {
 
 const isKnown = (step: string): step is keyof typeof WORDS => step in WORDS;
 
-export const scoringLabel = ({ step, item, state }: Entry) => {
+export const scoringLabel = ({ step, item, state, detail }: Entry) => {
   const done = state !== "active";
 
   if (step === "check") {
     if (state === "error") {
       return `Check ${item ?? ""} failed`;
+    }
+
+    // The scorer says why it did not run a check whose `paths` the attempt left alone.
+    if (state === "complete" && detail?.startsWith("skipped: ") === true) {
+      return `Check ${item ?? ""} ${detail}`;
     }
 
     return done ? `Check ${item ?? ""} passed` : `Running check ${item ?? ""}, no network`;

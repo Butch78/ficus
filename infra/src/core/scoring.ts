@@ -14,6 +14,7 @@
  */
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import { anyMatches, normalizePattern } from "./paths.ts";
 import { Oid, type Score, TreeError } from "./values.ts";
 
 /** Files the root owns: restored from the base before anything runs, and out of the cost. */
@@ -38,6 +39,12 @@ export const CheckSpec = Schema.Struct({
   /** A bash command, run from the repo root (inside `devenv shell` when the root has a `devenv.nix`). */
   run: Schema.String,
   timeout_secs: Schema.optionalKey(Seconds),
+  /**
+   * Glob patterns (src/core/paths.ts: `**`, `*`, `?`, a directory takes what
+   * is under it): the check runs only for an attempt that touched a path one
+   * of them matches, and is reported skipped otherwise. Absent: it always runs.
+   */
+  paths: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
 export type CheckSpec = typeof CheckSpec.Type;
@@ -124,6 +131,7 @@ export const ChecksErrorKind = Schema.Literals([
   "NoChecks",
   "DuplicateName",
   "EmptyRun",
+  "EmptyPaths",
   "EmptyAsk",
   "JudgeName",
   "HalfCriteria",
@@ -156,6 +164,10 @@ export const validateChecks = (checks: ReadonlyArray<CheckSpec>) =>
 
       if (check.run.trim() === "") {
         return yield* refuse("EmptyRun", `check ${JSON.stringify(check.name)} has an empty \`run\``);
+      }
+
+      if (check.paths !== undefined && (check.paths.length === 0 || check.paths.some((pattern) => normalizePattern(pattern) === ""))) {
+        return yield* refuse("EmptyPaths", `check ${JSON.stringify(check.name)}: \`paths\` names no path, or has an empty pattern (leave it out to always run)`);
       }
     }
   });
@@ -374,10 +386,33 @@ export const RebaseReport = Schema.Struct({ commit: Oid, replayed: Schema.Int })
 
 export type RebaseReport = typeof RebaseReport.Type;
 
+/**
+ * Whether the scorer must run every check whatever its `paths`: when what the
+ * attempt touched is unknown, or it touched a file the root owns
+ * (`LOCKED_PATHS`, any root `devenv*` file), whose effect no pattern can tell.
+ */
+export const runsEverything = (touched: ReadonlyArray<string> | undefined) =>
+  touched === undefined || touched.some((path) => LOCKED_PATHS.some((locked) => locked === path) || /^devenv[^/]*$/.test(path));
+
+/**
+ * Why `check` is skipped for an attempt that touched `touched` (every path it
+ * changed, locked ones included), or `undefined` when it runs.
+ */
+export const skipReason = (check: CheckSpec, touched: ReadonlyArray<string> | undefined): string | undefined => {
+  if (check.paths === undefined || runsEverything(touched) || anyMatches(check.paths, touched ?? [])) {
+    return undefined;
+  }
+
+  return `touched nothing under ${check.paths.join(", ")}`;
+};
+
 export const CheckOutcome = Schema.Struct({
   name: Schema.String,
   origin: Schema.optionalKey(CheckOrigin),
+  /** True for a skipped check too: see `scoreOf`. */
   passed: Schema.Boolean,
+  /** Why the check did not run (its `paths` matched nothing the attempt touched); absent for a check that ran. */
+  skipped: Schema.optionalKey(Schema.String),
   millis: Schema.Number,
   /** The end of the check's output, for the agent that retries; for a judge, Clef's answer. */
   tail: Schema.String,
@@ -448,7 +483,14 @@ export const snapshotAfter = (
 /** The report with `phases` (the sandbox's, measured before the scorer ran) ahead of its own. */
 export const phasesFirst = (phases: ReadonlyArray<ScorePhase>, report: ScoreReport): ScoreReport => ({ ...report, phases: [...phases, ...(report.phases ?? [])] });
 
-/** The report as a score: every check counts, judges' confidence averaged. */
+/**
+ * The report as a score: every check counts, judges' confidence averaged.
+ * A skipped check counts as passed, in `checks_passed` and `checks_total`:
+ * the attempt changed nothing it watches, so it cannot have broken it. Every
+ * attempt on a base thus has the same `checks_total` (its root's checks and
+ * its task's), so a docs-only attempt is not penalized and winners compare
+ * on the same footing: all checks pass, then cost, then confidence.
+ */
 export const scoreOf = (report: ScoreReport): Result.Result<Score, TreeError> => {
   const passed = report.checks.filter((check) => check.passed).length;
   const total = report.checks.length;

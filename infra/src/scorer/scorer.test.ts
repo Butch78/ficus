@@ -240,6 +240,49 @@ describe("scoring", () => {
 
     expect((await ok(score(repo.work, repo.request(base, head)))).report.touched).toEqual(["a.txt", "b.txt"]);
   });
+
+  const PATHED = '[[check]]\nname = "txt"\nrun = "false"\npaths = ["*.txt"]\n\n[[check]]\nname = "always"\nrun = "true"\n';
+
+  test("a check with paths is skipped, and counts as passed, when the attempt touched none of them", async () => {
+    const repo = fixture();
+    const base = repo.commit([["ficus.toml", PATHED], ["a.txt", "a\n"]]);
+    const head = repo.commit([["README.md", "docs\n"]]);
+    const tasks: ReadonlyArray<CheckSpec> = [{ name: "md", run: "test -f README.md", paths: ["*.md"] }, { name: "other", run: "false", paths: ["src/**"] }];
+    const { report } = await ok(score(repo.work, repo.request(base, head, tasks)));
+
+    expect(report.checks.map((outcome) => [outcome.name, outcome.passed, outcome.skipped])).toEqual([
+      ["txt", true, "touched nothing under *.txt"],
+      ["always", true, undefined],
+      ["md", true, undefined],
+      ["other", true, "touched nothing under src/**"],
+    ]);
+    expect(report.checks[0]?.tail).toBe("skipped: touched nothing under *.txt");
+    expect(passes(report)).toBe(true);
+  });
+
+  test("a check runs when the attempt touched one of its paths, a rename's old side included", async () => {
+    const repo = fixture();
+    const base = repo.commit([["ficus.toml", PATHED], ["a.txt", "a long enough line to be renamed\n"]]);
+    const head = repo.commit([["a.md", "a long enough line to be renamed\n"]], ["a.txt"]);
+    const { report } = await ok(score(repo.work, repo.request(base, head)));
+
+    expect(report.checks.map((outcome) => [outcome.name, outcome.passed, outcome.skipped])).toEqual([
+      ["txt", false, undefined],
+      ["always", true, undefined],
+    ]);
+  });
+
+  test("an attempt that touches a root-owned file runs every check", async () => {
+    const repo = fixture();
+    const base = repo.commit([["ficus.toml", PATHED], ["a.txt", "a\n"]]);
+    const head = repo.commit([["devenv.nix", "{ }\n"], ["README.md", "docs\n"]]);
+    const { report } = await ok(score(repo.work, repo.request(base, head)));
+
+    expect(report.checks.map((outcome) => [outcome.name, outcome.skipped])).toEqual([
+      ["txt", undefined],
+      ["always", undefined],
+    ]);
+  });
 });
 
 describe("output", () => {

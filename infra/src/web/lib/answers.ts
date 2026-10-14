@@ -123,7 +123,10 @@ export const CheckOutcome = Schema.Struct({
   name: Schema.String,
   /** The root's `ficus.toml` check, or the task's own. */
   origin: Schema.optional(Schema.Literals(["root", "task"])),
+  /** True for a skipped check too: it counts as passed (src/core/scoring.ts `scoreOf`). */
   passed: Schema.Boolean,
+  /** Why the check did not run: its `paths` matched nothing the attempt touched. */
+  skipped: Schema.optional(Schema.String),
   millis: Schema.Number,
   tail: Schema.String,
   /** A judge's probability of yes, in thousandths; absent for a command. */
