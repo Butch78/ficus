@@ -333,7 +333,9 @@ export const check = Effect.fn("Scorer.check")(function* (workdir: string) {
   const cost = yield* stepped("cost", diffCost(repo, base, head));
   const touched = (yield* git(repo, "diff", diffArgs(["--name-only"], base, head))).split("\n").filter((line) => line !== "");
   const judges = root.judge ?? [];
-  const diff = judges.length === 0 ? "" : clipDiff(yield* git(repo, "diff", diffArgs(["--no-color"], base, head)));
+  // Judges read the whole diff, locked files included: a change to ficus.toml is the next root's checks once
+  // accepted, and a task that only changes it would otherwise show them nothing.
+  const diff = judges.length === 0 ? "" : clipDiff(yield* git(repo, "diff", ["diff", "--no-color", base, head]));
 
   yield* removeAll(workdir);
 

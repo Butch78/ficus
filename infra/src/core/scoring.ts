@@ -509,7 +509,7 @@ export const scoreOf = (report: ScoreReport): Result.Result<Score, TreeError> =>
 export const CheckRun = Schema.Struct({
   report: ScoreReport,
   judges: Schema.Array(JudgeSpec),
-  /** The attempt's diff from its base outside `LOCKED_PATHS`, clipped; empty without judges. */
+  /** The attempt's whole diff from its base, `LOCKED_PATHS` included, clipped; empty without judges. */
   diff: Schema.String,
 });
 

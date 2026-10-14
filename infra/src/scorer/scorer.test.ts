@@ -160,7 +160,7 @@ describe("scoring", () => {
     expect((await ok(score(repo.work, repo.request(base, deleted)))).report.checks).toHaveLength(2);
   });
 
-  test("hands the root's judges the diff, without locked files", async () => {
+  test("hands the root's judges the whole diff, locked files included", async () => {
     const repo = fixture();
     const base = repo.commit([["ficus.toml", `${ROOT}\n[[judge]]\nname = "greets"\nask = "Does \`diff\` greet?"\n`], ["greeting.txt", "hi\n"]]);
     const head = repo.commit([["greeting.txt", "hello\n"], ["ficus.toml", '[[check]]\nname = "x"\nrun = "true"\n']]);
@@ -168,7 +168,9 @@ describe("scoring", () => {
 
     expect(run.judges.map((judge) => judge.name)).toEqual(["greets"]);
     expect(run.diff).toContain("+hello");
-    expect(run.diff).not.toContain("ficus.toml");
+    // The attempt's ficus.toml is not run, but it is what the next root checks with once accepted.
+    expect(run.diff).toContain("ficus.toml");
+    expect(run.report.cost).toBe(2);
     // Judges are not run in the container.
     expect(run.report.checks).toHaveLength(2);
   });
