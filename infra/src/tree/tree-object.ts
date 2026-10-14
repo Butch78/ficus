@@ -19,7 +19,7 @@ import * as Schema from "effect/Schema";
 import { type Change, change, parsePath, parseRef, Subject, view } from "../core/browse.ts";
 import { diffKey, KEPT_SECONDS, keepable, logKey, readKey } from "../core/kept.ts";
 import { applyStep, closeLedger, CONTENT_TYPE as PROGRESS, emptyLedger, type InitStep, Ledger, outcomeBody, outcomeLine, parseLine, stepLine, type StepState, textOf } from "../core/progress.ts";
-import { type BootPlan, bootPlans, CheckSpec, RebaseReport, type RebaseRequest, ScoreAnswer, ScoreReport, scoreOf, type ScoreRequest, SNAPSHOT_REFUSED_MS, snapshotAfter, warmable } from "../core/scoring.ts";
+import { type BootPlan, bootPlans, CheckSpec, HISTORY_LOG_LIMIT, RebaseReport, type RebaseRequest, ScoreAnswer, ScoreReport, scoreOf, type ScoreRequest, SNAPSHOT_REFUSED_MS, shallowDepth, snapshotAfter, warmable } from "../core/scoring.ts";
 import { conflictBrief, conflictPaths, ConflictBrief } from "../core/conflict.ts";
 import { type DeployParams, RolledBack } from "../core/deploy.ts";
 import { abandonedLesson, deployLesson, type Lesson, Lessons, LESSONS_CHARS, learn, lessonsContext, lessonsPath } from "../core/lessons.ts";
@@ -1272,7 +1272,16 @@ export class TreeObject extends DurableObject<Bindings> {
     const { on, info, token } = prepared.success;
     // The lessons file at the base, like the checks: the attempt cannot rewrite what its judges read.
     const lessons = yield* this.#lessonsAt(on, job.base);
-    const request: ScoreRequest = { remote: info.remote, token: token.plaintext, base: job.base, head: job.head, intent: job.intent, lessons, checks: job.checks, ...plan };
+
+    // Only the history back to the base is cloned; unread, all of it.
+    const depth = yield* Artifacts.log(on, job.head, HISTORY_LOG_LIMIT).pipe(
+      Effect.map((commits) => shallowDepth(commits.map((commit) => commit.hash), job.base)),
+      Effect.orElseSucceed(() => undefined),
+    );
+
+    yield* Effect.annotateCurrentSpan("ficus.scoring.depth", depth ?? 0);
+
+    const request: ScoreRequest = { remote: info.remote, token: token.plaintext, base: job.base, head: job.head, intent: job.intent, lessons, checks: job.checks, depth, ...plan };
     const scored = yield* this.#askSandbox(job.repo, "score", request, ScoreAnswer, job.attempt);
 
     yield* Artifacts.revokeToken(on, token.id).pipe(Effect.catchTag("Artifacts.Error", (error) => Effect.logError(`revoking the scorer's token on ${job.repo}: ${error.message}`)));

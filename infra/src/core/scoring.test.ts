@@ -20,6 +20,7 @@ import {
   scoreOf,
   ScoreReport,
   ScoreRequest,
+  shallowDepth,
   bootPlans,
   runsEverything,
   skipReason,
@@ -278,5 +279,17 @@ describe("a check's paths", () => {
     const skipped: CheckOutcome = { ...outcome("infra", true), skipped: "touched nothing under infra/**" };
 
     expect(ok(scoreOf({ checks: [skipped, outcome("always", true)], cost: 1 }))).toEqual({ checks_passed: 2, checks_total: 2, cost: 1, confidence: null });
+  });
+});
+
+describe("a shallow clone's depth", () => {
+  test("reaches the base: the head is one deep", () => {
+    expect(shallowDepth(["c3", "c2", "c1", "base"], "base")).toBe(4);
+    expect(shallowDepth(["head", "base", "older"], "base")).toBe(2);
+  });
+
+  test("a base not in the first-parent log clones it all", () => {
+    expect(shallowDepth(["c2", "c1"], "base")).toBeUndefined();
+    expect(shallowDepth([], "base")).toBeUndefined();
   });
 });

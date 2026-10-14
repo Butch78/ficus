@@ -183,6 +183,53 @@ describe("scoring", () => {
     expect([run.judges.length, run.diff]).toEqual([0, ""]);
   });
 
+  test("clones only the history back to the base", async () => {
+    const repo = fixture();
+
+    repo.commit([["old.txt", "before the base\n"]]);
+
+    const base = repo.commit([["ficus.toml", ROOT], ["greeting.txt", "hi\n"]]);
+
+    repo.commit([["greeting.txt", "hey\n"]]);
+
+    const head = repo.commit([["greeting.txt", "hello\n"]]);
+    // A file:// remote, since git ignores --depth when cloning a plain path.
+    const request = { ...repo.request(base, head), remote: `file://${repo.origin}`, depth: 3 };
+    const { workdir } = await ok(prepare(repo.work, request));
+    const clone = join(workdir, "attempt");
+
+    expect(gitIn(clone, ["rev-parse", "--is-shallow-repository"])).toBe("true");
+    expect(gitIn(clone, ["rev-list", "--count", "HEAD"])).toBe("3");
+
+    const run = await ok(score(join(repo.work, "again"), request));
+
+    expect(passes(run.report)).toBe(true);
+  });
+
+  test("a depth short of the base fetches the rest", async () => {
+    const repo = fixture();
+    const base = repo.commit([["ficus.toml", ROOT], ["greeting.txt", "hi\n"]]);
+
+    repo.commit([["greeting.txt", "hey\n"]]);
+
+    const head = repo.commit([["greeting.txt", "hello\n"]]);
+    const { workdir } = await ok(prepare(repo.work, { ...repo.request(base, head), remote: `file://${repo.origin}`, depth: 1 }));
+
+    expect(gitIn(join(workdir, "attempt"), ["rev-parse", "--is-shallow-repository"])).toBe("false");
+  });
+
+  test("a shallow clone still refuses a head that does not descend from the base", async () => {
+    const repo = fixture();
+    const base = repo.commit([["ficus.toml", ROOT], ["greeting.txt", "hello\n"]]);
+
+    repo.git(["checkout", "--quiet", "--orphan", "other"]);
+
+    const unrelated = repo.commit([["greeting.txt", "hello, elsewhere\n"]]);
+    const error = await failure(prepare(repo.work, { ...repo.request(base, unrelated), remote: `file://${repo.origin}`, depth: 2 }));
+
+    expect(error.kind).toBe("NotDescendant");
+  });
+
   test("a root without ficus.toml cannot score anything", async () => {
     const repo = fixture();
     const base = repo.commit([["greeting.txt", "hi\n"]]);

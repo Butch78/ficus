@@ -193,7 +193,9 @@ deadline 2026-10-14.
   stops, and a Durable Object whose first start timed out during an image pull fails every later start (crabbox #2625). Internet is off; `Egress` (a
   WorkerEntrypoint via ctx.exports with props) is the only way out: prepare phase = attempt repo (token
   added by Egress, never in the container) + nix/devenv caches; check phase = nothing.
-  `ficus-scorer prepare|check` is a CLI run by native exec. The root's `ficus.toml` and devenv files
+  `ficus-scorer prepare|check` is a CLI run by native exec. Scoring clones shallow: the tree reads the head's first-parent log (up to
+  `HISTORY_LOG_LIMIT`) and sends the `depth` that reaches the base (`shallowDepth`); a base past it (a merge's other
+  parent) unshallows. So a root's checks see no history before the base. Rebases, deploys and workspaces clone it all. The root's `ficus.toml` and devenv files
   come from the base commit (LOCKED_PATHS), so a attempt cannot change its own checks; the task's checks
   travel in the request and run after the root's. Cost = diff lines; the report also lists `touched` paths.
   A check (root or task) may name `paths` (globs, `src/core/paths.ts`: `**`, `*`, `?`, a directory takes what is under it):

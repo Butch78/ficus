@@ -688,7 +688,7 @@ export class Sandbox extends DurableObject<Bindings> {
    */
   readonly #scoreIn = Effect.fn("Sandbox.scoreIn")(function* (this: Sandbox, score: ScoreRequest, say: Report, snapshot: string | undefined, warm: boolean) {
     const repo = repoOf(score.remote);
-    const attempt = JSON.stringify({ remote: score.remote, base: score.base, head: score.head, checks: score.checks ?? [] });
+    const attempt = JSON.stringify({ remote: score.remote, base: score.base, head: score.head, checks: score.checks ?? [], depth: score.depth });
 
     // A container an earlier run left holds its attempt: a snapshot must
     // hold the base alone, and a boot from one must be this one.

@@ -324,6 +324,8 @@ export const ScoreRequest = Schema.Struct({
   snapshot: Schema.optionalKey(Schema.String),
   /** With no snapshot: warm one of the base first, for the base's later scorings. */
   warm: Schema.optionalKey(Schema.Boolean),
+  /** How much history reaches the base from the head (`shallowDepth`): clone only that much; absent, all of it. */
+  depth: Schema.optional(Schema.Number),
 });
 
 export type ScoreRequest = typeof ScoreRequest.Type;
@@ -356,12 +358,30 @@ export const bootPlans = (bases: ReadonlyArray<string>, kept: ReadonlyMap<string
   });
 };
 
+/** How far back the tree reads the head's first-parent log to find the base (`shallowDepth`). */
+export const HISTORY_LOG_LIMIT = 1000;
+
+/**
+ * The clone depth that reaches `base` from the head, given the head's
+ * first-parent log (newest first): a scoring needs the base and head, the
+ * diff between them and that one descends from the other, not the history
+ * before the base, and a shallow clone of it takes seconds where a long
+ * history takes a minute. `undefined` when `base` is not in the log: clone it all.
+ */
+export const shallowDepth = (firstParents: ReadonlyArray<string>, base: string): number | undefined => {
+  const at = firstParents.indexOf(base);
+
+  return at === -1 ? undefined : at + 1;
+};
+
 /** What the container is told: no credentials, which the sandbox's egress adds. */
 export const AttemptRef = Schema.Struct({
   remote: Schema.String,
   base: Oid,
   head: Oid,
   checks: Schema.optionalKey(Schema.Array(CheckSpec)),
+  /** Clone this many commits back from the head (`shallowDepth`), not the whole history. */
+  depth: Schema.optionalKey(Schema.Number),
 });
 
 export type AttemptRef = typeof AttemptRef.Type;

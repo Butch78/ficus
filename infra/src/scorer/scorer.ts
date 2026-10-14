@@ -144,12 +144,25 @@ export const prepare = Effect.fn("Scorer.prepare")(function* (root: string, atte
   yield* stepped(
     "clone",
     Effect.gen(function* () {
-      yield* git(workdir, "clone", ["clone", "--quiet", "--no-checkout", attempt.remote, repo]);
-      yield* git(repo, "checkout", ["checkout", "--quiet", "--detach", head]);
+      const shallow = attempt.depth === undefined ? [] : ["--depth", String(attempt.depth), "--no-single-branch"];
 
-      if (!(yield* succeeds(repo, ["merge-base", "--is-ancestor", base, head]))) {
+      yield* git(workdir, "clone", ["clone", "--quiet", "--no-checkout", ...shallow, attempt.remote, repo]);
+
+      let descends = yield* succeeds(repo, ["merge-base", "--is-ancestor", base, head]);
+
+      // The depth follows first parents: a base reached only through a merge's other parent, or a head off the
+      // branches, is past it. The whole history answers either way.
+      // (A short history may be whole already, and git refuses to unshallow that.)
+      if (!descends && shallow.length > 0 && (yield* git(repo, "shallow?", ["rev-parse", "--is-shallow-repository"])).trim() === "true") {
+        yield* git(repo, "unshallow", ["fetch", "--quiet", "--unshallow", "origin"]);
+        descends = yield* succeeds(repo, ["merge-base", "--is-ancestor", base, head]);
+      }
+
+      if (!descends) {
         return yield* new ScoreError({ kind: "NotDescendant", message: "head does not descend from base" });
       }
+
+      yield* git(repo, "checkout", ["checkout", "--quiet", "--detach", head]);
     }),
     phases,
   );
