@@ -80,11 +80,25 @@ export const Task = Schema.Struct({
 
 export type Task = typeof Task.Type;
 
+/** A rebase that did not apply, as the retry the machine started for it records it. */
+export const Conflict = Schema.Struct({
+  /** The paths the attempt's commits conflicted in on the head. */
+  paths: Schema.Array(Schema.String),
+  /** The head the retry re-applies the attempt's change on. */
+  onto: NodeId,
+});
+
+export type Conflict = typeof Conflict.Type;
+
 export const CloseReason = Schema.Union([
   /** Another attempt of the same task was accepted. */
   Schema.Struct({ Lost: Schema.Struct({ to: AttemptId }) }),
-  /** The head moved past this attempt's base and it was started again. */
-  Schema.Struct({ Retried: Schema.Struct({ into: AttemptId }) }),
+  /**
+   * The head moved past this attempt's base and it was started again. With
+   * `conflict`, the machine started it after a rebase conflicted, for a
+   * built-in agent to re-apply the change (`resolveConflict`).
+   */
+  Schema.Struct({ Retried: Schema.Struct({ into: AttemptId, conflict: Schema.optionalKey(Conflict) }) }),
   /** The head moved past this attempt's base and its commits were replayed onto the head, in `into`. */
   Schema.Struct({ Rebased: Schema.Struct({ into: AttemptId }) }),
   /** The agent gave up, or the tree's owner cut it. */
@@ -606,12 +620,7 @@ const behindAndFree = (tree: Tree, id: AttemptId) =>
     return old;
   });
 
-/**
- * Start `behind` again from the head: same task, same agent. The old attempt
- * goes to the history, which is what the new one should read first. A task
- * retries at most `MAX_RETRIES` times.
- */
-export const retry = (tree: Tree, id: AttemptId) =>
+const retryInto = (tree: Tree, id: AttemptId, conflict: Conflict | undefined) =>
   Result.gen(function* () {
     const old = yield* behindAndFree(tree, id);
     const owner = tree.tasks[old.task];
@@ -622,11 +631,79 @@ export const retry = (tree: Tree, id: AttemptId) =>
     }
 
     const started = yield* start(tree, old.task, old.agent);
-    const closed = yield* close(started.tree, id, { Retried: { into: started.attempt } });
+    const reason: CloseReason = { Retried: conflict === undefined ? { into: started.attempt } : { into: started.attempt, conflict } };
+    const closed = yield* close(started.tree, id, reason);
     const counted = owner === undefined ? closed : withTask(closed, { ...owner, retries: retries + 1 });
 
     return { tree: counted, attempt: started.attempt };
   });
+
+/**
+ * Start `behind` again from the head: same task, same agent. The old attempt
+ * goes to the history, which is what the new one should read first. A task
+ * retries at most `MAX_RETRIES` times.
+ */
+export const retry = (tree: Tree, id: AttemptId) => retryInto(tree, id, undefined);
+
+/** Who takes a behind attempt whose rebase conflicted. */
+export type ConflictTurn = Data.TaggedEnum<{
+  /** The machine retries it on the head for a built-in agent, with the conflict's context. */
+  Resolve: { readonly onto: NodeId };
+  /** A bring-your-own agent made it: retrying is that agent's call. */
+  Agent: {};
+  /** The task has used its retries: its owner decides. */
+  Owner: { readonly retries: number };
+}>;
+
+export const ConflictTurn = Data.taggedEnum<ConflictTurn>();
+
+/**
+ * Who takes `behind`, live with a conflicted rebase: the machine only for an
+ * attempt a built-in agent made (`builtIn`; the tree keeps which ones), so
+ * its organization was let in and metered when that agent started, and only
+ * while the task has retries left.
+ */
+export const conflictTurn = (tree: Tree, id: AttemptId, builtIn: boolean): Result.Result<ConflictTurn, TreeError> =>
+  Result.gen(function* () {
+    const old = yield* behindAndFree(tree, id);
+    const retries = tree.tasks[old.task]?.retries ?? 0;
+
+    if (!builtIn) {
+      return ConflictTurn.Agent();
+    }
+
+    return retries >= MAX_RETRIES ? ConflictTurn.Owner({ retries }) : ConflictTurn.Resolve({ onto: tree.head });
+  });
+
+/** Retry `behind` on the head after its rebase conflicted in `paths`, recording the conflict; a retry like any other, counted against `MAX_RETRIES`. */
+export const resolveConflict = (tree: Tree, id: AttemptId, paths: ReadonlyArray<string>) => retryInto(tree, id, { paths: [...paths], onto: tree.head });
+
+/**
+ * `id` and the attempts it was rebased from, newest first: a rebase's fresh
+ * attempt is the machine's, so whoever worked the change is found back
+ * along this line.
+ */
+export const rebasedFrom = (tree: Tree, id: AttemptId): ReadonlyArray<AttemptId> => {
+  const line: Array<AttemptId> = [id];
+
+  const rebasedInto = new Map(
+    attempts(tree).flatMap((entry) =>
+      Phase.$match(phase(entry.state), {
+        Working: () => [],
+        Checking: () => [],
+        Scored: () => [],
+        Accepted: () => [],
+        Closed: ({ reason }) => ("Rebased" in reason ? [[reason.Rebased.into, entry.id] as const] : []),
+      }),
+    ),
+  );
+
+  for (let from = rebasedInto.get(id); from !== undefined && !line.includes(from); from = rebasedInto.get(from)) {
+    line.push(from);
+  }
+
+  return line;
+};
 
 /**
  * Behind attempts with a commit to replay that no rebase has been tried on.

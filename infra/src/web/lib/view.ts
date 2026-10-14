@@ -22,7 +22,15 @@ export const closeReason = (reason: CloseReason) => {
   }
 
   if ("Retried" in reason) {
-    return `retried as attempt ${reason.Retried.into}`;
+    const { into, conflict } = reason.Retried;
+
+    if (conflict !== undefined) {
+      const where = conflict.paths.length === 0 ? "" : ` in ${conflict.paths.join(", ")}`;
+
+      return `rebase conflicted${where}; an agent is re-applying it on node ${conflict.onto} as attempt ${into}`;
+    }
+
+    return `retried as attempt ${into}`;
   }
 
   if ("Rebased" in reason) {

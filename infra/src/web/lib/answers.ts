@@ -22,7 +22,8 @@ export type Score = typeof Score.Type;
 
 export const CloseReason = Schema.Union([
   Schema.Struct({ Lost: Schema.Struct({ to: Id }) }),
-  Schema.Struct({ Retried: Schema.Struct({ into: Id }) }),
+  /** With `conflict`, the tree retried it after its rebase conflicted, for a built-in agent to re-apply on node `onto`. */
+  Schema.Struct({ Retried: Schema.Struct({ into: Id, conflict: Schema.optional(Schema.Struct({ paths: Schema.Array(Schema.String), onto: Id })) }) }),
   Schema.Struct({ Rebased: Schema.Struct({ into: Id }) }),
   Schema.Struct({ Abandoned: Schema.Struct({ note: Schema.String }) }),
 ]);

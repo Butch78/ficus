@@ -61,6 +61,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { Type } from "typebox";
 import { Clef } from "../clef/clef.ts";
+import { ConflictBrief, conflictInstructions } from "../core/conflict.ts";
 import { LOCKED_PATHS } from "../core/scoring.ts";
 import { activity } from "./activity.ts";
 import { clip, describe, DIFF, effort, MAX_REJECTIONS, objections, type Objection, PLAN } from "./gates.ts";
@@ -105,6 +106,8 @@ export const Assignment = Schema.Struct({
   token: Schema.String,
   base_commit: Schema.String,
   history: Schema.Array(CompostEntry),
+  /** Set when the tree retried a conflicted rebase for this agent: the change to re-apply on the head. */
+  conflict: Schema.optional(ConflictBrief),
 });
 
 export interface Assignment extends Schema.Schema.Type<typeof Assignment> {}
@@ -228,6 +231,7 @@ export const prompt = (assignment: Assignment): string => {
     "",
     "Earlier attempts at this task (the history):",
     history,
+    ...(assignment.conflict === undefined ? [] : ["", conflictInstructions(assignment.conflict)]),
   ].join("\n");
 };
 

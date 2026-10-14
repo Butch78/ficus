@@ -513,6 +513,86 @@ describe("the tree", () => {
     ]);
   });
 
+  test("a conflicted rebase goes back to a built-in agent with the conflict, and to a brought agent as before", () => {
+    const g = grow();
+    const a = g.task("a");
+    const b = g.task("b");
+    const aAttempt = g.attempt(a, "x");
+    const bAttempt = g.attempt(b, "kimi-1");
+
+    g.scored(aAttempt, oid("a"), passing(1), ["slug.py"]);
+    g.scored(bAttempt, oid("b"), passing(1), ["slug.py"]);
+    g.accept(a);
+
+    const started = ok(T.rebaseStart(g.get(), bAttempt));
+
+    g.set(ok(T.rebaseFailed(started.tree, started.fresh, "conflicts in slug.py")));
+
+    // Who takes it: the agent that brought itself, or the machine for a built-in one.
+    expect(ok(T.conflictTurn(g.get(), bAttempt, false))).toEqual(T.ConflictTurn.Agent());
+    expect(ok(T.conflictTurn(g.get(), bAttempt, true))).toEqual(T.ConflictTurn.Resolve({ onto: g.get().head }));
+
+    const resolved = ok(T.resolveConflict(g.get(), bAttempt, ["slug.py"]));
+
+    g.set(resolved.tree);
+    expect(T.task(g.get(), b)?.retries).toBe(1);
+    expect(T.attempt(g.get(), resolved.attempt)).toMatchObject({ agent: "kimi-1", base: g.get().head, state: "Working" });
+    expect(T.historyOf(g.get(), b).at(-1)?.reason).toEqual({ Retried: { into: resolved.attempt, conflict: { paths: ["slug.py"], onto: g.get().head } } });
+
+    // Settled: nothing left to take.
+    expect(refusal(T.conflictTurn(g.get(), bAttempt, true))).toBe("NotOpen");
+    expect(Result.isSuccess(T.decodeTree(JSON.parse(JSON.stringify(g.get()))))).toBe(true);
+  });
+
+  test("a conflict goes to the owner once the task has used its retries", () => {
+    const g = grow();
+    const slow = g.task("slow");
+    let attempt = g.attempt(slow, "kimi-1");
+
+    for (let round = 0; round < T.MAX_RETRIES; round += 1) {
+      const fast = g.task(`fast ${round}`);
+
+      g.scored(g.attempt(fast, "f"), oid("a"), passing(1));
+      g.accept(fast);
+
+      const retried = ok(T.resolveConflict(g.get(), attempt, []));
+
+      g.set(retried.tree);
+      attempt = retried.attempt;
+    }
+
+    const last = g.task("last");
+
+    g.scored(g.attempt(last, "f"), oid("a"), passing(1));
+    g.accept(last);
+    expect(ok(T.conflictTurn(g.get(), attempt, true))).toEqual(T.ConflictTurn.Owner({ retries: T.MAX_RETRIES }));
+    expect(refusal(T.resolveConflict(g.get(), attempt, []))).toBe("TaskExhausted");
+  });
+
+  test("an attempt's line runs back through the rebases it came from", () => {
+    const g = grow();
+    const a = g.task("a");
+    const b = g.task("b");
+    const c = g.task("c");
+    const bAttempt = g.attempt(b, "kimi-1");
+
+    g.scored(g.attempt(a, "x"), oid("a"), passing(1));
+    g.scored(bAttempt, oid("b"), passing(1));
+    g.accept(a);
+
+    const first = ok(T.rebaseStart(g.get(), bAttempt));
+
+    g.set(ok(T.scored(ok(T.rebaseDone(first.tree, first.fresh, oid("c"))), first.fresh, passing(1), [])));
+    g.scored(g.attempt(c, "y"), oid("d"), passing(1));
+    g.accept(c);
+
+    const second = ok(T.rebaseStart(g.get(), first.fresh));
+
+    g.set(second.tree);
+    expect(T.rebasedFrom(g.get(), first.fresh)).toEqual([first.fresh, bAttempt]);
+    expect(T.rebasedFrom(g.get(), bAttempt)).toEqual([bAttempt]);
+  });
+
   test("a rebase the sandbox could not run is offered again", () => {
     const g = grow();
     const a = g.task("a");

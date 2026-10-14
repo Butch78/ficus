@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import * as Schema from "effect/Schema";
 import { Tree } from "./answers.ts";
-import { tasks, crumbs, join, status, treeFacts, trunk } from "./view.ts";
+import { closeReason, crumbs, join, status, tasks, treeFacts, trunk } from "./view.ts";
 
 const a = "a".repeat(40);
 
@@ -81,6 +81,9 @@ describe("status", () => {
     });
     expect(status({ Accepted: { node: 3 } }).tone).toBe("accepted");
     expect(status({ Closed: { reason: { Retried: { into: 9 } } } }).label).toBe("closed: retried as attempt 9");
+    expect(closeReason({ Retried: { into: 9, conflict: { paths: ["slug.py"], onto: 4 } } })).toBe(
+      "rebase conflicted in slug.py; an agent is re-applying it on node 4 as attempt 9",
+    );
     expect(status({ Closed: { reason: { Abandoned: { note: "gave up" } } } }).label).toBe("closed: abandoned: gave up");
   });
 });

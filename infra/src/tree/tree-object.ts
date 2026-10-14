@@ -20,6 +20,7 @@ import { type Change, change, parsePath, parseRef, Subject, view } from "../core
 import { diffKey, KEPT_SECONDS, keepable, logKey, readKey } from "../core/kept.ts";
 import { applyStep, closeLedger, CONTENT_TYPE as PROGRESS, emptyLedger, type InitStep, Ledger, outcomeBody, outcomeLine, parseLine, stepLine, type StepState, textOf } from "../core/progress.ts";
 import { type BootPlan, bootPlans, CheckSpec, RebaseReport, type RebaseRequest, ScoreAnswer, ScoreReport, scoreOf, type ScoreRequest, SNAPSHOT_REFUSED_MS, snapshotAfter, warmable } from "../core/scoring.ts";
+import { conflictBrief, conflictPaths, ConflictBrief } from "../core/conflict.ts";
 import { type DeployParams, RolledBack } from "../core/deploy.ts";
 import { hasCredentials, withoutCredentials } from "../core/remote.ts";
 import { copyBranch } from "./git-copy.ts";
@@ -84,6 +85,9 @@ const SANDBOX_TOKEN_TTL_SECS = 3600;
 /** An attempt whose scoring (or rebase) fails this many times for the sandbox's own reasons is abandoned. */
 const SANDBOX_ATTEMPTS = 5;
 
+/** The largest head file a conflict's agent is shown (a part of): larger ones are named, not read. */
+const HEAD_FILE_MAX_BYTES = 256 * 1024;
+
 const SANDBOX_RETRY_MS = 60_000;
 
 /** Where the tree keeps the container snapshot of a base node's commit, which scorings of attempts on it boot from. */
@@ -118,6 +122,8 @@ export const Started = Schema.Struct({
   token: Schema.String,
   base_commit: Schema.String,
   history: Schema.Array(T.HistoryEntry),
+  /** For a retry the machine started after a rebase conflicted: what conflicted and the change to re-apply. */
+  conflict: Schema.optionalKey(ConflictBrief),
 });
 
 export type Started = typeof Started.Type;
@@ -1361,6 +1367,7 @@ export class TreeObject extends DurableObject<Bindings> {
     }
 
     let retry = false;
+    const conflicted: Array<{ readonly behind: AttemptId; readonly reason: string }> = [];
 
     for (const [job, outcome] of started.jobs.map((each, at) => [each, outcomes[at]] as const)) {
       const attemptsKey = `rebase-attempts:${job.behind}`;
@@ -1372,6 +1379,7 @@ export class TreeObject extends DurableObject<Bindings> {
         // The agent's turn: the behind attempt stays, pointing at the abandoned rebase.
         latest = settle(latest, job.fresh, T.rebaseFailed(latest, job.fresh, `rebase: ${outcome.reason}`));
         yield* Effect.promise(() => this.ctx.storage.delete(attemptsKey));
+        conflicted.push({ behind: job.behind, reason: outcome.reason });
       } else if (outcome !== undefined) {
         const attempts = ((yield* Effect.promise(() => this.ctx.storage.get<number>(attemptsKey))) ?? 0) + 1;
         const note = `rebase attempt ${attempts} failed: ${outcome.reason}`;
@@ -1389,8 +1397,80 @@ export class TreeObject extends DurableObject<Bindings> {
 
     yield* this.#save(latest);
 
+    for (const { behind, reason } of conflicted) {
+      yield* this.#resolveConflict(behind, reason).pipe(
+        Effect.catchTag("Tree.Refused", (refused) => Effect.logError(`handing attempt ${behind}'s conflict to an agent: ${refused.message}`)),
+      );
+    }
+
     if (retry) {
       yield* Effect.promise(() => this.ctx.storage.setAlarm(Date.now() + SANDBOX_RETRY_MS));
     }
+  });
+
+  /**
+   * A rebase of `behind` conflicted: when a built-in agent made the change
+   * (it, or an attempt it was rebased from, has a model kept), retry it on
+   * the head for a built-in agent with the conflict's context. Otherwise the
+   * retry is its own agent's, or past `MAX_RETRIES` its owner's.
+   */
+  readonly #resolveConflict = Effect.fn("Tree.resolveConflict")(function* (this: TreeObject, behind: AttemptId, reason: string) {
+    const tree = yield* this.#tree();
+    const entry = T.attempt(tree, behind);
+    let model: string | undefined;
+
+    for (const from of T.rebasedFrom(tree, behind)) {
+      model ??= yield* Agents.model(this.ctx.storage, from);
+    }
+
+    const turn = yield* fromTree(T.conflictTurn(tree, behind, model !== undefined));
+
+    if (entry === undefined || model === undefined || !T.ConflictTurn.$is("Resolve")(turn)) {
+      return;
+    }
+
+    const paths = conflictPaths(reason, T.behind(tree, entry)?.overlap ?? []);
+    const brief = yield* this.#conflictBrief(tree, entry, turn.onto, paths);
+    const retried = yield* fromTree(T.resolveConflict(tree, behind, paths));
+
+    yield* this.#save(retried.tree);
+
+    for (const failure of yield* this.#revokeAll(retried.tree, [behind])) {
+      yield* Effect.logError(`revoking the conflicted attempt's tokens: ${failure}`);
+    }
+
+    const started = yield* this.#forkAttempt(retried.tree, retried.attempt);
+
+    yield* Agents.tendStarted(this.ctx.storage, T.name(retried.tree), model, { ...started, conflict: brief });
+    yield* this.#alarmNow();
+  });
+
+  /** What a conflict's agent is shown: the attempt's diff against its old base and the head's version of each conflicting path, as far as Artifacts reads them. */
+  readonly #conflictBrief = Effect.fn("Tree.conflictBrief")(function* (this: TreeObject, tree: T.Tree, entry: T.Attempt, onto: NodeId, paths: ReadonlyArray<string>) {
+    const base = T.node(tree, entry.base)?.commit;
+    const commit = T.attemptCommit(entry);
+
+    const intended = yield* Effect.gen({ self: this }, function* () {
+      if (base === undefined || commit === undefined) {
+        return [];
+      }
+
+      const on = yield* Artifacts.repo(this.#artifacts(), entry.repo);
+      const [old, updated] = [yield* Artifacts.readCommit(on, base), yield* Artifacts.readCommit(on, commit)];
+
+      return (yield* diffTrees(on, old?.treeHash, updated?.treeHash)).files;
+    }).pipe(Effect.catchTag("Artifacts.Error", (error) => Effect.logError(`reading attempt ${entry.id}'s change: ${error.message}`).pipe(Effect.as([]))));
+
+    const head = T.head(tree);
+
+    const files = yield* Effect.forEach(paths, (path) =>
+      Artifacts.repo(this.#artifacts(), head.repo).pipe(
+        Effect.flatMap((on) => Artifacts.readFile(on, head.commit, path, HEAD_FILE_MAX_BYTES)),
+        Effect.map((file) => ({ path, content: file?.bytes })),
+        Effect.catchTag("Artifacts.Error", () => Effect.succeed({ path, content: undefined })),
+      ),
+    );
+
+    return conflictBrief(entry.id, onto, paths, intended, files);
   });
 }

@@ -14,7 +14,12 @@ deadline 2026-10-14.
   history; never a merge). A submitted attempt left behind is **rebased** first: the alarm replays its
   commits onto the head in a fresh attempt (`rebaseStart/Done/Failed/Retry`) and scores it there;
   only a conflict sends it back to its agent to **retry** (`MAX_RETRIES` per task, then the
-  owner decides). Attempts and nodes record `touched` paths, so `behind` can say what overlaps.
+  owner decides). A conflict on a change a built-in agent made (it, or an attempt it was `rebasedFrom`, has a kept
+  `agent:<id>` model) is retried by the alarm itself (`conflictTurn`, `resolveConflict`: `Retried {into, conflict: {paths,
+  onto}}`) for a built-in agent, whose assignment carries `src/core/conflict.ts`'s brief (paths, the head's files, the old
+  diff) and is told to re-apply the change; a brought agent's conflict stays its own retry. That agent starts in the
+  alarm, past the Api: neither the agents allowlist nor `DAILY_CAPS` sees it. It is only for changes whose first agent
+  passed them, and `MAX_RETRIES` bounds it. Attempts and nodes record `touched` paths, so `behind` can say what overlaps.
   Tasks carry their own `checks` (run after the root's, never in the repo). `acceptNext` takes the
   oldest ready task. `release` is a pointer at a node (older node = rollback). Keep matches exhaustive
   (`Phase` is a `Data.TaggedEnum`; stored enums stay externally tagged, `legacy.ts` renames old keys).
