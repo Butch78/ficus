@@ -36,6 +36,8 @@
  * `ficus-scorer fs <op>` and `ficus-scorer exec`, the request JSON on stdin;
  * each prints pi's `Result` JSON and exits 0, failures in the answer.
  */
+import { mkdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
@@ -48,6 +50,44 @@ import * as Workspace from "./workspace.ts";
 
 /** Where `prepare` puts workdirs: one per head commit. */
 const WORK_ROOT = "/work/score";
+
+/**
+ * A scoring's workdir sits on a RAM disk, and so does bun's package cache (so its installs hardlink there): the
+ * sandbox's disk writes small files slowly, and on a standard-4 `bun install` of Ficus took 61 s on it against
+ * 18 s in RAM (2026-10-14). tmpfs takes memory only as it fills, up to this much of the container's.
+ */
+const RAM_DISK_SIZE = "75%";
+
+const BUN_CACHE = join(WORK_ROOT, ".bun-cache");
+
+const mountedAt = async (path: string) => (await readFile("/proc/mounts", "utf8")).split("\n").some((line) => line.split(" ")[1] === path);
+
+/** Mount the RAM disk at `WORK_ROOT` unless it is there; false where it cannot be (not root, no tmpfs), and the disk serves. */
+const ramDisk = Effect.tryPromise(async () => {
+  if (await mountedAt(WORK_ROOT)) {
+    return true;
+  }
+
+  await mkdir(WORK_ROOT, { recursive: true });
+
+  const mounting = Bun.spawn(["mount", "-t", "tmpfs", "-o", `size=${RAM_DISK_SIZE}`, "ficus-score", WORK_ROOT], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+
+  return (await mounting.exited) === 0;
+}).pipe(Effect.orElseSucceed(() => false));
+
+/** With the RAM disk mounted, bun's cache moves onto it for every command the scorer runs (they inherit its environment). */
+const onRamDisk = <A>(effect: Effect.Effect<A, ScoreError>) =>
+  Effect.tryPromise(() => mountedAt(WORK_ROOT)).pipe(
+    Effect.orElseSucceed(() => false),
+    Effect.tap((mounted) =>
+      Effect.sync(() => {
+        if (mounted) {
+          process.env["BUN_INSTALL_CACHE_DIR"] = BUN_CACHE;
+        }
+      }),
+    ),
+    Effect.andThen(effect),
+  );
 
 const USAGE =
   "usage: ficus-scorer prepare '<AttemptRef JSON>' | fetch <workdir> | check <workdir> | hosts <checkout> | rebase '<RebaseRef JSON>' | deploy-prepare '<DeployRef JSON>' | deploy <workdir> | fs <op> | exec";
@@ -71,17 +111,18 @@ const command = (args: ReadonlyArray<string>): Effect.Effect<string, ScoreError>
 
   switch (name) {
     case "prepare":
-      return decodeAttempt(argument).pipe(
+      return ramDisk.pipe(
+        Effect.andThen(decodeAttempt(argument)),
         Effect.mapError(unreadable("attempt")),
-        Effect.flatMap((attempt) => prepare(WORK_ROOT, attempt)),
+        Effect.flatMap((attempt) => onRamDisk(prepare(WORK_ROOT, attempt))),
         Effect.map((prepared) => JSON.stringify(prepared)),
       );
 
     case "fetch":
-      return fetch(argument).pipe(Effect.as("{}"));
+      return onRamDisk(fetch(argument)).pipe(Effect.as("{}"));
 
     case "check":
-      return check(argument).pipe(Effect.map((run) => JSON.stringify(run)));
+      return onRamDisk(check(argument)).pipe(Effect.map((run) => JSON.stringify(run)));
 
     case "hosts":
       return fetchHosts(argument).pipe(Effect.map((hosts) => JSON.stringify(hosts)));

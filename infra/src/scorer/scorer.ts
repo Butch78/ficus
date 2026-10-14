@@ -197,8 +197,12 @@ export const prepare = Effect.fn("Scorer.prepare")(function* (root: string, atte
   return { workdir, hosts: fetch.hosts ?? [] } satisfies PreparedAttempt;
 });
 
-/** `command` under bash in `repo`, inside the root's devenv shell when it has one. */
-const inShell = (inDevenv: boolean, command: string) => (inDevenv ? ["devenv", "--quiet", "shell", "--", "bash", "-c", command] : ["bash", "-c", command]);
+/**
+ * `command` under bash in `repo`, inside the root's devenv shell when it has one. The shell is built by then, so it is
+ * entered `--offline`: otherwise devenv sets cachix up and asks every substituter for its cache info on each entry,
+ * and with the network closed (checks) or open to other hosts (fetch) that cost 20 s a command (2026-10-14).
+ */
+const inShell = (inDevenv: boolean, command: string) => (inDevenv ? ["devenv", "--quiet", "--offline", "shell", "--", "bash", "-c", command] : ["bash", "-c", command]);
 
 /** The derivation devenv says it could not build, from its output. */
 export const failedDerivation = (output: string) => /Cannot build '(\/nix\/store\/[^']+\.drv)'/.exec(output)?.[1];

@@ -113,6 +113,9 @@ const EXEC_ENV = {
   // A root whose devenv uses secretspec (Ficus's own) asks why its shell is
   // entered; nothing in a sandbox reads a secret.
   SECRETSPEC_REASON: "Ficus sandbox: build and check, no secrets",
+  // Only the binary caches NIX_HOSTS opens: the Determinate install adds install.determinate.systems, which egress
+  // never opens, and asking it for its cache info (five retries, twice) cost 20 s on every devenv shell (2026-10-14).
+  NIX_CONFIG: "substituters = https://cache.nixos.org/ https://devenv.cachix.org",
 } as const;
 
 const SCORER = "/usr/local/bin/ficus-scorer";

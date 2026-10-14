@@ -195,7 +195,13 @@ deadline 2026-10-14.
   added by Egress, never in the container) + nix/devenv caches; check phase = nothing.
   `ficus-scorer prepare|check` is a CLI run by native exec. Scoring clones shallow: the tree reads the head's first-parent log (up to
   `HISTORY_LOG_LIMIT`) and sends the `depth` that reaches the base (`shallowDepth`); a base past it (a merge's other
-  parent) unshallows. So a root's checks see no history before the base. Rebases, deploys and workspaces clone it all. The root's `ficus.toml` and devenv files
+  parent) unshallows. So a root's checks see no history before the base. Rebases, deploys and workspaces clone it all.
+  The scorer mounts a RAM disk (tmpfs, up to 75% of memory) at `/work/score` for scoring and moves bun's package cache
+  onto it (`BUN_INSTALL_CACHE_DIR`): the sandbox's btrfs disk writes small files slowly (`bun install` of Ficus 61 s
+  there, 18 s in RAM). Built shells are entered `devenv --offline` (fetch, checks, deploy run), and `EXEC_ENV`'s
+  `NIX_CONFIG` keeps only the substituters `NIX_HOSTS` opens: devenv otherwise set cachix up and asked
+  install.determinate.systems (added by the Determinate install) for cache info on every entry, 20 s a command with
+  the network closed. Measured 2026-10-14 on a standard-4: setup + checks of Ficus 233 s → 99 s. The root's `ficus.toml` and devenv files
   come from the base commit (LOCKED_PATHS), so a attempt cannot change its own checks; the task's checks
   travel in the request and run after the root's. Cost = diff lines; the report also lists `touched` paths.
   A check (root or task) may name `paths` (globs, `src/core/paths.ts`: `**`, `*`, `?`, a directory takes what is under it):
