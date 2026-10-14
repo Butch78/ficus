@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# The end-to-end test on the upgrade path prod takes: deploy the commit prod
+# runs (or <from>) to a throwaway stage, deploy this checkout over it, run
+# scripts/e2e, destroy the stage. Run it before releasing anything that
+# touches the sandbox, containers or Durable Objects: on 2026-10-13 every
+# failure of the move to Durable Object-managed containers showed only when
+# upgrading from prod's own state, never on a fresh stage.
+#
+#   scripts/e2e-upgrade [stage=upg] [from=<prod's released commit>]
+#
+# Needs ~/.config/ficus/.env (FICUS_DEPLOY_TOKEN, CLOUDFLARE_ACCOUNT_ID), FICUS_API
+# when the stage's Api is not at ficus-api-<stage>.fruitcards.workers.dev, and
+# the org key in FICUS_KEY_FILE to find prod's released commit when <from> is
+# not given. Each commit deploys from its own checkout, inside its own devenv
+# shell (its tools may differ: the image build moved from skopeo to crane).
+# A first deploy of a stage, or of a new Durable Object class with its
+# container, fails once and passes on the next run, so each deploy gets three.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+root=$PWD
+stage=${1:-upg}
+from=${2:-}
+
+if [ -z "$from" ]; then
+  : "${FICUS_KEY_FILE:?set FICUS_KEY_FILE, or name the commit to upgrade from}"
+  api=${FICUS_API_PROD:-https://api.ficus.fruit.cards}
+  from=$(curl -sf -m 30 -H "x-api-key: $(cat "$FICUS_KEY_FILE")" "$api/v1/orgs/ficus/trees/ficus/release" | jq -r '.released.commit // empty')
+  [ -n "$from" ] || { echo "could not read prod's released commit" >&2; exit 1; }
+fi
+
+# GitHub's main mirrors the tree, so the released commit is there once mirrored.
+git cat-file -e "$from^{commit}" 2>/dev/null || git fetch -q origin main
+
+old=$(mktemp -d)
+trap 'git -C "$root" worktree remove --force "$old" 2>/dev/null || true' EXIT
+git worktree add -q --detach "$old" "$from"
+echo "upgrading stage $stage from ${from:0:12} to $(git rev-parse --short HEAD)" >&2
+
+# Deploy the checkout at $1 to the stage, in its own devenv shell.
+deploy() {
+  local dir=$1 label=$2
+
+  (cd "$dir" && SECRETSPEC_REASON="e2e-upgrade: deploy $label to stage $stage" devenv shell -- bash -c '
+    set -euo pipefail
+    set -a; . ~/.config/ficus/.env; set +a
+    export CLOUDFLARE_API_TOKEN="$FICUS_DEPLOY_TOKEN"
+    # Prod-only settings stay out of a test stage: they bind secrets only prod has.
+    unset FICUS_CLOUDFLARE_CLIENT_ID FICUS_GITHUB_CLIENT_ID FICUS_GITHUB_APP_ID FICUS_GITHUB_APP_SLUG FICUS_SANDBOX_IMAGE
+    (cd infra && bun install --frozen-lockfile >/dev/null)
+    scripts/build-scorer >/dev/null
+    cd infra
+    for run in 1 2 3; do
+      if STAGE='"$stage"' bun run deploy > "/tmp/e2e-upgrade-'"$stage-$label"'-$run.log" 2>&1; then echo "'"$label"': deployed (run $run)"; exit 0; fi
+      echo "'"$label"': deploy run $run failed: $(grep -m1 ERROR "/tmp/e2e-upgrade-'"$stage-$label"'-$run.log" | cut -c1-200)"
+    done
+    exit 1')
+}
+
+# Tear the stage down from this checkout; destroy wipes the build outdirs
+# (infra/src/sandbox/context), so their tracked files are restored after.
+destroy() {
+  (cd "$root" && SECRETSPEC_REASON="e2e-upgrade: destroy stage $stage" devenv shell -- bash -c '
+    set -a; . ~/.config/ficus/.env; set +a
+    export CLOUDFLARE_API_TOKEN="$FICUS_DEPLOY_TOKEN"
+    unset FICUS_CLOUDFLARE_CLIENT_ID FICUS_GITHUB_CLIENT_ID FICUS_GITHUB_APP_ID FICUS_GITHUB_APP_SLUG FICUS_SANDBOX_IMAGE
+    cd infra && bun --bun alchemy destroy alchemy.run.ts --stage '"$stage"' --yes > /tmp/e2e-upgrade-'"$stage"'-destroy.log 2>&1') || echo "destroying $stage failed: see /tmp/e2e-upgrade-$stage-destroy.log" >&2
+  git -C "$root" checkout -- infra/src/sandbox/context
+}
+
+status=0
+if deploy "$old" from && deploy "$root" to; then
+  # A just-deployed Api can take a moment to answer.
+  sleep 30
+  FICUS_API=${FICUS_API:-https://ficus-api-$stage.fruitcards.workers.dev} scripts/e2e || status=$?
+else
+  status=1
+fi
+
+destroy
+exit "$status"

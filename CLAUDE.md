@@ -239,6 +239,10 @@ deadline 2026-10-14.
   api.ficus.fruit.cards, both also on workers.dev. A stage with domains gets a deploy token that may manage that zone's
   Worker domains (`src/permissions.ts` domainPolicy, minted by `secrets.run.ts`); re-run deploy:secrets after changing them.
 - `just e2e` (FICUS_API=https://ficus-dev.fruitcards.workers.dev) runs the full cycle live.
+- Before a release: the FULL `just infra-check` (typecheck, lint, tests), never part of it: on 2026-10-13 a release whose
+  last fixes had only been typechecked failed lint in Ficus's own scoring. A change to the sandbox, containers or Durable
+  Objects also needs `just e2e-upgrade` (scripts/e2e-upgrade: prod's released commit, then this checkout, on a throwaway
+  stage, then scripts/e2e): every failure of the move to Durable Object-managed containers showed only on that path.
 - After a deploy, old isolates keep serving for a few seconds: wait before judging a change live
   (an API key minted 7s after a deploy still got the old 10-requests-a-day limit).
 - Better Auth refuses cookie-authenticated POSTs without an `Origin` header (CSRF); scripts must send it.

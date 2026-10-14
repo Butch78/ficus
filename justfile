@@ -26,6 +26,12 @@ deploy:
 e2e:
     scripts/e2e
 
+# The full tree cycle on the upgrade path prod takes: a throwaway stage gets prod's released commit
+# (or FROM), then this checkout, then scripts/e2e; the stage is destroyed after. Run it before
+# releasing a change to the sandbox, containers or Durable Objects.
+e2e-upgrade stage="upg" from="":
+    scripts/e2e-upgrade {{stage}} {{from}}
+
 # The web UI's end-to-end through a deployed stage (FICUS_WEB, FICUS_API: their URLs)
 e2e-web:
     scripts/e2e-web
