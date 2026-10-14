@@ -9,25 +9,32 @@ hosts = ["registry.npmjs.org"]
 run = "cd infra && bun install --frozen-lockfile"
 timeout_secs = 1200
 
+# `paths`: a check runs only for an attempt that touched them (src/core/paths.ts); one touching
+# ficus.toml, devenv files or other locked paths runs every check. Docs-only attempts skip the code
+# checks; the judge always runs.
 [[check]]
 name = "typecheck"
 run = "cd infra && bun run typecheck"
 timeout_secs = 900
+paths = ["infra", "scripts", "nix", "justfile", "secretspec.toml", ".gitignore"]
 
 [[check]]
 name = "lint"
 run = "cd infra && bun run lint"
 timeout_secs = 900
+paths = ["infra", "scripts", "nix", "justfile", "secretspec.toml", ".gitignore"]
 
 [[check]]
 name = "test"
 run = "cd infra && bun run test"
 timeout_secs = 900
+paths = ["infra", "scripts", "nix", "justfile", "secretspec.toml", ".gitignore"]
 
 [[check]]
 name = "workflows"
 run = "actionlint && zizmor --offline --min-severity medium .github"
 timeout_secs = 300
+paths = [".github"]
 
 # A judge: a yes/no question about the attempt's diff, put to Clef with the
 # task's intent as `task`. It counts as a check; on equal cost, the attempt
