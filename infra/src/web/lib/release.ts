@@ -60,8 +60,29 @@ export const deployStatus = (deploy: Deploy): DeployStatus => {
   }
 
   const millis = report.millis + (report.deployer?.millis ?? 0);
+  const { canary } = report;
+  const rollback = deploy.rollback_of === undefined ? "" : "automatic rollback: ";
 
-  return { tone: "deployed", label: `deployed in ${seconds(millis)}`, tail: undefined };
+  if (canary !== undefined && !canary.passed) {
+    return { tone: "failed", label: `deployed in ${seconds(millis)}; ${canaryFailed(canary, deploy.rolled_back)}`, tail: undefined };
+  }
+
+  return { tone: "deployed", label: `${rollback}deployed in ${seconds(millis)}${canary === undefined ? "" : "; canary passed"}`, tail: undefined };
+};
+
+type Canary = NonNullable<NonNullable<Deploy["report"]>["canary"]>;
+
+/** A failed canary in plain words, and what the tree did about it. */
+const canaryFailed = (canary: Canary, rolledBack: Deploy["rolled_back"]) => {
+  const failed = `canary failed: ${canary.reason ?? "no reason given"}`;
+
+  if (rolledBack === undefined) {
+    return failed;
+  }
+
+  return rolledBack.error === undefined
+    ? `${failed}; rolled back to node ${rolledBack.node}`
+    : `${failed}; rolling back to node ${rolledBack.node} failed: ${rolledBack.error}`;
 };
 
 /** Whether any deploy is still going, so the page keeps refreshing; none are when they are not shown. */
@@ -82,10 +103,16 @@ const ranStep = (title: string, report: Pick<Report, "passed" | "millis">): Depl
   tone: report.passed ? "deployed" : "failed",
 });
 
+const canaryStep = (canary: Canary, rolledBack: Deploy["rolled_back"]): DeployStep =>
+  canary.passed
+    ? { title: "canary", detail: `scoring works: passed in ${seconds(canary.millis)}`, tone: "deployed" }
+    : { title: "canary", detail: canaryFailed(canary, rolledBack), tone: "failed" };
+
 /**
  * The Deploy Workflow's steps for one deploy (src/deploys): `run` (the
  * released commit's `[deploy] run`, in the deployer), then, once it passed,
- * `deployer` (its `[deploy] deployer`, in a scoring sandbox). Unfinished or
+ * `deployer` (its `[deploy] deployer`, in a scoring sandbox), then the
+ * canary that checks scoring still works. Unfinished or
  * failed before either reported, the whole deploy is one step.
  */
 export const deploySteps = (deploy: Deploy): ReadonlyArray<DeployStep> => {
@@ -101,6 +128,7 @@ export const deploySteps = (deploy: Deploy): ReadonlyArray<DeployStep> => {
   }
 
   const deployer = report.deployer?.deployed === true ? [ranStep("update the deployer", report.deployer)] : [];
+  const canary = report.canary === undefined ? [] : [canaryStep(report.canary, deploy.rolled_back)];
 
-  return [ranStep("deploy", report), ...deployer];
+  return [ranStep("deploy", report), ...deployer, ...canary];
 };

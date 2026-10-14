@@ -357,6 +357,22 @@ const DeployReport = Schema.Struct({
   tail: Schema.String,
 });
 
+/** src/core/deploy.ts `CanaryReport`, without the health report the page does not read: whether scoring worked after the deploy. */
+const CanaryReport = Schema.Struct({
+  passed: Schema.Boolean,
+  millis: Schema.Number,
+  tries: Schema.Number,
+  reason: Schema.optional(Schema.String),
+});
+
+/** src/core/deploy.ts `RolledBack`: the automatic rollback a failed canary brought. */
+const RolledBack = Schema.Struct({
+  node: Id,
+  reason: Schema.String,
+  deploy: Schema.optional(Schema.String),
+  error: Schema.optional(Schema.String),
+});
+
 /** `GET .../deploys` (src/tree/deploys.ts `list`): the tree's deploys, newest first; `enabled` is false where the stage does not deploy. */
 export const Deploys = Schema.Struct({
   enabled: Schema.Boolean,
@@ -368,8 +384,11 @@ export const Deploys = Schema.Struct({
       started_at: Schema.Number,
       /** The Workflow instance's status (queued, running, complete, errored, ...), or `unknown`. */
       status: Schema.String,
-      report: Schema.optional(Schema.Struct({ ...DeployReport.fields, deployer: Schema.optional(DeployReport) })),
+      report: Schema.optional(Schema.Struct({ ...DeployReport.fields, deployer: Schema.optional(DeployReport), canary: Schema.optional(CanaryReport) })),
       error: Schema.optional(Schema.NullOr(Schema.String)),
+      /** The deploy whose failed canary this one rolls back. */
+      rollback_of: Schema.optional(Schema.String),
+      rolled_back: Schema.optional(RolledBack),
     }),
   ),
 });

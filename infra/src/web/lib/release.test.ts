@@ -22,6 +22,8 @@ const treeReleasedAt = (released: number | null) =>
 interface Finished {
   readonly report?: unknown;
   readonly error?: string;
+  readonly rollback_of?: string;
+  readonly rolled_back?: unknown;
 }
 
 // As `GET .../deploys` answers: a workflow status, and the sandbox's report once it finished.
@@ -59,6 +61,25 @@ describe("deployStatus", () => {
   test("the deployer's part counts: its failure fails the deploy, its time adds up", () => {
     expect(deployStatus(deploy("complete", { report: { ...ran(true), deployer: ran(false, "stale") } }))).toMatchObject({ tone: "failed", tail: "stale" });
     expect(deployStatus(deploy("complete", { report: { ...ran(true), deployer: ran(true) } })).label).toBe("deployed in 122 s");
+  });
+
+  test("the canary says whether scoring works after the deploy, and a failed one what the tree did", () => {
+    const passed = { ...ran(true), deployer: ran(true), canary: { passed: true, millis: 40_000, tries: 1 } };
+    const failed = { ...ran(true), deployer: ran(true), canary: { passed: false, millis: 90_000, tries: 3, reason: "the sandbox answered 503: not ready" } };
+
+    expect(deployStatus(deploy("complete", { report: passed })).label).toBe("deployed in 122 s; canary passed");
+    expect(deployStatus(deploy("complete", { report: passed, rollback_of: "t-deploy-1" })).label).toBe("automatic rollback: deployed in 122 s; canary passed");
+    expect(deployStatus(deploy("complete", { report: failed, rolled_back: { node: 1, reason: "not ready", deploy: "t-deploy-2" } }))).toEqual({
+      tone: "failed",
+      label: "deployed in 122 s; canary failed: the sandbox answered 503: not ready; rolled back to node 1",
+      tail: undefined,
+    });
+    expect(deployStatus(deploy("complete", { report: failed })).label).toBe("deployed in 122 s; canary failed: the sandbox answered 503: not ready");
+    expect(deployStatus(deploy("complete", { report: failed, rolled_back: { node: 1, reason: "not ready", error: "no node 1" } })).label).toContain(
+      "rolling back to node 1 failed: no node 1",
+    );
+    expect(deploySteps(deploy("complete", { report: passed })).at(-1)).toEqual({ title: "canary", detail: "scoring works: passed in 40 s", tone: "deployed" });
+    expect(deploySteps(deploy("complete", { report: failed, rolled_back: { node: 1, reason: "x", deploy: "t-deploy-2" } })).at(-1)?.tone).toBe("failed");
   });
 
   test("an errored workflow says why; one never read is unknown", () => {

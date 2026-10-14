@@ -39,6 +39,11 @@
  *     runs the part asked for: `run` in the deployer (deployer.run.ts),
  *     `deployer` here in a scoring sandbox. The answer is the DeployReport.
  *
+ *   POST /health  (no body, from the Deploy Workflow's canary): a fresh
+ *     container started as scoring starts one, internet off, then
+ *     `devenv version`, `bun --version` and `ficus-scorer` (its usage); the
+ *     answer is the HealthReport (src/core/deploy.ts), with timings.
+ *
  *   `/score` with `Accept: application/x-ndjson` answers with a stream
  *   instead (src/core/progress.ts): each step as it happens, the
  *   sandbox's own and `ficus-scorer`'s, then the outcome: what the plain
@@ -62,7 +67,7 @@ import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as DecisionModel from "effect/ai/DecisionModel";
 import { Clef } from "../clef/clef.ts";
-import { DeployPrepared, DeployReport, DeployRequest } from "../core/deploy.ts";
+import { DeployPrepared, DeployReport, DeployRequest, HEALTH_COMMANDS, healthCheck, healthReport } from "../core/deploy.ts";
 import { phasesFirst, RebaseReport, RebaseRequest, ScoreRequest, snapshotRefused } from "../core/scoring.ts";
 import { TOKEN_PLACEHOLDER } from "./deploy-token.ts";
 import type { EgressProps } from "./egress.ts";
@@ -284,6 +289,10 @@ export class Sandbox extends DurableObject<Bindings> {
 
       case "/deploy": {
         return respond(this.#deploy(request));
+      }
+
+      case "/health": {
+        return respond(this.#health());
       }
 
       default: {
@@ -555,6 +564,36 @@ export class Sandbox extends DurableObject<Bindings> {
     yield* this.#discard();
 
     return yield* this.#deployIn(call).pipe(Effect.ensuring(this.#discard()));
+  });
+
+  /**
+   * The Deploy Workflow's canary: start a fresh container the way scoring
+   * does (`#ready`) and ask for the tools scoring runs, timing each. A
+   * container that will not start is a 503; one whose tools do not answer
+   * is a report that says so.
+   */
+  readonly #health = Effect.fn("Sandbox.health")(function* (this: Sandbox) {
+    yield* this.#discard();
+
+    return yield* this.#healthIn().pipe(Effect.ensuring(this.#discard()));
+  });
+
+  readonly #healthIn = Effect.fn("Sandbox.healthIn")(function* (this: Sandbox) {
+    const began = Date.now();
+
+    yield* this.#ready();
+
+    const started = Date.now() - began;
+    const checks = [];
+
+    for (const command of HEALTH_COMMANDS) {
+      const at = Date.now();
+      const ran = yield* this.#exec(command.argv);
+
+      checks.push(healthCheck(command, ran, Date.now() - at));
+    }
+
+    return healthReport(started, Date.now() - began, checks);
   });
 
   /** Stop and remove the container, if one is running. */

@@ -218,6 +218,12 @@ deadline 2026-10-14.
   its Durable Objects and cuts the exec off). Deploy the deployer stack before the Ficus stack on a deploys stage: the
   deploys Worker binds it by `Worker.ref`. A fresh deployer stack fails its first deploy at the container's precreate
   (the image is still an unresolved build output); the image is built by then, so run it again.
+  Once `deployer` passed (Ficus deploying itself), steps `canary-<n>` (up to 3, waiting 30 s, then 60 s) ask a fresh
+  scoring sandbox `POST /health`: a container started through `#ready`, then `devenv version`, `bun --version` and
+  `ficus-scorer`'s usage, timed; the outcome's `canary` says how it went. The tree watches its deploys from its alarm
+  (every minute while one is going, as `GET .../deploys` reads them): when the newest one's canary failed it releases
+  the node released before, once (core/deploy.ts `automaticRollback`: never a rollback's, never the same node, never once
+  the release moved on; claimed in storage as `deploy-rollback:<id>`, shown as `rolled_back`).
   Only a stage deployed with `FICUS_DEPLOYS=true` gets the deploys Worker and the tree's `DEPLOYS` binding; the
   Workflow binds the stage's deploy token from the Secrets Store by reference (`secrets.run.ts`, stack
   `FicusSecrets`: `STAGE=prod bun run deploy:secrets` mints `ficus-deploy-<stage>` with `src/permissions.ts`, or

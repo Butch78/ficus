@@ -14,6 +14,15 @@
  * deployer's. The deploy token stays here and in Egress: the container sees
  * a placeholder. A sandbox that fails is retried; a deploy command that
  * fails is an answer, not retried: running it again would not change it.
+ *
+ * A deploy that updated Ficus itself (`deployer` ran and passed) ends with
+ * a canary: steps `canary-<n>` each ask a fresh scoring sandbox for
+ * `POST /health` (a container started as scoring starts one, then the tools
+ * scoring runs), waiting longer between tries, up to `CANARY_TRIES`. Its
+ * report goes in the outcome; a failed one is the tree's cue to roll back
+ * (src/tree/deploys.ts). A root without a `deployer` deploys something
+ * other than Ficus: Ficus's scoring is not its to check. A sandbox with no
+ * `/health` (a rollback to a node from before the canary) has nothing to check.
  */
 import type * as cf from "@cloudflare/workers-types";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -22,7 +31,18 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
-import { DeployOutcome, type DeployPart, DeployParams, DeployReport } from "../core/deploy.ts";
+import {
+  CANARY_TRIES,
+  canaryReport,
+  CanaryTry,
+  canaryTry,
+  canaryWaitMillis,
+  DeployOutcome,
+  type DeployPart,
+  DeployParams,
+  DeployReport,
+  HealthReport,
+} from "../core/deploy.ts";
 import { artifactsNamespace } from "../platform.ts";
 
 /** How long the sandbox may read the node's repo: the deploy clones it first thing. */
@@ -98,6 +118,66 @@ export default class Deploy extends Cloudflare.Workflow<Deploy>()(
       );
     });
 
+    /** A fresh scoring sandbox's health report (src/sandbox `POST /health`); `null` from a sandbox released before it had one. */
+    const health = Effect.fn("Deploy.health")(function* (params: DeployParams) {
+      const namespace = yield* sandboxes("deployer");
+      // A fresh sandbox per try: a Durable Object whose first start failed can fail every later one.
+      const sandbox = namespace.get(namespace.idFromName(`deploy:${params.tree}:canary:${Date.now()}`));
+
+      const answer = yield* Effect.tryPromise({
+        try: async () => {
+          const response = await sandbox.fetch("http://sandbox/health", { method: "POST" });
+
+          return { status: response.status, text: await response.text() };
+        },
+        catch: (cause) => failed(`the sandbox did not answer: ${String(cause)}`),
+      });
+
+      // A rollback to a node from before the canary deploys a sandbox without `/health`: nothing to check.
+      if (answer.status === 404) {
+        return null;
+      }
+
+      if (answer.status !== 200) {
+        return yield* failed(`the sandbox answered ${answer.status}: ${answer.text.slice(0, 400)}`);
+      }
+
+      return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(HealthReport))(answer.text).pipe(
+        Effect.mapError((issue) => failed(`the sandbox's health report is unreadable: ${issue.message}`)),
+      );
+    });
+
+    /** One try of the canary: a failure is its answer, never the step's, so the Workflow does not retry behind the canary's own tries. */
+    const canaryOnce = Effect.fn("Deploy.canaryOnce")(function* (params: DeployParams) {
+      const began = Date.now();
+
+      return yield* health(params).pipe(
+        Effect.map((report) => (report === null ? null : canaryTry(report, Date.now() - began))),
+        Effect.catchTag("Deploy.Failed", (error) => Effect.succeed(CanaryTry.make({ passed: false, millis: Date.now() - began, reason: error.message }))),
+      );
+    });
+
+    /** The canary's report, or `undefined` when the deployed sandbox has no `/health` to ask. */
+    const canary = Effect.fn("Deploy.canary")(function* (params: DeployParams) {
+      const tries: Array<CanaryTry> = [];
+
+      for (let n = 1; n <= CANARY_TRIES && tries.at(-1)?.passed !== true; n += 1) {
+        if (n > 1) {
+          yield* Cloudflare.Workflows.sleep(`canary-wait-${n}`, canaryWaitMillis(n - 1));
+        }
+
+        const tried = yield* Cloudflare.Workflows.task(`canary-${n}`, canaryOnce(params), { timeout: "20 minutes" });
+
+        if (tried === null) {
+          return undefined;
+        }
+
+        tries.push(tried);
+      }
+
+      return canaryReport(tries);
+    });
+
     const step = (name: string, input: DeployParams, part: DeployPart) =>
       Cloudflare.Workflows.task(name, deployOnce(input, part), {
         retries: { limit: 2, delay: "1 minute", backoff: "exponential" },
@@ -115,7 +195,13 @@ export default class Deploy extends Cloudflare.Workflow<Deploy>()(
       const deployer = yield* step("deployer", input, "deployer");
 
       // A root with no `deployer` (any but Ficus's own) has nothing more to say.
-      return DeployOutcome.make(deployer.deployed ? { ...ran, deployer } : ran);
+      if (!deployer.deployed) {
+        return DeployOutcome.make(ran);
+      }
+
+      const checked = deployer.passed ? yield* canary(input) : undefined;
+
+      return DeployOutcome.make(checked === undefined ? { ...ran, deployer } : { ...ran, deployer, canary: checked });
     });
     // oxlint-disable-next-line effecttsgo/strict-effect-provide -- alchemy's binding layers, provided where the Workflow is declared
   }).pipe(Effect.provide(Layer.mergeAll(Cloudflare.Artifacts.ReadNamespaceBinding, Cloudflare.SecretsStore.ReadSecretBinding))),

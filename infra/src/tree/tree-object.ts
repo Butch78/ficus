@@ -11,6 +11,7 @@
  * JSON text, ledgers, counters and the agents' bookkeeping as values.
  */
 import { DurableObject } from "cloudflare:workers";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
@@ -19,7 +20,7 @@ import { type Change, change, parsePath, parseRef, Subject, view } from "../core
 import { diffKey, KEPT_SECONDS, keepable, logKey, readKey } from "../core/kept.ts";
 import { applyStep, closeLedger, CONTENT_TYPE as PROGRESS, emptyLedger, type InitStep, Ledger, outcomeBody, outcomeLine, parseLine, stepLine, type StepState, textOf } from "../core/progress.ts";
 import { type BootPlan, bootPlans, CheckSpec, RebaseReport, type RebaseRequest, ScoreAnswer, ScoreReport, scoreOf, type ScoreRequest, SNAPSHOT_REFUSED_MS, snapshotAfter, warmable } from "../core/scoring.ts";
-import type { DeployParams } from "../core/deploy.ts";
+import { type DeployParams, RolledBack } from "../core/deploy.ts";
 import { hasCredentials, withoutCredentials } from "../core/remote.ts";
 import { copyBranch } from "./git-copy.ts";
 import * as T from "../core/tree.ts";
@@ -177,6 +178,7 @@ export class TreeObject extends DurableObject<Bindings> {
         yield* Agents.tend(this.#agentsHost());
         yield* this.#rebaseBehind();
         yield* this.#scoreChecking();
+        yield* this.#watchDeploys();
       }),
     );
   }
@@ -215,7 +217,7 @@ export class TreeObject extends DurableObject<Bindings> {
       case "release":
         return yield* this.#showRelease();
       case "deploys":
-        return json(yield* Deploys.list(this.ctx.storage, this.env.DEPLOYS));
+        return json(yield* this.#deploys());
       case "export":
         return yield* this.#export();
       case "attempts/:id":
@@ -918,20 +920,66 @@ export class TreeObject extends DurableObject<Bindings> {
   /** Point the release at a node (the head by default). A deployment follows the pointer; moving it back is a rollback. */
   readonly #release = Effect.fn("Tree.release")(function* (this: TreeObject, body: typeof ReleaseBody.Type) {
     const tree = yield* this.#tree();
-    const released = yield* fromTree(T.release(tree, body.node ?? T.head(tree).id));
+    const released = yield* this.#moveRelease(tree, body.node ?? T.head(tree).id, undefined);
+
+    return json({ release: released.release, commit: released.node?.commit, repo: released.node?.repo, deploy: released.deploy ?? null });
+  });
+
+  /** Move the release pointer and start the deploy that follows it; `rollbackOf` names the deploy an automatic rollback answers. */
+  readonly #moveRelease = Effect.fn("Tree.moveRelease")(function* (this: TreeObject, tree: T.Tree, to: NodeId, rollbackOf: string | undefined) {
+    const released = yield* fromTree(T.release(tree, to));
     const node = T.released(released.tree);
 
     yield* this.#save(released.tree);
+
+    const { previous, rollback } = released.release;
+    const note: Deploys.ReleaseNote = rollbackOf === undefined ? { previous, rollback } : { previous, rollback: true, rollback_of: rollbackOf };
 
     const deploy =
       node === undefined
         ? undefined
         : // The release stands either way: a deploy that did not start is said, not a failed release.
-          yield* Deploys.start(this.ctx.storage, this.env.DEPLOYS, { tree: T.name(released.tree), node: node.id, repo: node.repo, commit: node.commit }).pipe(
+          yield* Deploys.start(this.ctx.storage, this.env.DEPLOYS, { tree: T.name(released.tree), node: node.id, repo: node.repo, commit: node.commit }, note).pipe(
             Effect.catchTag("Tree.Refused", (refused) => Effect.succeed({ error: refused.message })),
           );
 
-    return json({ release: released.release, commit: node?.commit, repo: node?.repo, deploy: deploy ?? null });
+    return { release: released.release, node, deploy };
+  });
+
+  /**
+   * The tree's deploys, as `GET .../deploys` answers them, after rolling the
+   * release back if the newest one's canary failed (Deploys.claimRollback):
+   * the tree learns how a deploy went only by asking, so it acts where it asks.
+   */
+  readonly #deploys = Effect.fn("Tree.deploys")(function* (this: TreeObject) {
+    const listed = yield* Deploys.list(this.ctx.storage, this.env.DEPLOYS);
+    const tree = listed.enabled ? yield* this.#load() : undefined;
+    const claim = tree === undefined ? undefined : yield* Deploys.claimRollback(this.ctx.storage, listed, tree.released ?? null);
+
+    if (tree === undefined || claim === undefined) {
+      return listed;
+    }
+
+    const moved = yield* this.#moveRelease(tree, claim.node, claim.deploy).pipe(
+      Effect.map(({ deploy }) => (deploy === undefined || "error" in deploy ? { error: deploy?.error ?? "this stage does not deploy" } : { deploy: deploy.id })),
+      Effect.catchTag("Tree.Refused", (refused) => Effect.succeed({ error: refused.message })),
+    );
+
+    yield* Deploys.settleRollback(this.ctx.storage, claim.deploy, RolledBack.make({ node: claim.node, reason: claim.reason, ...moved }));
+
+    return yield* Deploys.list(this.ctx.storage, this.env.DEPLOYS);
+  });
+
+  /** The alarm's look at the deploys: a rollback if one is due, and another look while any is going. Never the alarm's failure. */
+  readonly #watchDeploys = Effect.fn("Tree.watchDeploys")(function* (this: TreeObject) {
+    if (this.env.DEPLOYS === undefined) {
+      return;
+    }
+
+    yield* this.#deploys().pipe(
+      Effect.flatMap((listed) => Deploys.watch(this.ctx.storage, listed)),
+      Effect.catchCause((cause) => Effect.sync(() => console.log(`tree: watching deploys failed: ${Cause.pretty(cause)}`))),
+    );
   });
 
   /** Make the tree public (anyone may read it, core/visibility.ts) or private again. */
