@@ -108,6 +108,8 @@ export const Assignment = Schema.Struct({
   history: Schema.Array(CompostEntry),
   /** Set when the tree retried a conflicted rebase for this agent: the change to re-apply on the head. */
   conflict: Schema.optional(ConflictBrief),
+  /** What the tree has learned, as of the base (core/lessons.ts); absent from assignments kept before lessons. */
+  lessons: Schema.optional(Schema.String),
 });
 
 export interface Assignment extends Schema.Schema.Type<typeof Assignment> {}
@@ -195,6 +197,12 @@ const toolText = (text: string, isError: boolean) => ({ content: [{ type: "text"
 const remaining = (doubts: ReadonlyArray<Objection>): string =>
   doubts.length === 0 ? "" : `\nClef's remaining doubts:\n${describe(doubts)}`;
 
+/** What the tree has learned, for the prompt: nothing when it has not learned anything yet. */
+const lessonsPart = (lessons: string | undefined): ReadonlyArray<string> =>
+  lessons === undefined || lessons.trim() === ""
+    ? []
+    : ["", "Lessons this tree has learned (known mistakes: do not repeat them; the judges read these too):", lessons];
+
 /** The task an agent starts from, the same in both phases. Each phase's rules are its pi instructions. */
 export const prompt = (assignment: Assignment): string => {
   const history =
@@ -232,6 +240,7 @@ export const prompt = (assignment: Assignment): string => {
     "Earlier attempts at this task (the history):",
     history,
     ...(assignment.conflict === undefined ? [] : ["", conflictInstructions(assignment.conflict)]),
+    ...lessonsPart(assignment.lessons),
   ].join("\n");
 };
 

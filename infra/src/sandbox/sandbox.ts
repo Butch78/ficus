@@ -674,7 +674,7 @@ export class Sandbox extends DurableObject<Bindings> {
 
     say(stepLine("judge", "active"));
 
-    return yield* this.#judge(run, score.intent).pipe(
+    return yield* this.#judge(run, score.intent, score.lessons ?? "").pipe(
       Effect.map((report) => ({ ...report, ...taken, stale })),
       Effect.tap(() => Effect.sync(() => say(stepLine("judge", "complete")))),
       Effect.tapError((error) => Effect.sync(() => say(stepLine("judge", "error", error.message)))),
@@ -797,14 +797,14 @@ export class Sandbox extends DurableObject<Bindings> {
   );
 
   /** The report with the root's judges' outcomes added. A Clef failure is retryable: 503. */
-  readonly #judge = Effect.fn("Sandbox.judge")(function* (run: Schema.Schema.Type<typeof CheckRun>, task: string) {
+  readonly #judge = Effect.fn("Sandbox.judge")(function* (run: Schema.Schema.Type<typeof CheckRun>, task: string, lessons: string) {
     if (run.judges.length === 0) {
       return run.report;
     }
 
     const started = Date.now();
 
-    const { answers } = yield* DecisionModel.decide(judging(run.judges), { input: { task, diff: run.diff } }).pipe(
+    const { answers } = yield* DecisionModel.decide(judging(run.judges), { input: { task, diff: run.diff, lessons } }).pipe(
       Effect.mapError((error) => failure(503, `judging the attempt: ${error.message}`)),
     );
 

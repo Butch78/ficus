@@ -22,6 +22,7 @@ import { applyStep, closeLedger, CONTENT_TYPE as PROGRESS, emptyLedger, type Ini
 import { type BootPlan, bootPlans, CheckSpec, RebaseReport, type RebaseRequest, ScoreAnswer, ScoreReport, scoreOf, type ScoreRequest, SNAPSHOT_REFUSED_MS, snapshotAfter, warmable } from "../core/scoring.ts";
 import { conflictBrief, conflictPaths, ConflictBrief } from "../core/conflict.ts";
 import { type DeployParams, RolledBack } from "../core/deploy.ts";
+import { abandonedLesson, deployLesson, type Lesson, Lessons, LESSONS_CHARS, learn, lessonsContext, lessonsPath } from "../core/lessons.ts";
 import { hasCredentials, withoutCredentials } from "../core/remote.ts";
 import { copyBranch } from "./git-copy.ts";
 import * as T from "../core/tree.ts";
@@ -96,6 +97,12 @@ const snapshotKey = (base: string) => `snapshot:${base}`;
 /** Until when (epoch ms) the tree asks for no warm boot: the platform refused to snapshot. */
 const SNAPSHOT_REFUSED_KEY = "snapshots:refused-until";
 
+/** The lessons the tree recorded itself (core/lessons.ts), newest first; absent until the first. */
+const LESSONS_KEY = "lessons";
+
+/** The largest lessons file (or ficus.toml, for its path) the tree reads; a larger one is left out, said in the log. */
+const LESSONS_FILE_BYTES = 256 * 1024;
+
 const InitBody = Schema.Struct({ source: Schema.optional(Schema.String), branch: Schema.optional(Schema.String) });
 
 const GraftBody = Schema.Struct({ source: Schema.String, branch: Schema.optional(Schema.String) });
@@ -124,6 +131,8 @@ export const Started = Schema.Struct({
   history: Schema.Array(T.HistoryEntry),
   /** For a retry the machine started after a rebase conflicted: what conflicted and the change to re-apply. */
   conflict: Schema.optionalKey(ConflictBrief),
+  /** What the tree has learned, as of the base (core/lessons.ts `lessonsContext`); empty when nothing yet. */
+  lessons: Schema.String,
 });
 
 export type Started = typeof Started.Type;
@@ -165,6 +174,14 @@ const settle = (tree: T.Tree, attempt: AttemptId, applied: Result.Result<T.Tree,
   }
 
   return tree;
+};
+
+/** The lesson of an attempt abandoned for a failed rebase or for its sandbox, when `after` is `before` with it abandoned. */
+const abandonedFor = (before: T.Tree, after: T.Tree, kind: "rebase" | "sandbox", attempt: AttemptId, note: string): ReadonlyArray<Lesson> => {
+  const entry = T.attempt(after, attempt);
+  const owner = entry === undefined ? undefined : T.task(after, entry.task);
+
+  return after === before || owner === undefined ? [] : [abandonedLesson(kind, owner, attempt, note, Date.now())];
 };
 
 export class TreeObject extends DurableObject<Bindings> {
@@ -224,6 +241,8 @@ export class TreeObject extends DurableObject<Bindings> {
         return yield* this.#showRelease();
       case "deploys":
         return json(yield* this.#deploys());
+      case "lessons":
+        return yield* this.#showLessons();
       case "export":
         return yield* this.#export();
       case "attempts/:id":
@@ -325,6 +344,50 @@ export class TreeObject extends DurableObject<Bindings> {
     return stored === undefined ? null : yield* Schema.decodeUnknownEffect(Ledger)(stored).pipe(Effect.orElseSucceed(() => null));
   });
 
+  /** The lessons the tree recorded itself, newest first; none for a tree stored before them. */
+  readonly #recorded = Effect.fn("Tree.recorded")(function* (this: TreeObject) {
+    const stored = yield* Effect.promise(() => this.ctx.storage.get(LESSONS_KEY));
+
+    return Option.getOrElse(Schema.decodeUnknownOption(Lessons)(stored), (): ReadonlyArray<Lesson> => []);
+  });
+
+  /** Record `learned` (core/lessons.ts `learn`), writing only when it changed anything. */
+  readonly #learn = Effect.fn("Tree.learn")(function* (this: TreeObject, learned: ReadonlyArray<Lesson>) {
+    if (learned.length === 0) {
+      return;
+    }
+
+    const known = yield* this.#recorded();
+    const kept = learn(known, learned);
+
+    if (JSON.stringify(kept) !== JSON.stringify(known)) {
+      yield* Effect.promise(() => this.ctx.storage.put(LESSONS_KEY, kept));
+    }
+  });
+
+  /** The text of `path` at `commit` of `on`; none when it is absent or unreadable, which never stops the work that asked. */
+  readonly #text = Effect.fn("Tree.text")(function* (this: TreeObject, on: ArtifactsRepo, commit: string, path: string) {
+    const file = yield* Artifacts.readFile(on, commit, path, LESSONS_FILE_BYTES).pipe(
+      Effect.catchTag("Artifacts.Error", (error) => Effect.logWarning(`reading ${path} at ${commit}: ${error.message}`).pipe(Effect.as(undefined))),
+    );
+
+    return file === undefined ? undefined : new TextDecoder().decode(file.bytes);
+  });
+
+  /** The lessons file at `commit` of `on`: where `ficus.toml` there says it is (core/lessons.ts `lessonsPath`), and its text if it has one. */
+  readonly #lessonsFile = Effect.fn("Tree.lessonsFile")(function* (this: TreeObject, on: ArtifactsRepo, commit: string) {
+    const path = lessonsPath(yield* this.#text(on, commit, "ficus.toml"));
+
+    return { path, text: yield* this.#text(on, commit, path) };
+  });
+
+  /** What an agent or the judges are told the tree has learned: the file at `commit` (the base) and the recorded lessons. */
+  readonly #lessonsAt = Effect.fn("Tree.lessonsAt")(function* (this: TreeObject, on: ArtifactsRepo, commit: string) {
+    const file = yield* this.#lessonsFile(on, commit);
+
+    return lessonsContext(file.text, yield* this.#recorded(), LESSONS_CHARS, file.path);
+  });
+
   #artifacts() {
     return this.env.ARTIFACTS;
   }
@@ -345,6 +408,20 @@ export class TreeObject extends DurableObject<Bindings> {
 
   readonly #show = Effect.fn("Tree.show")(function* (this: TreeObject) {
     return json(yield* this.#tree());
+  });
+
+  /**
+   * `GET /trees/<t>/lessons`: the lessons file at the head (`null` without
+   * one), the lessons the tree recorded, and the context an attempt started
+   * now would be given.
+   */
+  readonly #showLessons = Effect.fn("Tree.showLessons")(function* (this: TreeObject) {
+    const top = T.head(yield* this.#tree());
+    const on = yield* Artifacts.repo(this.#artifacts(), top.repo).pipe(Effect.mapError(artifactsRefused));
+    const file = yield* this.#lessonsFile(on, top.commit);
+    const recorded = yield* this.#recorded();
+
+    return json({ path: file.path, node: top.id, file: file.text ?? null, recorded, context: lessonsContext(file.text, recorded, LESSONS_CHARS, file.path) });
   });
 
   readonly #showBehind = Effect.fn("Tree.showBehind")(function* (this: TreeObject) {
@@ -755,7 +832,7 @@ export class TreeObject extends DurableObject<Bindings> {
     }
 
     const forked = yield* Artifacts.repo(this.#artifacts(), base.repo).pipe(
-      Effect.flatMap((from) => Artifacts.fork(from, entry.repo, owner.intent)),
+      Effect.flatMap((from) => Artifacts.fork(from, entry.repo, owner.intent).pipe(Effect.map((fork) => ({ from, fork })))),
       Effect.result,
     );
 
@@ -776,11 +853,12 @@ export class TreeObject extends DurableObject<Bindings> {
       intent: owner.intent,
       checks: owner.checks ?? [],
       agent: entry.agent,
-      repo: forked.success.name,
-      remote: forked.success.remote,
-      token: forked.success.token,
+      repo: forked.success.fork.name,
+      remote: forked.success.fork.remote,
+      token: forked.success.fork.token,
       base_commit: base.commit,
       history: T.historyOf(tree, entry.task),
+      lessons: yield* this.#lessonsAt(forked.success.from, base.commit),
     });
   });
 
@@ -963,6 +1041,8 @@ export class TreeObject extends DurableObject<Bindings> {
     const claim = tree === undefined ? undefined : yield* Deploys.claimRollback(this.ctx.storage, listed, tree.released ?? null);
 
     if (tree === undefined || claim === undefined) {
+      yield* this.#learn(listed.deploys.flatMap((deploy) => deployLesson(deploy) ?? []));
+
       return listed;
     }
 
@@ -973,7 +1053,12 @@ export class TreeObject extends DurableObject<Bindings> {
 
     yield* Deploys.settleRollback(this.ctx.storage, claim.deploy, RolledBack.make({ node: claim.node, reason: claim.reason, ...moved }));
 
-    return yield* Deploys.list(this.ctx.storage, this.env.DEPLOYS);
+    const relisted = yield* Deploys.list(this.ctx.storage, this.env.DEPLOYS);
+
+    // The failed canary's lesson says where the release rolled back to.
+    yield* this.#learn(relisted.deploys.flatMap((deploy) => deployLesson(deploy) ?? []));
+
+    return relisted;
   });
 
   /** The alarm's look at the deploys: a rollback if one is due, and another look while any is going. Never the alarm's failure. */
@@ -1185,7 +1270,9 @@ export class TreeObject extends DurableObject<Bindings> {
     }
 
     const { on, info, token } = prepared.success;
-    const request: ScoreRequest = { remote: info.remote, token: token.plaintext, base: job.base, head: job.head, intent: job.intent, checks: job.checks, ...plan };
+    // The lessons file at the base, like the checks: the attempt cannot rewrite what its judges read.
+    const lessons = yield* this.#lessonsAt(on, job.base);
+    const request: ScoreRequest = { remote: info.remote, token: token.plaintext, base: job.base, head: job.head, intent: job.intent, lessons, checks: job.checks, ...plan };
     const scored = yield* this.#askSandbox(job.repo, "score", request, ScoreAnswer, job.attempt);
 
     yield* Artifacts.revokeToken(on, token.id).pipe(Effect.catchTag("Artifacts.Error", (error) => Effect.logError(`revoking the scorer's token on ${job.repo}: ${error.message}`)));
@@ -1250,6 +1337,7 @@ export class TreeObject extends DurableObject<Bindings> {
     }
 
     let retry = false;
+    const learned: Array<Lesson> = [];
 
     for (const [job, outcome] of jobs.map((each, at) => [each, outcomes[at]] as const)) {
       const attemptsKey = `attempts:${job.attempt}`;
@@ -1271,7 +1359,11 @@ export class TreeObject extends DurableObject<Bindings> {
         const attempts = ((yield* Effect.promise(() => this.ctx.storage.get<number>(attemptsKey))) ?? 0) + 1;
 
         if (attempts >= SANDBOX_ATTEMPTS) {
-          latest = settle(latest, job.attempt, T.abandon(latest, job.attempt, `scorer failed ${attempts} times; last: ${outcome.reason}`));
+          const note = `scorer failed ${attempts} times; last: ${outcome.reason}`;
+          const before = latest;
+
+          latest = settle(latest, job.attempt, T.abandon(latest, job.attempt, note));
+          learned.push(...abandonedFor(before, latest, "sandbox", job.attempt, note));
         } else {
           yield* Effect.promise(() => this.ctx.storage.put(attemptsKey, attempts));
           retry = true;
@@ -1280,6 +1372,7 @@ export class TreeObject extends DurableObject<Bindings> {
     }
 
     yield* this.#save(latest);
+    yield* this.#learn(learned);
 
     if (retry) {
       yield* Effect.promise(() => this.ctx.storage.setAlarm(Date.now() + SANDBOX_RETRY_MS));
@@ -1368,6 +1461,7 @@ export class TreeObject extends DurableObject<Bindings> {
 
     let retry = false;
     const conflicted: Array<{ readonly behind: AttemptId; readonly reason: string }> = [];
+    const learned: Array<Lesson> = [];
 
     for (const [job, outcome] of started.jobs.map((each, at) => [each, outcomes[at]] as const)) {
       const attemptsKey = `rebase-attempts:${job.behind}`;
@@ -1377,7 +1471,11 @@ export class TreeObject extends DurableObject<Bindings> {
         yield* Effect.promise(() => this.ctx.storage.delete(attemptsKey));
       } else if (outcome?.kind === "unscorable") {
         // The agent's turn: the behind attempt stays, pointing at the abandoned rebase.
-        latest = settle(latest, job.fresh, T.rebaseFailed(latest, job.fresh, `rebase: ${outcome.reason}`));
+        const note = `rebase: ${outcome.reason}`;
+        const before = latest;
+
+        latest = settle(latest, job.fresh, T.rebaseFailed(latest, job.fresh, note));
+        learned.push(...abandonedFor(before, latest, "rebase", job.fresh, note));
         yield* Effect.promise(() => this.ctx.storage.delete(attemptsKey));
         conflicted.push({ behind: job.behind, reason: outcome.reason });
       } else if (outcome !== undefined) {
@@ -1385,7 +1483,10 @@ export class TreeObject extends DurableObject<Bindings> {
         const note = `rebase attempt ${attempts} failed: ${outcome.reason}`;
 
         if (attempts >= SANDBOX_ATTEMPTS) {
+          const before = latest;
+
           latest = settle(latest, job.fresh, T.rebaseFailed(latest, job.fresh, note));
+          learned.push(...abandonedFor(before, latest, "rebase", job.fresh, note));
           yield* Effect.promise(() => this.ctx.storage.delete(attemptsKey));
         } else {
           latest = settle(latest, job.fresh, T.rebaseRetry(latest, job.fresh, note));
@@ -1396,6 +1497,7 @@ export class TreeObject extends DurableObject<Bindings> {
     }
 
     yield* this.#save(latest);
+    yield* this.#learn(learned);
 
     for (const { behind, reason } of conflicted) {
       yield* this.#resolveConflict(behind, reason).pipe(

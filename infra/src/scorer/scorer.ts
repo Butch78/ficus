@@ -19,6 +19,7 @@ import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { DeployPart, DeployPrepared, type DeployRef, type DeployReport } from "../core/deploy.ts";
+import { LESSONS_PATH } from "../core/lessons.ts";
 import { stepLine, type ScoreStep, type StepState } from "../core/progress.ts";
 import {
   AttemptRef,
@@ -154,14 +155,17 @@ export const prepare = Effect.fn("Scorer.prepare")(function* (root: string, atte
   );
 
   // Fail now, while it is cheap, if the root defines nothing to run.
-  const fetch = (yield* rootChecks(repo, base)).fetch ?? {};
+  const config = yield* rootChecks(repo, base);
+  const fetch = config.fetch ?? {};
+  // The lessons file is the base's too: the judges are told the base's lessons (core/lessons.ts).
+  const locked = [...LOCKED_PATHS, config.lessons?.path ?? LESSONS_PATH];
 
   const inDevenv = yield* stepped(
     "restore",
     Effect.gen(function* () {
       let hasDevenv = false;
 
-      for (const path of LOCKED_PATHS) {
+      for (const path of locked) {
         if (yield* succeeds(repo, ["cat-file", "-e", `${base}:${path}`])) {
           yield* git(repo, "restore locked file", ["checkout", "--quiet", base, "--", path]);
           hasDevenv ||= path === "devenv.nix";

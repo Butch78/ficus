@@ -206,7 +206,7 @@ deadline 2026-10-14.
   restore; reports the hosts) → the Sandbox opens them → `fetch` (devenv build + `run`) → every route closes →
   `check`. Agent workspaces open the same hosts, read once at the base (`ficus-scorer hosts`). Ficus's own
   `ficus.toml` mirrors ci.yml. Attempts push `HEAD` (their default branch may not be `main`).
-  `[[judge]]` in ficus.toml = a yes/no question on `{task, diff}` the Sandbox asks Clef (Workers AI binding)
+  `[[judge]]` in ficus.toml = a yes/no question on `{task, diff, lessons}` the Sandbox asks Clef (Workers AI binding)
   after the container is gone; counts as a check, and its mean confidence breaks cost ties at acceptance.
   Image: `infra/src/sandbox/context` (nix + devenv + bun; `ficus-scorer.js` from `scripts/build-scorer`). Run
   `scripts/build-scorer` before `bun run deploy`: alchemy builds the image before its ScorerBinary step, so
@@ -250,6 +250,14 @@ deadline 2026-10-14.
   included. Stage `local` (`alchemy dev`) builds `context/Dockerfile` (the pinned base plus the files) with Docker;
   `FICUS_SANDBOX_IMAGE=<ref@digest>` pins a prebuilt image on any stage. Inside the devenv shell,
   secretspec loads `~/.config/ficus/.env` over your environment: run deploys with another token outside it.
+- Lessons (`src/core/lessons.ts`): the root's `LESSONS.md` (or `[lessons] path` in ficus.toml, which the tree reads with
+  the narrow `lessonsPath`; newest first; read through Artifacts at the attempt's base and restored from the base by the
+  scorer like LOCKED_PATHS, so an attempt cannot rewrite what its judges read) plus lessons the tree records itself in storage key
+  `lessons` (at most 30, newest first, one per kind + subject: an attempt abandoned for a failed rebase or its sandbox, a
+  failed deploy, a failed canary and its rollback). `lessonsContext` (capped at 8000 chars) goes to agents in `Started.lessons`
+  (the built-in agents' prompt) and to judges in `ScoreRequest.lessons`. `GET /trees/<t>/lessons` (members) answers the
+  head's file, the recorded ones and the context; the tree page shows them in a Lessons card. Ficus's own lessons are in
+  `LESSONS.md`: add one when a mistake costs a release.
 - Backups: `GET /trees/<t>/export` (all storage, assignments left out); the Api's nightly cron writes every tree in
   the directory to R2 `ficus-backups-<stage>` as `trees/<org>/<tree>/<date>.json`, expired after 90 days.
 - On expanse-5950x one of Cloudflare's IPv6 edges for workers.dev is unreachable: run scripts against deployed

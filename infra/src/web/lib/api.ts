@@ -220,5 +220,8 @@ export const release = (org: string, name: string, node: number, operation: stri
 
 export const deploys = (org: string, name: string) => get(Answers.Deploys, `${tree(org, name)}/deploys`);
 
+/** What the tree has learned: members only. */
+export const lessons = (org: string, name: string) => get(Answers.Lessons, `${tree(org, name)}/lessons`);
+
 export const agentStatus = (org: string, name: string, attempt: number) =>
   get(Answers.AgentStatus, `${tree(org, name)}/attempts/${attempt}/agent`);

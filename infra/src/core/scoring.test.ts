@@ -102,6 +102,15 @@ describe("a root's ficus.toml", () => {
     expect(refusal('[deploy]\nhosts = []\n[[check]]\nname = "t"\nrun = "true"\n')).toBe("Unparsable");
   });
 
+  test("[lessons] names the lessons file: a path inside the repo", () => {
+    const check = '[[check]]\nname = "t"\nrun = "true"\n';
+
+    expect(ok(parse(`[lessons]\npath = "docs/LESSONS.md"\n${check}`)).lessons).toEqual({ path: "docs/LESSONS.md" });
+    expect(refusal(`[lessons]\npath = "../x.md"\n${check}`)).toBe("LessonsPath");
+    expect(refusal(`[lessons]\npath = "/etc/x"\n${check}`)).toBe("LessonsPath");
+    expect(refusal(`[lessons]\nfile = "x.md"\n${check}`)).toBe("Unparsable");
+  });
+
   test("checks take the default timeout unless they name one", () => {
     const root = ok(parse('[[check]]\nname = "test"\nrun = "pytest -q"\n\n[[check]]\nname = "lint"\nrun = "ruff check ."\ntimeout_secs = 60\n'));
 

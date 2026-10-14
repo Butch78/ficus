@@ -14,6 +14,7 @@
  */
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import { isLessonsPath } from "./lessons.ts";
 import { anyMatches, normalizePattern } from "./paths.ts";
 import { Oid, type Score, TreeError } from "./values.ts";
 
@@ -116,12 +117,18 @@ export type DeploySpec = typeof DeploySpec.Type;
 
 export const deployTimeoutSecs = (deploy: DeploySpec) => deploy.timeout_secs ?? DEFAULT_DEPLOY_TIMEOUT_SECS;
 
+/** `[lessons]`: where the root keeps its lessons file (core/lessons.ts), `LESSONS.md` by default. */
+export const LessonsSpec = Schema.Struct({ path: Schema.optionalKey(Schema.String) });
+
+export type LessonsSpec = typeof LessonsSpec.Type;
+
 /** The root's `ficus.toml`, as TOML parses it. */
 export const RootChecks = Schema.Struct({
   check: Schema.optionalKey(Schema.Array(CheckSpec)),
   judge: Schema.optionalKey(Schema.Array(JudgeSpec)),
   fetch: Schema.optionalKey(FetchSpec),
   deploy: Schema.optionalKey(DeploySpec),
+  lessons: Schema.optionalKey(LessonsSpec),
 });
 
 export type RootChecks = typeof RootChecks.Type;
@@ -141,6 +148,7 @@ export const ChecksErrorKind = Schema.Literals([
   "EmptyFetch",
   "DeployHost",
   "EmptyDeploy",
+  "LessonsPath",
 ]);
 
 export class ChecksError extends Schema.TaggedError<ChecksError>()("Checks.Error", {
@@ -271,6 +279,10 @@ export const checkRoot = (root: RootChecks) =>
     yield* checkFetch(root.fetch);
     yield* checkDeploy(root.deploy);
 
+    if (root.lessons?.path !== undefined && !isLessonsPath(root.lessons.path)) {
+      return yield* refuse("LessonsPath", `[lessons] path must be a path inside the repo, not ${JSON.stringify(root.lessons.path)}`);
+    }
+
     return root;
   });
 
@@ -305,6 +317,8 @@ export const ScoreRequest = Schema.Struct({
   head: Oid,
   /** The task's intent: the `task` the root's judges see. */
   intent: Schema.String,
+  /** What the tree has learned (core/lessons.ts `lessonsContext`, its file read at `base`): the `lessons` the root's judges see. */
+  lessons: Schema.optionalKey(Schema.String),
   checks: Schema.optionalKey(Schema.Array(CheckSpec)),
   /** A container snapshot of the base, warmed by an earlier scoring: boot from it. */
   snapshot: Schema.optionalKey(Schema.String),

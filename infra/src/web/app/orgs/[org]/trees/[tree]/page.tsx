@@ -3,6 +3,7 @@ import { Suspense } from "react";
 import { Glossary } from "../../../../../components/glossary.tsx";
 import { LayerCardPrimary, LayerCardSecondary } from "../../../../../components/kumo.ts";
 import { Landed } from "../../../../../components/landed.tsx";
+import { LessonsCard, treeLessons } from "../../../../../components/lessons-card.tsx";
 import { NewTask } from "../../../../../components/new-task.tsx";
 import { ReleaseCard, treeDeploys } from "../../../../../components/release-card.tsx";
 import { TONE_BADGE } from "../../../../../components/standing-badge.tsx";
@@ -46,14 +47,16 @@ const headAgo = (tree: Tree, landed: ReadonlyMap<string, number>) => {
 
 export default async function TreePage({ params, searchParams }: Props) {
   const [{ org, tree: name }, { initialized, trace, op, error, node, older, task: watching }] = await Promise.all([params, searchParams]);
-  // Asked together: the head's log and the deploys need not wait for the tree. Deploys answer only
-  // members; a visitor's are not shown.
+  // Asked together: the head's log, the deploys and the lessons need not wait for the tree. Deploys
+  // and lessons answer only members; a visitor's are not shown.
   const deploysAsked = treeDeploys(org, name);
   const landedAsked = commitTimes(org, name);
+  const lessonsAsked = treeLessons(org, name);
 
   // Anyone may read a public tree; the rest of this page is for its members.
-  const [member, tree, deploysAnswer, landed] = await Promise.all([signedIn(), load(Api.showTree(org, name)), deploysAsked, landedAsked]);
+  const [member, tree, deploysAnswer, landed, lessonsAnswer] = await Promise.all([signedIn(), load(Api.showTree(org, name)), deploysAsked, landedAsked, lessonsAsked]);
   const deploys = member ? deploysAnswer : undefined;
+  const lessons = member ? lessonsAnswer : undefined;
   const base = `/orgs/${org}/trees/${name}`;
   const open = Object.values(tree.tasks).toSorted((a, b) => b.id - a.id).filter((task) => task.state === "Open");
 
@@ -64,6 +67,7 @@ export default async function TreePage({ params, searchParams }: Props) {
       <Glossary />
 
       <ReleaseCard org={org} name={name} base={base} tree={tree} member={member} deploys={deploys} />
+      {lessons === undefined ? null : <LessonsCard base={base} lessons={lessons} />}
 
       {/* The open tasks' races and their agents take longer: the page shows first, and they stream in. */}
       <Suspense fallback={<WorkLoading />}>

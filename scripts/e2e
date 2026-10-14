@@ -195,6 +195,11 @@ R=$(call POST "/attempts/$delta/retry"); jq -c '{attempt, base_commit, history: 
 delta2=$(jq -r .attempt <<<"$R")
 [ "$delta2" != null ] || { echo "FAIL: retry refused: $R" >&2; exit 1; }
 
+step "the tree recorded delta's conflict as a lesson, and the retry was told it"
+call GET /lessons | jq -c '{path, file: (.file != null), recorded: [.recorded[] | {kind, subject}]}'
+[ "$(call GET /lessons | jq --arg s "task $C" '[.recorded[] | select(.kind == "rebase" and .subject == $s)] | length')" -ge 1 ] || { echo "FAIL: no lesson of delta's conflict" >&2; exit 1; }
+jq -e '.lessons | contains("rebase, task")' <<<"$R" >/dev/null || { echo "FAIL: the retry was not told the lessons" >&2; exit 1; }
+
 step "accept the oldest task that is ready: B, on top of A"
 H2=$(call POST "/accept"); jq -c . <<<"$H2"
 [ "$(jq -r .task <<<"$H2")" = "$B" ] && [ "$(jq -r .accepted <<<"$H2")" = "$gamma2" ] || { echo "FAIL: expected B's rebased attempt to be accepted" >&2; exit 1; }

@@ -395,3 +395,13 @@ export const Deploys = Schema.Struct({
 });
 
 export type Deploy = (typeof Deploys.Type)["deploys"][number];
+
+/** `GET .../lessons` (src/tree/tree-object.ts `#showLessons`): the head's lessons file, and the lessons the tree recorded itself (src/core/lessons.ts), newest first. */
+export const Lessons = Schema.Struct({
+  path: Schema.String,
+  node: Id,
+  file: Schema.NullOr(Schema.String),
+  recorded: Schema.Array(Schema.Struct({ kind: Schema.String, subject: Schema.String, text: Schema.String, at: Schema.Number })),
+});
+
+export type Lessons = typeof Lessons.Type;

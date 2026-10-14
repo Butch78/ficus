@@ -16,10 +16,14 @@ export const decision = (judge: JudgeSpec): Decision.Probability =>
     criteria: judge.yes === undefined || judge.no === undefined ? undefined : { true: judge.yes, false: judge.no },
   });
 
-/** Every judge of a root, asked of `{ task, diff }` in one call. `judges` must not be empty. */
+/**
+ * Every judge of a root, asked of `{ task, diff, lessons }` in one call:
+ * `lessons` is what the tree has learned (core/lessons.ts), so a judge can
+ * flag an attempt that repeats a known mistake. `judges` must not be empty.
+ */
 export const judging = (judges: ReadonlyArray<JudgeSpec>) =>
   Decision.make({
-    input: Schema.Struct({ task: Schema.String, diff: Schema.String }),
+    input: Schema.Struct({ task: Schema.String, diff: Schema.String, lessons: Schema.String }),
     decisions: Object.fromEntries(judges.map((judge) => [judge.name, decision(judge)])),
   });
 
