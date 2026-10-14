@@ -78,9 +78,12 @@ deadline 2026-10-14.
   `POST /trees/<t>/visibility {public}` (members; `public` is optional in the tree, absent = private) ·
   `POST /trees/<t>/graft {source, branch?}` (imports an outside commit into `<t>-g<id>` as the new head;
   open attempts become behind and are rebased; `.github/workflows/graft.yml` follows GitHub's main) ·
-  `GET /trees/<t>/{attempts,nodes}/<id>/{log,tree,file}?ref=&path=` (`nodes/head/...` is the head; a log at a full commit id is
-  kept in KV `LOGS` for 30 days, since opening a repo through Artifacts takes up to a second cold; reads through Artifacts; the tree picks
-  the repo, `src/core/browse.ts`; files leave as text/plain or octet-stream, never HTML).
+  `GET /trees/<t>/{attempts,nodes}/<id>/{log,tree,file}?ref=&path=` (`nodes/head/...` is the head; reads through Artifacts; the tree picks
+  the repo, `src/core/browse.ts`; files leave as text/plain or octet-stream, never HTML). Reads fixed by their commits are
+  kept in KV `KEPT` for 30 days (`src/core/kept.ts` keys; `#kept`/`#keep`; span attribute `ficus.<log|diff|tree|file>.kept`),
+  since opening a repo through Artifacts takes up to a second cold: a log at a commit id, a diff whose base and head are
+  both pinned (never a working attempt's), a listing or file at a commit id (a branch is resolved first, then the commit
+  is the key); only 200s up to 512 KiB, and any KV failure reads through.
   The Api lists an org's trees (`GET /v1/orgs/<org>/trees`) from D1 (`ficus_tree`), recorded on each 2xx init.
   Public trees (`src/core/visibility.ts`): a request with no session and no API key passes the Api only for GET
   `/v1/orgs/<org>/trees/<t>` and `.../{attempts,nodes}/<id>/{log,tree,file,diff}` (`anonymousMay`); the Api finds

@@ -112,9 +112,11 @@ export default Alchemy.Stack(
         FICUS_AGENTS_SCRIPT: agents.workerName,
         // Workers AI, which names tasks (src/tree/titles.ts).
         AI: Cloudflare.Workers.AI(),
-        // Logs read at a fixed commit, kept: a commit's log never changes, and
-        // reading one through Artifacts takes up to a second when cold.
-        LOGS: yield* Cloudflare.KV.Namespace("Logs", { title: `ficus-logs-${stage}` }),
+        // Reads at fixed commits, kept (src/core/kept.ts): logs, diffs, listings
+        // and files at a commit id never change, and opening a repo through
+        // Artifacts takes up to a second when cold. Still the namespace that
+        // first kept only logs, so what it holds carries over.
+        KEPT: yield* Cloudflare.KV.Namespace("Logs", { title: `ficus-logs-${stage}` }),
         ...deploys,
       },
     });

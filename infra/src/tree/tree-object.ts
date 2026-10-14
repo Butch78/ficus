@@ -15,7 +15,8 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import { change, parsePath, parseRef, Subject, view } from "../core/browse.ts";
+import { type Change, change, parsePath, parseRef, Subject, view } from "../core/browse.ts";
+import { diffKey, KEPT_SECONDS, keepable, logKey, readKey } from "../core/kept.ts";
 import { applyStep, closeLedger, CONTENT_TYPE as PROGRESS, emptyLedger, type InitStep, Ledger, outcomeBody, outcomeLine, parseLine, stepLine, type StepState, textOf } from "../core/progress.ts";
 import { type BootPlan, bootPlans, CheckSpec, RebaseReport, type RebaseRequest, ScoreAnswer, ScoreReport, scoreOf, type ScoreRequest, SNAPSHOT_REFUSED_MS, snapshotAfter, warmable } from "../core/scoring.ts";
 import type { DeployParams } from "../core/deploy.ts";
@@ -41,15 +42,16 @@ export interface Bindings {
   readonly DEPLOYS?: Workflow<DeployParams>;
   /** Workers AI, which names tasks (titles.ts); without it tasks go untitled. */
   readonly AI?: TitleModel;
-  /** Logs read at a fixed commit, which never change (`#read`); without it every log is read through Artifacts. */
-  readonly LOGS?: KVNamespace;
+  /** Reads at fixed commits, which never change (`#read`, src/core/kept.ts); without it every read goes through Artifacts. */
+  readonly KEPT?: KVNamespace;
 }
 
-/** A full commit id: a log read at one is the same forever, so it may be kept. */
-const OID = /^[0-9a-f]{40}$/u;
+/** The headers a kept answer had, in its KV metadata; a log kept before there were any is JSON. */
+interface KeptMetadata {
+  readonly headers: Readonly<Record<string, string>>;
+}
 
-/** How long a kept log stays in KV: long enough that a head's history is read once, short enough that old ones go. */
-const LOG_KEPT_SECONDS = 30 * 24 * 60 * 60;
+const JSON_HEADERS = { "content-type": "application/json" } satisfies KeptMetadata["headers"];
 
 const TREE_KEY = "tree";
 
@@ -389,81 +391,105 @@ export class TreeObject extends DurableObject<Bindings> {
     const asked = url.searchParams.get("ref");
     const ref = asked === null ? seen.pinned : yield* Effect.fromResult(parseRef(asked)).pipe(Effect.mapError(browseRefused));
     const names = yield* Effect.fromResult(parsePath(url.searchParams.get("path") ?? "")).pipe(Effect.mapError(browseRefused));
-    // Opening the repo through Artifacts takes up to a second when cold: a kept log skips it.
+    // Opening the repo through Artifacts takes up to a second when cold: a kept answer skips it.
     const opened = Artifacts.repo(this.#artifacts(), seen.repo).pipe(Effect.mapError(artifactsRefused));
     const label = ref ?? "HEAD";
 
     if (what === "diff") {
-      return yield* this.#diff(tree, subject, yield* opened);
+      const changed = yield* fromTree(change(tree, subject));
+      const key = diffKey(changed.repo, changed.base, changed.head);
+
+      return (yield* this.#kept("diff", key)) ?? (yield* this.#keep(key, yield* this.#diff(changed, yield* opened)));
     }
 
     if (what === "log") {
       const limit = Math.min(LOG_PAGE_MAX, Math.max(1, Number.parseInt(url.searchParams.get("limit") ?? "", 10) || LOG_PAGE_DEFAULT));
       const offset = Number.parseInt(url.searchParams.get("offset") ?? "", 10) || 0;
-      const key = ref !== undefined && OID.test(ref) ? `log/${seen.repo}/${ref}/${limit}/${offset}` : undefined;
-      const kept = yield* this.#keptLog(key);
+      const key = logKey(seen.repo, ref, limit, offset);
+      const kept = yield* this.#kept("log", key);
 
       if (kept !== undefined) {
-        return new Response(kept, { headers: { "content-type": "application/json" } });
+        return kept;
       }
 
       const commits = yield* Artifacts.log(yield* opened, ref, limit, offset).pipe(Effect.mapError(artifactsRefused));
-      const body = JSON.stringify({ repo: seen.repo, ref: label, commits: commits.map(committed) });
 
-      yield* this.#keepLog(key, body);
+      return yield* this.#keep(key, json({ repo: seen.repo, ref: label, commits: commits.map(committed) }));
+    }
 
-      return new Response(body, { headers: { "content-type": "application/json" } });
+    if (what !== "tree" && what !== "file") {
+      return yield* refuse(404, "not found");
+    }
+
+    // At a commit id the answer is known before the repo is opened; at a branch, once the branch is resolved.
+    const atRef = readKey(what, seen.repo, ref, names);
+    const keptAtRef = yield* this.#kept(what, atRef);
+
+    if (keptAtRef !== undefined) {
+      return keptAtRef;
     }
 
     const on = yield* opened;
+    // Resolve the ref once, so the listing and every file read from it describe the same commit.
+    const [commit] = yield* Artifacts.log(on, ref, 1).pipe(Effect.mapError(artifactsRefused));
 
-    if (what === "tree" || what === "file") {
-      // Resolve the ref once, so the listing and every file read from it describe the same commit.
-      const [commit] = yield* Artifacts.log(on, ref, 1).pipe(Effect.mapError(artifactsRefused));
-
-      if (commit === undefined) {
-        return yield* refuse(404, `no commit at ${label}`);
-      }
-
-      return what === "tree" ? yield* listDirectory(on, seen.repo, commit, names) : yield* readFile(on, commit.hash, names);
+    if (commit === undefined) {
+      return yield* refuse(404, `no commit at ${label}`);
     }
 
-    return yield* refuse(404, "not found");
+    const key = readKey(what, seen.repo, commit.hash, names);
+    const kept = key === atRef ? undefined : yield* this.#kept(what, key);
+
+    if (kept !== undefined) {
+      return kept;
+    }
+
+    return yield* this.#keep(key, what === "tree" ? yield* listDirectory(on, seen.repo, commit, names) : yield* readFile(on, commit.hash, names));
   });
 
-  /** A log kept in KV under `key`, if there is one; a KV failure reads as none. */
-  readonly #keptLog = Effect.fn("Tree.keptLog")(function* (this: TreeObject, key: string | undefined) {
-    const logs = this.env.LOGS;
+  /** The answer kept in KV under `key`, if there is one; a KV failure reads as none. `what` names it on the span (`ficus.<what>.kept`). */
+  readonly #kept = Effect.fn("Tree.kept")(function* (this: TreeObject, what: string, key: string | undefined) {
+    const store = this.env.KEPT;
 
-    if (key === undefined || logs === undefined) {
+    if (key === undefined || store === undefined) {
       return undefined;
     }
 
-    const kept = yield* Effect.tryPromise(() => logs.get(key)).pipe(Effect.orElseSucceed(() => null));
+    const kept = yield* Effect.tryPromise(() => store.getWithMetadata<KeptMetadata>(key, "arrayBuffer")).pipe(Effect.orElseSucceed(() => undefined));
+    const found = kept?.value ?? undefined;
 
-    yield* Effect.annotateCurrentSpan({ "ficus.log.kept": kept !== null });
+    yield* Effect.annotateCurrentSpan({ [`ficus.${what}.kept`]: found !== undefined });
 
-    return kept ?? undefined;
+    return found === undefined ? undefined : new Response(found, { headers: kept?.metadata?.headers ?? JSON_HEADERS });
   });
 
-  /** Keep a log read at a fixed commit; a KV failure only means it is read again next time. */
-  readonly #keepLog = Effect.fn("Tree.keepLog")(function* (this: TreeObject, key: string | undefined, body: string) {
-    const logs = this.env.LOGS;
+  /**
+   * Keep an answer read at fixed commits under `key`, and answer it: only a
+   * 200 small enough to keep (`keepable`). A KV failure only means it is read
+   * again next time.
+   */
+  readonly #keep = Effect.fn("Tree.keep")(function* (this: TreeObject, key: string | undefined, answer: Response) {
+    const store = this.env.KEPT;
 
-    if (key === undefined || logs === undefined) {
-      return;
+    if (key === undefined || store === undefined || answer.status !== 200) {
+      return answer;
     }
 
-    yield* Effect.tryPromise(() => logs.put(key, body, { expirationTtl: LOG_KEPT_SECONDS })).pipe(
-      Effect.tapError((error) => Effect.logWarning(`keeping the log ${key}: ${String(error.cause)}`)),
-      Effect.ignore,
-    );
+    const body = yield* Effect.promise(() => answer.arrayBuffer());
+    const headers: KeptMetadata = { headers: Object.fromEntries(answer.headers) };
+
+    if (keepable(body.byteLength)) {
+      yield* Effect.tryPromise(() => store.put(key, body, { expirationTtl: KEPT_SECONDS, metadata: headers })).pipe(
+        Effect.tapError((error) => Effect.logWarning(`keeping ${key}: ${String(error.cause)}`)),
+        Effect.ignore,
+      );
+    }
+
+    return new Response(body, { headers: answer.headers });
   });
 
   /** What an attempt changed since the node it started from, or a node since its parent: the changed files and their hunks. */
-  readonly #diff = Effect.fn("Tree.diff")(function* (this: TreeObject, tree: T.Tree, subject: Subject, on: ArtifactsRepo) {
-    const changed = yield* fromTree(change(tree, subject));
-
+  readonly #diff = Effect.fn("Tree.diff")(function* (this: TreeObject, changed: Change, on: ArtifactsRepo) {
     if (changed.base === undefined) {
       return yield* refuse(400, "the root has no base to compare: browse it instead");
     }
